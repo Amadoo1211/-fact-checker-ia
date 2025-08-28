@@ -277,9 +277,10 @@ function generateScoringExplanation(scoringDetails, sources, contentAnalysis) {
   return explanation;
 }
 
-// SCORING GLOBAL V1 - Équilibré et cohérent
+// SCORING GLOBAL V1 CORRIGÉ - Équilibré et cohérent
 function calculateEnhancedConfidenceScore(claims, sources, originalText) {
-  let baseScore = 35; // Score de base équilibré
+  // CORRECTION 3: Score de base général réduit
+  let baseScore = 25; // Au lieu de 35
   let sourceScore = 0;
   let qualityBonus = 0;
   let penalties = 0;
@@ -347,10 +348,10 @@ function calculateEnhancedConfidenceScore(claims, sources, originalText) {
   if (isHistorical && archiveSources.length > 0) qualityBonus += 10;
   if (isGeographical && encyclopediaSources.length > 0) qualityBonus += 8;
   
-  // Pénalités adaptées
+  // CORRECTION 1: Pénalités opinions augmentées
   if (isOpinion) {
-    penalties += 45;
-    baseScore = 20;
+    penalties += 70; // Au lieu de 45
+    baseScore = 8;   // Au lieu de 20
   } else if (isSubjective) {
     penalties += 25;
   } else if (isComparative) {
@@ -409,12 +410,14 @@ function calculateEnhancedConfidenceScore(claims, sources, originalText) {
   };
 }
 
-// Fonctions de détection de contenu
+// CORRECTION 2: Fonction de détection d'opinions renforcée
 function isStrongOpinionContent(text) {
   const opinionPatterns = [
     /\b(meilleur|meilleure|pire|plus beau|plus belle)\b.*\b(monde|univers|planète|terre|tous temps)\b/i,
     /\b(préfère|aime mieux|déteste|adore|opinion|goût|point de vue|je pense|à mon avis|selon moi)\b/i,
-    /\b(magnifique|horrible|parfait|nul|génial|fantastique|extraordinaire)\b/i
+    /\b(magnifique|horrible|parfait|nul|génial|fantastique|extraordinaire)\b/i,
+    // AJOUT: Patterns stricts pour opinions superlatives
+    /\b(plus belle|plus beau|meilleur.*monde|meilleur.*jamais|meilleur.*tous.*temps)\b/i
   ];
   return opinionPatterns.some(pattern => pattern.test(text));
 }
