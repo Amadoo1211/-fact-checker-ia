@@ -25,8 +25,8 @@ function extractBestKeywords(text) {
   // Expressions complètes pour les personnages célèbres
   const properNouns = text.match(/\b[A-ZÀÂÄÉÈÊËÏÎÔÖÙÛÜŸÇ][a-zàâäéèêëïîôöùûüÿç]+(?:\s+[A-ZÀÂÄÉÈÊËÏÎÔÖÙÛÜŸÇ][a-zàâäéèêëïîôöùûüÿç]+)+\b/g) || [];
   
-  // Noms simples mais importants
-  const singleNames = text.match(/\b(Marie|Edison|Curie|Watt|Savery|Tesla|Einstein|Darwin|Newton|Galilée|Pasteur)\b/gi) || [];
+  // Noms simples mais importants - ÉLARGI POUR PERSONNAGES HISTORIQUES
+  const singleNames = text.match(/\b(Marie|Edison|Curie|Watt|Savery|Tesla|Einstein|Darwin|Newton|Galilée|Pasteur|Napoléon|Bonaparte|César|Jules|Révolution|Berlin|Bastille|Fleming|Alexandre|Pénicilline)\b/gi) || [];
   
   // Dates importantes
   const dates = text.match(/\b(?:1[4-9]\d{2}|20\d{2})\b/g) || [];
@@ -34,8 +34,8 @@ function extractBestKeywords(text) {
   // Nombres significatifs
   const numbers = text.match(/\b\d+(?:[.,]\d+)?\s*(?:millions?|milliards?|mille|%|ans?|années?)\b/gi) || [];
   
-  // Concepts scientifiques/historiques
-  const concepts = text.match(/\b(radioactivité|polonium|radium|machine|vapeur|guerre|mondiale|invention|découverte|révolution|industrielle)\b/gi) || [];
+  // Concepts scientifiques/historiques - ÉLARGI
+  const concepts = text.match(/\b(radioactivité|polonium|radium|machine|vapeur|guerre|mondiale|invention|découverte|révolution|industrielle|pénicilline|antibiotique|mur|bastille|empereur|république|planète|système|solaire)\b/gi) || [];
   
   // Mots importants (non stop words)
   const importantWords = text.toLowerCase()
@@ -217,9 +217,9 @@ function generateScoringExplanation(scoringDetails, sources, contentAnalysis) {
   return explanation;
 }
 
-// AMÉLIORATION CRITIQUE: Meilleur scoring global
+// AMÉLIORATION CRITIQUE: Meilleur scoring global - CORRIGÉ
 function calculateEnhancedConfidenceScore(claims, sources, originalText) {
-  let baseScore = 25; // Score de base réduit
+  let baseScore = 45; // Score de base augmenté (était 25)
   let sourceScore = 0;
   let qualityBonus = 0;
   let penalties = 0;
@@ -276,7 +276,7 @@ function calculateEnhancedConfidenceScore(claims, sources, originalText) {
   if (isSubjective) penalties += 15;
   if (isComparative) penalties += 10;
   if (isSpeculative) penalties += 8;
-  if (totalSources === 0) penalties += 30;
+  if (totalSources === 0) penalties += 15; // Pénalité réduite (était 30)
   
   const rawScore = baseScore + sourceScore + qualityBonus - penalties;
   const finalScore = Math.max(15, Math.min(90, rawScore)) / 100;
@@ -430,7 +430,7 @@ async function searchWikidata(claimText) {
 async function searchPubMed(query) {
   try {
     // Détection améliorée des termes scientifiques
-    const hasScientificTerms = /\b(marie|curie|radioactivité|polonium|radium|maladie|virus|traitement|médical|recherche|étude|scientifique|découverte|cancer|vaccin|becquerel|uranium|physique|chimie|nobel)\b/i.test(query);
+    const hasScientificTerms = /\b(marie|curie|radioactivité|polonium|radium|maladie|virus|traitement|médical|recherche|étude|scientifique|découverte|cancer|vaccin|becquerel|uranium|physique|chimie|nobel|pénicilline|fleming|antibiotique)\b/i.test(query);
     if (!hasScientificTerms) return [];
     
     const keywords = extractBestKeywords(query);
@@ -703,15 +703,15 @@ async function performComprehensiveFactCheck(text) {
 
 // Routes API
 app.get("/", (req, res) => {
-  res.send("✅ API Fact-Checker COMPLÈTE en ligne ! Version 2.5");
+  res.send("✅ API Fact-Checker CORRIGÉE en ligne ! Version 2.6");
 });
 
 app.get("/health", (req, res) => {
   res.json({ 
     status: "OK", 
-    version: "2.5", 
+    version: "2.6", 
     apis: 6, 
-    features: "keywords+relevance+scoring+contradictions+sentiment+explanations" 
+    features: "keywords+relevance+scoring+contradictions+sentiment+explanations+fixed_scoring" 
   });
 });
 
@@ -722,11 +722,11 @@ app.post('/verify', async (req, res) => {
       return res.status(400).json({ error: 'Le texte est requis et doit contenir au moins 10 caractères.' });
     }
     
-    const cacheKey = `verify_v2.5_${text.substring(0, 100)}`;
+    const cacheKey = `verify_v2.6_${text.substring(0, 100)}`;
     const cached = cache.get(cacheKey);
     
     if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-      console.log('Réponse servie depuis le cache v2.5');
+      console.log('Réponse servie depuis le cache v2.6');
       return res.json(cached.data);
     }
     
@@ -739,15 +739,15 @@ app.post('/verify', async (req, res) => {
     res.status(500).json({ 
       error: 'Échec de la vérification', 
       message: error.message,
-      version: "2.5"
+      version: "2.6"
     });
   }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Backend Fact-Checker COMPLET v2.5 sur port ${PORT}`);
-  console.log(`📋 Fonctionnalités: Mots-clés intelligents, Contradictions, Sentiment, Explications`);
+  console.log(`🚀 Backend Fact-Checker CORRIGÉ v2.6 sur port ${PORT}`);
+  console.log(`📋 Corrections: Scoring équilibré, Personnages historiques étendus`);
 });
 
 module.exports = app;
