@@ -6,7 +6,7 @@ const cache = new Map();
 const CACHE_TTL = 24 * 60 * 60 * 1000;
 
 app.use(cors({
-  origin: ['chrome-extension://*', 'https://*.netlify.app', 'http://localhost:3000', 'https://fat-check-production.up.railway.app']
+  origin: ['chrome-extension://*', 'https://*.netlify.app', 'http://localhost:3000', 'https://fact-checker-ia-production.up.railway.app']
 }));
 app.use(express.json());
 
