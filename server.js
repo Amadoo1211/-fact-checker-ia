@@ -21,128 +21,167 @@ function cleanText(text) {
   return text.trim().replace(/\s+/g, ' ').substring(0, 12000);
 }
 
-function extractIntelligentClaims(text) {
-  return text.split(/[.!?]+/)
-    .filter(s => s.trim().length > 20)
-    .map(s => s.trim())
-    .slice(0, 4);
-}
-
-// ============ EXTRACTION DE MOTS-CLÉS ROBUSTE ============
+// ============ EXTRACTION DE MOTS-CLÉS V3 - ULTRA PRÉCISE ============
 function extractBestKeywords(text) {
-  const stopWords = new Set(['le', 'la', 'les', 'un', 'une', 'des', 'et', 'ou', 'de', 'du', 'dans', 'sur', 'avec', 'par', 'pour', 'sans', 'qui', 'que', 'est', 'sont', 'the', 'and', 'or', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'that', 'this']);
+  const stopWords = new Set(['le', 'la', 'les', 'un', 'une', 'des', 'et', 'ou', 'de', 'du', 'dans', 'sur', 'avec', 'par', 'pour', 'sans', 'qui', 'que', 'est', 'sont', 'oui', 'non', 'the', 'and', 'or', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'that', 'this', 'yes', 'no']);
   
-  // Nettoyage initial
+  // Nettoyage des phrases d'introduction d'IA
   const cleaned = text
-    .replace(/^(Bien sûr|Voici|Certainement|Il est important de noter)/i, '')
+    .replace(/^(Oui|Non|Bien sûr|Certainement|Voici|Il est important|En effet|Effectivement)[,.]?\s*/i, '')
+    .replace(/^(Yes|No|Indeed|Certainly|Here|It's important|Sure)[,.]?\s*/i, '')
     .replace(/["""'']/g, '')
+    .replace(/\s+/g, ' ')
     .trim();
   
-  // Extraction de différents types de mots-clés
+  let keywords = [];
+  
+  // 1. Noms propres (personnes, lieux)
   const properNouns = cleaned.match(/\b[A-ZÀÂÄÉÈÊËÏÎÔÖÙÛÜŸÇ][a-zàâäéèêëïîôöùûüÿç]+(?:\s+[A-ZÀÂÄÉÈÊËÏÎÔÖÙÛÜŸÇ][a-zàâäéèêëïîôöùûüÿç]+)*\b/g) || [];
-  const places = cleaned.match(/\b(Paris|Londres|Tokyo|Berlin|Rome|Madrid|Moscou|New York|Washington|France|Allemagne|Japon|États-Unis|Canada)\b/gi) || [];
-  const scientificTerms = cleaned.match(/\b(Einstein|Marie Curie|Newton|Darwin|radioactivité|polonium|radium|physique|chimie|relativité|gravité|évolution)\b/gi) || [];
+  keywords.push(...properNouns);
+  
+  // 2. Années et dates
   const dates = cleaned.match(/\b(?:1[0-9]{3}|20[0-2][0-9])\b/g) || [];
+  keywords.push(...dates);
   
-  // Combinaison et nettoyage
-  let keywords = [...properNouns, ...places, ...scientificTerms, ...dates];
+  // 3. Nombres importants avec unités
+  const numbers = cleaned.match(/\b\d+(?:[.,]\d+)?\s*(?:millions?|milliards?|km|habitants?|%)\b/gi) || [];
+  keywords.push(...numbers);
   
-  // Si pas assez de mots-clés, extraction de mots importants
+  // 4. Termes scientifiques et techniques
+  const technicalTerms = cleaned.match(/\b(capitale|population|polonium|radium|radioactivité|découverte|invention|théorie|relativité|physique|chimie)\b/gi) || [];
+  keywords.push(...technicalTerms);
+  
+  // 5. Si pas assez de mots-clés, prendre les mots les plus longs
   if (keywords.length < 3) {
-    const importantWords = cleaned
-      .toLowerCase()
-      .split(/\s+/)
-      .filter(word => 
-        word.length > 4 && 
-        !stopWords.has(word) &&
-        !/^\d+$/.test(word)
-      )
+    const words = cleaned.split(/\s+/)
+      .filter(w => w.length > 4 && !stopWords.has(w.toLowerCase()) && !/^\d+$/.test(w))
+      .sort((a, b) => b.length - a.length)
       .slice(0, 3);
-    keywords.push(...importantWords);
+    keywords.push(...words);
   }
   
-  // Déduplication et limitation
-  keywords = [...new Set(keywords.map(k => k.trim()))];
-  return keywords.slice(0, 7);
+  // Nettoyage et déduplication
+  keywords = keywords
+    .map(k => k.trim())
+    .filter(k => k && k.length > 2 && !stopWords.has(k.toLowerCase()));
+  
+  return [...new Set(keywords)].slice(0, 5);
 }
 
-// ============ CALCUL DE PERTINENCE STRICT ============
+// ============ CALCUL DE PERTINENCE V3 - ULTRA STRICT ============
 function calculateRelevance(claim, sourceContent) {
+  if (!sourceContent) return 0;
+  
   const claimKeywords = extractBestKeywords(claim);
-  const sourceText = (sourceContent || '').toLowerCase();
+  const sourceText = sourceContent.toLowerCase();
   
   if (claimKeywords.length === 0) return 0;
   
-  let relevanceScore = 0;
   let matchCount = 0;
+  let relevanceScore = 0;
   
-  claimKeywords.forEach(keyword => {
+  // Vérification stricte : TOUS les mots-clés importants doivent matcher
+  for (const keyword of claimKeywords) {
     const keywordLower = keyword.toLowerCase();
+    
     if (sourceText.includes(keywordLower)) {
       matchCount++;
-      // Score basé sur la longueur du mot-clé (plus c'est spécifique, mieux c'est)
-      if (keyword.length > 8) {
-        relevanceScore += 0.5;
-      } else if (keyword.length > 5) {
+      // Plus le mot est long et spécifique, plus il vaut de points
+      if (keyword.length > 10) {
         relevanceScore += 0.4;
-      } else {
+      } else if (keyword.length > 6) {
         relevanceScore += 0.3;
+      } else {
+        relevanceScore += 0.2;
       }
     }
-  });
+  }
   
-  // Bonus pour correspondances multiples
-  if (matchCount >= 3) relevanceScore += 0.3;
-  else if (matchCount >= 2) relevanceScore += 0.2;
+  // Calcul du ratio de correspondance
+  const matchRatio = claimKeywords.length > 0 ? matchCount / claimKeywords.length : 0;
   
-  // Pénalité si aucune correspondance
-  if (matchCount === 0) return 0.02;
+  // Si moins de 50% des mots-clés matchent, la source n'est pas pertinente
+  if (matchRatio < 0.5) {
+    return 0.05;
+  }
+  
+  // Bonus pour correspondance totale
+  if (matchRatio === 1.0) {
+    relevanceScore *= 1.5;
+  }
   
   return Math.min(relevanceScore, 1.0);
 }
 
-// ============ DÉTECTION D'OPINIONS STRICTE ============
-function isStrongOpinionContent(text) {
+// ============ DÉTECTION D'OPINIONS V3 - EXHAUSTIVE ============
+function isOpinionContent(text) {
   const textLower = text.toLowerCase();
   
-  // Patterns d'opinion très clairs FR et EN
-  const opinionPatterns = [
-    // Français
-    /\b(plus belle?|plus beau|meilleure?|pire)\s+(.*?)\s+(du monde|de tous les temps|jamais|de l'univers)\b/i,
-    /\b(meilleur|pire|préféré|favori)\s+(film|restaurant|musique|artiste|livre)\b/i,
-    /\bquel est (le|la|votre) (meilleur|préféré|favori)\b/i,
-    /\b(j'aime|je déteste|j'adore|je préfère)\b/i,
-    /\b(subjectif|opinion|point de vue|selon moi|à mon avis)\b/i,
-    // Anglais
-    /\b(best|worst|greatest|most beautiful)\s+(.*?)\s+(in the world|ever|of all time)\b/i,
-    /\b(favorite|favourite|best|worst)\s+(movie|restaurant|music|artist|book)\b/i,
-    /\bwhat is (the|your) (best|favorite)\b/i,
-    /\b(I love|I hate|I prefer|I think)\b/i,
-    /\b(subjective|opinion|perspective|in my view)\b/i
+  // Liste exhaustive de marqueurs d'opinion
+  const opinionMarkers = [
+    // Superlatifs FR
+    'plus belle', 'plus beau', 'plus laid', 'plus mauvais',
+    'meilleur', 'meilleure', 'pire', 'le mieux', 'le pire',
+    // Jugements subjectifs FR
+    'préféré', 'favori', 'déteste', 'adore', 'j\'aime', 'je n\'aime',
+    'magnifique', 'horrible', 'parfait', 'nul', 'génial', 
+    'fantastique', 'extraordinaire', 'subjectif',
+    // Expressions d'opinion FR
+    'selon moi', 'à mon avis', 'je pense', 'je crois', 'je trouve',
+    'dépend des goûts', 'question de goût', 'point de vue',
+    // Universalité subjective FR
+    'du monde', 'de tous les temps', 'jamais vu', 'de l\'univers',
+    // Superlatifs EN
+    'most beautiful', 'most ugly', 'best', 'worst', 'greatest',
+    'finest', 'poorest', 'better than', 'worse than',
+    // Jugements EN
+    'favorite', 'favourite', 'love', 'hate', 'amazing', 'terrible',
+    'perfect', 'awful', 'fantastic', 'wonderful',
+    // Expressions EN
+    'i think', 'i believe', 'in my opinion', 'subjective',
+    'depends on', 'matter of taste', 'personal preference',
+    // Universalité EN
+    'in the world', 'of all time', 'ever made', 'in the universe'
   ];
   
-  return opinionPatterns.some(pattern => pattern.test(textLower));
+  // Vérifier si c'est une question d'opinion
+  const opinionQuestions = [
+    /quel(?:le)?\s+est\s+(?:le|la|votre)\s+(?:meilleur|préféré|favori)/i,
+    /what\s+is\s+(?:the|your)\s+(?:best|favorite|favourite)/i,
+    /qu'est-ce\s+que\s+(?:tu|vous)\s+(?:penses?|pensez)/i,
+    /what\s+do\s+you\s+think/i
+  ];
+  
+  // Test des marqueurs
+  const hasOpinionMarker = opinionMarkers.some(marker => textLower.includes(marker));
+  const isOpinionQuestion = opinionQuestions.some(pattern => pattern.test(textLower));
+  
+  return hasOpinionMarker || isOpinionQuestion;
 }
 
-// ============ RECHERCHE WIKIPEDIA AMÉLIORÉE ============
+// ============ RECHERCHE WIKIPEDIA OPTIMISÉE ============
 async function searchWikipediaAdvanced(claimText) {
   const sources = [];
   const keywords = extractBestKeywords(claimText);
   
   if (keywords.length === 0) return [];
   
+  console.log('🔑 Recherche Wikipedia pour:', keywords);
+  
   for (const lang of ['fr', 'en']) {
     try {
+      // Recherche avec les 2-3 premiers mots-clés les plus pertinents
       const searchQuery = keywords.slice(0, 3).join(' ');
-      const searchUrl = `https://${lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(searchQuery)}&format=json&origin=*&srlimit=3`;
+      const searchUrl = `https://${lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(searchQuery)}&format=json&origin=*&srlimit=5`;
       
       const response = await fetch(searchUrl, { timeout: 5000 });
       const data = await response.json();
       
       if (data.query?.search) {
-        for (const article of data.query.search.slice(0, 2)) {
+        // Ne prendre que les 3 premiers résultats les plus pertinents
+        for (const article of data.query.search.slice(0, 3)) {
           const content = await fetchWikipediaContent(lang, article.title, claimText);
-          if (content && content.relevanceScore > 0.15) {
+          if (content && content.relevanceScore > 0.3) { // Seuil de pertinence plus élevé
             sources.push(content);
           }
         }
@@ -166,6 +205,9 @@ async function fetchWikipediaContent(lang, title, originalClaim) {
     const fullContent = `${data.title} ${data.extract || ''}`;
     const relevanceScore = calculateRelevance(originalClaim, fullContent);
     
+    // Ne retourner que si vraiment pertinent
+    if (relevanceScore < 0.2) return null;
+    
     return {
       title: `Wikipedia (${lang.toUpperCase()}): ${data.title}`,
       url: data.content_urls?.desktop?.page || `https://${lang}.wikipedia.org/wiki/${encodeURIComponent(title)}`,
@@ -176,7 +218,6 @@ async function fetchWikipediaContent(lang, title, originalClaim) {
       lastUpdated: new Date().toISOString()
     };
   } catch (error) {
-    console.warn('Wikipedia fetch error:', error.message);
     return null;
   }
 }
@@ -192,18 +233,23 @@ async function searchWikidata(claimText) {
     const data = await response.json();
     
     if (data.search?.length > 0) {
-      return data.search.map(item => {
-        const relevanceScore = calculateRelevance(claimText, `${item.label} ${item.description || ''}`);
-        return {
-          title: `Wikidata: ${item.label}`,
-          url: `https://www.wikidata.org/wiki/${item.id}`,
-          snippet: (item.description || 'Entité de données structurées') + ' - Base de données de faits vérifiables.',
-          reliability: 0.88,
-          sourceCategory: 'database',
-          relevanceScore: relevanceScore,
-          lastUpdated: new Date().toISOString()
-        };
-      }).filter(s => s.relevanceScore > 0.1);
+      return data.search
+        .map(item => {
+          const relevanceScore = calculateRelevance(claimText, `${item.label} ${item.description || ''}`);
+          
+          if (relevanceScore < 0.3) return null; // Filtre de pertinence
+          
+          return {
+            title: `Wikidata: ${item.label}`,
+            url: `https://www.wikidata.org/wiki/${item.id}`,
+            snippet: (item.description || 'Base de données structurées') + ' - Données factuelles vérifiables.',
+            reliability: 0.88,
+            sourceCategory: 'database',
+            relevanceScore: relevanceScore,
+            lastUpdated: new Date().toISOString()
+          };
+        })
+        .filter(s => s !== null);
     }
   } catch (error) {
     console.warn('Wikidata error:', error.message);
@@ -212,209 +258,144 @@ async function searchWikidata(claimText) {
   return [];
 }
 
-// ============ RECHERCHE DUCKDUCKGO ============
-async function searchDuckDuckGo(claimText) {
-  const keywords = extractBestKeywords(claimText);
-  if (keywords.length === 0) return [];
-  
-  try {
-    const searchUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(keywords.slice(0, 2).join(' '))}&format=json&no_html=1&skip_disambig=1`;
-    const response = await fetch(searchUrl, { timeout: 5000 });
-    const data = await response.json();
-    
-    if (data.Abstract && data.Abstract.length > 50) {
-      const relevanceScore = calculateRelevance(claimText, data.Abstract);
-      
-      if (relevanceScore > 0.15) {
-        return [{
-          title: `DuckDuckGo: ${data.Heading || 'Résultat instantané'}`,
-          url: data.AbstractURL || 'https://duckduckgo.com/',
-          snippet: data.Abstract.substring(0, 200) + '...',
-          reliability: 0.75,
-          sourceCategory: 'search_engine',
-          relevanceScore: relevanceScore,
-          lastUpdated: new Date().toISOString()
-        }];
-      }
-    }
-  } catch (error) {
-    console.warn('DuckDuckGo error:', error.message);
-  }
-  
-  return [];
-}
-
-// ============ DÉDUPLICATION ET CLASSEMENT ============
+// ============ DÉDUPLICATION STRICTE ============
 function deduplicateAndRankSources(sources) {
   const seen = new Set();
   const deduplicated = [];
   
+  // Filtrer et dédupliquer
   sources.forEach(source => {
-    try {
-      const domain = new URL(source.url).hostname.replace('www.', '');
-      const key = `${domain}-${source.title.substring(0, 30)}`;
-      
-      if (!seen.has(key) && deduplicated.length < 10) {
-        seen.add(key);
-        deduplicated.push(source);
-      }
-    } catch (e) {
-      // Si URL invalide, on garde quand même la source
-      if (deduplicated.length < 10) {
-        deduplicated.push(source);
-      }
+    if (!source || !source.relevanceScore || source.relevanceScore < 0.3) {
+      return; // Ignorer les sources peu pertinentes
+    }
+    
+    const key = source.title.substring(0, 50);
+    if (!seen.has(key) && deduplicated.length < 6) {
+      seen.add(key);
+      deduplicated.push(source);
     }
   });
   
-  // Tri par pertinence et fiabilité
-  return deduplicated.sort((a, b) => {
-    const scoreA = (a.relevanceScore || 0) * (a.reliability || 0.5);
-    const scoreB = (b.relevanceScore || 0) * (b.reliability || 0.5);
-    return scoreB - scoreA;
-  });
+  // Tri par pertinence décroissante
+  return deduplicated.sort((a, b) => b.relevanceScore - a.relevanceScore);
 }
 
-// ============ CALCUL DU SCORE DE CONFIANCE V3 ============
-function calculateConfidenceScoreV3(text, sources) {
-  // 1. DÉTECTION D'OPINION PRÉCOCE
-  if (isStrongOpinionContent(text)) {
-    console.log("🎯 Opinion détectée -> Score forcé à 25%");
+// ============ CALCUL DU SCORE FINAL V4 - PRODUCTION ============
+function calculateFinalScore(text, sources) {
+  // 1. DÉTECTION D'OPINION = 25% IMMÉDIAT
+  if (isOpinionContent(text)) {
+    console.log("🎯 Opinion détectée → 25%");
     return {
       finalScore: 0.25,
       details: {
         finalPercentage: 25,
-        sourceBreakdown: {
-          total: sources.length,
-          relevant: 0,
-          encyclopedia: 0,
-          database: 0
-        }
+        sourceBreakdown: { total: 0, relevant: 0 }
       },
-      contentType: 'OPINION'
+      isOpinion: true
     };
   }
   
-  // 2. ANALYSE POUR CONTENU FACTUEL
-  const relevantSources = sources.filter(s => (s.relevanceScore || 0) > 0.3);
-  const highQualitySources = relevantSources.filter(s => s.relevanceScore > 0.5);
+  // 2. CALCUL POUR CONTENU FACTUEL
+  const relevantSources = sources.filter(s => s.relevanceScore > 0.3);
+  const highQualitySources = relevantSources.filter(s => s.relevanceScore > 0.6);
   
-  // Catégorisation des sources
-  const encyclopediaSources = relevantSources.filter(s => s.sourceCategory === 'encyclopedia');
-  const databaseSources = relevantSources.filter(s => s.sourceCategory === 'database');
-  const searchSources = relevantSources.filter(s => s.sourceCategory === 'search_engine');
-  
-  // 3. CALCUL DU SCORE
-  let baseScore = 30; // Score de base pour contenu factuel
-  let sourceBonus = 0;
-  let qualityBonus = 0;
+  let score = 40; // Score de base pour fait
   
   // Bonus basé sur le nombre de sources pertinentes
   if (relevantSources.length >= 5) {
-    sourceBonus = 40;
+    score += 35;
   } else if (relevantSources.length >= 3) {
-    sourceBonus = 30;
+    score += 25;
   } else if (relevantSources.length >= 2) {
-    sourceBonus = 20;
-  } else if (relevantSources.length >= 1) {
-    sourceBonus = 10;
+    score += 15;
+  } else if (relevantSources.length === 1) {
+    score += 5;
   } else {
-    baseScore = 20; // Réduction si aucune source pertinente
+    score = 20; // Aucune source = score très bas
   }
   
   // Bonus pour sources de haute qualité
-  encyclopediaSources.forEach(s => {
-    qualityBonus += 8 * (s.relevanceScore || 0.5);
-  });
-  
-  databaseSources.forEach(s => {
-    qualityBonus += 10 * (s.relevanceScore || 0.5);
-  });
-  
-  if (highQualitySources.length >= 3) {
-    qualityBonus += 15;
+  if (highQualitySources.length >= 2) {
+    score += 15;
+  } else if (highQualitySources.length === 1) {
+    score += 8;
   }
   
-  // Bonus pour diversité des sources
-  const sourceTypes = new Set(relevantSources.map(s => s.sourceCategory));
-  if (sourceTypes.size >= 3) {
-    qualityBonus += 10;
-  } else if (sourceTypes.size >= 2) {
-    qualityBonus += 5;
+  // Bonus pour diversité (encyclopedia + database)
+  const hasEncyclopedia = relevantSources.some(s => s.sourceCategory === 'encyclopedia');
+  const hasDatabase = relevantSources.some(s => s.sourceCategory === 'database');
+  
+  if (hasEncyclopedia && hasDatabase) {
+    score += 10;
+  } else if (hasEncyclopedia || hasDatabase) {
+    score += 5;
   }
   
-  // Calcul final
-  const totalScore = baseScore + sourceBonus + qualityBonus;
-  const finalPercentage = Math.min(95, Math.max(15, totalScore));
+  // Limites
+  score = Math.min(95, Math.max(15, score));
   
-  console.log(`📊 Score calculé: Base=${baseScore}, Sources=${sourceBonus}, Qualité=${qualityBonus} -> ${finalPercentage}%`);
+  console.log(`📊 Score factuel: ${score}% (${relevantSources.length} sources pertinentes)`);
   
   return {
-    finalScore: finalPercentage / 100,
+    finalScore: score / 100,
     details: {
-      finalPercentage: finalPercentage,
+      finalPercentage: score,
       sourceBreakdown: {
         total: sources.length,
         relevant: relevantSources.length,
         highQuality: highQualitySources.length,
-        encyclopedia: encyclopediaSources.length,
-        database: databaseSources.length,
-        searchEngine: searchSources.length
+        encyclopedia: relevantSources.filter(s => s.sourceCategory === 'encyclopedia').length,
+        database: relevantSources.filter(s => s.sourceCategory === 'database').length
       }
     },
-    contentType: 'FACTUEL'
+    isOpinion: false
   };
 }
 
-// ============ GÉNÉRATION D'EXPLICATION ============
-function generateScoringExplanation(details, sources) {
-  const { finalPercentage, sourceBreakdown } = details;
-  const relevantCount = sourceBreakdown.relevant || 0;
+// ============ GÉNÉRATION D'EXPLICATION CLAIRE ============
+function generateExplanation(scoringResult, sources) {
+  const { finalPercentage, sourceBreakdown } = scoringResult.details;
+  
+  if (scoringResult.isOpinion) {
+    return "Score faible car le contenu exprime une opinion personnelle ou un jugement subjectif plutôt que des faits vérifiables.";
+  }
   
   let explanation = "";
   
   if (finalPercentage >= 80) {
-    explanation = `Score très élevé grâce à ${relevantCount} sources hautement pertinentes qui confirment les faits`;
+    explanation = `Score très élevé grâce à ${sourceBreakdown.relevant} sources hautement pertinentes qui confirment les faits`;
   } else if (finalPercentage >= 60) {
-    explanation = `Score élevé avec ${relevantCount} sources fiables trouvées`;
+    explanation = `Score élevé avec ${sourceBreakdown.relevant} sources fiables trouvées`;
   } else if (finalPercentage >= 40) {
-    explanation = `Score modéré basé sur ${relevantCount} sources disponibles`;
-  } else if (finalPercentage >= 25) {
-    explanation = `Score faible dû à peu de sources pertinentes (${relevantCount})`;
+    explanation = `Score modéré basé sur ${sourceBreakdown.relevant} source(s) disponible(s)`;
   } else {
-    explanation = `Score très faible - sources insuffisantes ou contenu subjectif`;
+    explanation = `Score faible. Peu de sources (${sourceBreakdown.relevant}) ont pu vérifier directement les affirmations`;
   }
   
-  // Ajout de détails sur les types de sources
-  const sourceTypes = [];
-  if (sourceBreakdown.encyclopedia > 0) {
-    sourceTypes.push(`${sourceBreakdown.encyclopedia} encyclopédie(s)`);
-  }
-  if (sourceBreakdown.database > 0) {
-    sourceTypes.push(`${sourceBreakdown.database} base(s) de données`);
-  }
-  if (sourceBreakdown.searchEngine > 0) {
-    sourceTypes.push(`${sourceBreakdown.searchEngine} moteur(s) de recherche`);
-  }
-  
-  if (sourceTypes.length > 0) {
-    explanation += `, incluant ${sourceTypes.join(', ')}`;
+  // Détails sur les types
+  if (sourceBreakdown.encyclopedia > 0 || sourceBreakdown.database > 0) {
+    const types = [];
+    if (sourceBreakdown.encyclopedia > 0) types.push(`${sourceBreakdown.encyclopedia} encyclopédie(s)`);
+    if (sourceBreakdown.database > 0) types.push(`${sourceBreakdown.database} base(s) de données`);
+    explanation += `, incluant ${types.join(' et ')}`;
   }
   
   explanation += '.';
   return explanation;
 }
 
-// ============ FONCTION PRINCIPALE DE FACT-CHECKING ============
-async function performComprehensiveFactCheck(text) {
+// ============ FONCTION PRINCIPALE ============
+async function performFactCheck(text) {
   const cleanedText = cleanText(text);
   const keywords = extractBestKeywords(cleanedText);
   
-  console.log('🔍 Analyse:', cleanedText.substring(0, 100));
-  console.log('🔑 Mots-clés extraits:', keywords);
+  console.log('\n=== ANALYSE ===');
+  console.log('Texte:', cleanedText.substring(0, 100));
+  console.log('Mots-clés:', keywords);
   
-  // Cas spécial : Opinion détectée
-  if (isStrongOpinionContent(cleanedText)) {
-    console.log('⚠️ Contenu d\'opinion détecté');
+  // Détection d'opinion avec retour immédiat
+  if (isOpinionContent(cleanedText)) {
+    console.log('⚠️ Opinion détectée');
     return {
       overallConfidence: 0.25,
       sources: [],
@@ -426,76 +407,65 @@ async function performComprehensiveFactCheck(text) {
         sourceBreakdown: { total: 0, relevant: 0 }
       },
       alternativeContent: {
-        title: "🧐 Ceci est une opinion subjective",
-        explanation: "L'analyse factuelle n'est pas applicable aux opinions personnelles. Les goûts et préférences varient selon les individus.",
+        title: "🤔 Ceci est une opinion subjective",
+        explanation: "L'analyse factuelle n'est pas applicable aux opinions personnelles. Les préférences varient selon les individus.",
         prompts: [
-          `Quels sont les faits objectifs sur "${keywords[0] || 'ce sujet'}" ?`,
-          "Quelles sont les différentes perspectives sur cette question ?",
-          "Existe-t-il des données mesurables à ce sujet ?"
+          `Quels sont les critères objectifs pour évaluer "${keywords[0] || 'ce sujet'}" ?`,
+          "Quelles sont les données mesurables disponibles ?",
+          "Existe-t-il des études ou statistiques sur ce sujet ?"
         ]
       }
     };
   }
   
-  // Recherche de sources en parallèle
+  // Recherche de sources
   console.log('🔎 Recherche de sources...');
-  const searchPromises = [
-    searchWikipediaAdvanced(cleanedText),
-    searchWikidata(cleanedText),
-    searchDuckDuckGo(cleanedText)
-  ];
-  
   let allSources = [];
   
   try {
-    const results = await Promise.allSettled(searchPromises);
+    const searchPromises = [
+      searchWikipediaAdvanced(cleanedText),
+      searchWikidata(cleanedText)
+    ];
     
-    results.forEach((result, index) => {
+    const results = await Promise.allSettled(searchPromises);
+    results.forEach(result => {
       if (result.status === 'fulfilled' && Array.isArray(result.value)) {
-        console.log(`✅ Source ${index + 1}: ${result.value.length} résultats`);
         allSources = allSources.concat(result.value);
-      } else {
-        console.log(`❌ Source ${index + 1}: Échec`);
       }
     });
   } catch (error) {
     console.error('Erreur recherche:', error);
   }
   
-  // Déduplication et classement
+  // Filtrage et classement stricts
   const rankedSources = deduplicateAndRankSources(allSources);
-  console.log(`📚 Total: ${rankedSources.length} sources uniques`);
+  console.log(`📚 ${rankedSources.length} sources pertinentes trouvées`);
   
   // Calcul du score
-  const scoringAnalysis = calculateConfidenceScoreV3(cleanedText, rankedSources);
-  
-  // Génération de l'explication
-  const scoringExplanation = generateScoringExplanation(
-    scoringAnalysis.details,
-    rankedSources
-  );
+  const scoringResult = calculateFinalScore(cleanedText, rankedSources);
+  const explanation = generateExplanation(scoringResult, rankedSources);
   
   return {
-    overallConfidence: scoringAnalysis.finalScore,
+    overallConfidence: scoringResult.finalScore,
     sources: rankedSources,
     extractedKeywords: keywords,
     contradictions: [],
-    scoringExplanation: scoringExplanation,
-    scoringDetails: scoringAnalysis.details
+    scoringExplanation: explanation,
+    scoringDetails: scoringResult.details
   };
 }
 
 // ============ ROUTES API ============
 app.get("/", (req, res) => {
-  res.send("✅ API Fact-Checker IA Pro V2.0 - Production Ready");
+  res.send("✅ API Fact-Checker IA Pro V3.0 - Production Ready");
 });
 
 app.get("/health", (req, res) => {
   res.json({ 
     status: "OK",
-    version: "2.0",
-    features: "Multi-sources + Opinion detection + Smart scoring",
-    timestamp: new Date().toISOString()
+    version: "3.0",
+    features: "Opinion detection + Smart scoring + Source filtering"
   });
 });
 
@@ -505,22 +475,21 @@ app.post('/verify', async (req, res) => {
     
     if (!text || text.length < 10) {
       return res.status(400).json({ 
-        error: 'Le texte est requis et doit contenir au moins 10 caractères.' 
+        error: 'Le texte est requis (min 10 caractères)' 
       });
     }
     
-    // Vérification du cache
-    const cacheKey = `verify_${Buffer.from(text.substring(0, 100)).toString('base64')}`;
+    // Cache
+    const cacheKey = `v3_${Buffer.from(text.substring(0, 100)).toString('base64')}`;
     const cached = cache.get(cacheKey);
     
     if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-      console.log('📦 Réponse depuis le cache');
+      console.log('📦 Cache hit');
       return res.json(cached.data);
     }
     
     // Analyse
-    console.log('\n=== NOUVELLE REQUÊTE ===');
-    const result = await performComprehensiveFactCheck(text);
+    const result = await performFactCheck(text);
     
     // Mise en cache
     cache.set(cacheKey, {
@@ -530,7 +499,7 @@ app.post('/verify', async (req, res) => {
     
     res.json(result);
   } catch (error) {
-    console.error('❌ Erreur /verify:', error);
+    console.error('❌ Erreur:', error);
     res.status(500).json({ 
       error: 'Échec de la vérification',
       message: error.message 
@@ -538,10 +507,11 @@ app.post('/verify', async (req, res) => {
   }
 });
 
-// ============ DÉMARRAGE SERVEUR ============
+// ============ DÉMARRAGE ============
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Fact-Checker IA Pro V2.0 démarré sur port ${PORT}`);
-  console.log(`📊 Features: Multi-sources, Opinion detection, Smart scoring`);
-  console.log(`⏱️ Cache: ${CACHE_TTL / 1000}s`);
+  console.log(`🚀 Fact-Checker IA Pro V3.0 sur port ${PORT}`);
+  console.log(`📊 Scoring: Opinions→25%, Faits→40-95%`);
+  console.log(`🔍 Sources: Wikipedia FR/EN + Wikidata`);
+  console.log(`⏱️ Cache: ${CACHE_TTL/1000}s`);
 });
