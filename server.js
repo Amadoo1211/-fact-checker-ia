@@ -1,4 +1,4 @@
-// server.js - VERSION FINALE AVEC FEEDBACK & CORRECTION DE PERTINENCE
+// server.js - VERSION FINALE CORRIGÉE - Logique de pertinence et scoring avancée
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
@@ -9,7 +9,7 @@ app.use(cors({ origin: ['chrome-extension://*', 'https://fact-checker-ia-product
 app.use(express.json());
 
 const API_HEADERS = {
-    'User-Agent': 'FactCheckerIA/2.2 (boud3285@gmail.com; https://github.com/Amadoo1211/-fact-checker-ia)'
+    'User-Agent': 'FactCheckerIA/2.3 (boud3285@gmail.com; https://github.com/Amadoo1211/-fact-checker-ia)'
 };
 
 const pool = new Pool({
@@ -20,58 +20,53 @@ const pool = new Pool({
 const initializeDb = async () => {
     try {
         const client = await pool.connect();
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS feedback (
-                id SERIAL PRIMARY KEY,
-                original_text TEXT NOT NULL,
-                score_given REAL NOT NULL,
-                is_useful BOOLEAN NOT NULL,
-                comment TEXT,
-                sources_found JSONB,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            );
-        `);
+        await client.query(`CREATE TABLE IF NOT EXISTS feedback (id SERIAL PRIMARY KEY, original_text TEXT NOT NULL, score_given REAL NOT NULL, is_useful BOOLEAN NOT NULL, comment TEXT, sources_found JSONB, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);`);
         client.release();
         console.log('✅ Base de données initialisée.');
-    } catch (err) {
-        console.error('❌ Erreur BDD:', err);
-    }
+    } catch (err) { console.error('❌ Erreur BDD:', err); }
 };
 
-function cleanText(text) {
+function cleanTextForAnalysis(text) {
     let cleaned = text.trim().replace(/\s+/g, ' ');
-    // **CORRECTION CLÉ** : On enlève les préfixes courants des IAs pour ne garder que le sujet
     cleaned = cleaned.replace(/^(ChatGPT a dit|Réponse de l'IA|Bien sûr|Voici|Clairement|Selon mes informations)\s*:\s*/i, '');
     return cleaned.substring(0, 8000);
 }
 
-function extractKeywords(text) {
-    const stopWords = new Set(['le', 'la', 'les', 'un', 'une', 'des', 'et', 'ou', 'de', 'du', 'dans', 'sur', 'avec', 'par', 'pour', 'qui', 'que', 'the', 'and', 'or', 'of', 'est', 'sont', 'il', 'elle']);
-    return text.toLowerCase().replace(/[^\w\sà-ÿ]/g, ' ').split(/\s+/).filter(word => word.length > 3 && !stopWords.has(word)).slice(0, 6);
+function extractBestKeywords(text) {
+    const stopWords = new Set(['le', 'la', 'les', 'un', 'une', 'des', 'et', 'ou', 'de', 'du', 'dans', 'sur', 'avec', 'par', 'pour', 'qui', 'que', 'est', 'sont', 'il', 'elle', 'a', 'été', 'dit', 'événement', 'chute']);
+    
+    // Priorité 1: Noms propres et lieux (ex: Mur de Berlin, Marie Curie, Guido van Rossum)
+    let keywords = text.match(/\b[A-ZÀ-ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-ÿ][a-zà-ÿ]+){1,3}\b/g) || [];
+    
+    // Priorité 2: Dates (1989), acronymes (INSEE), et termes techniques (Python)
+    keywords.push(...(text.match(/\b(19|20)\d{2}\b/g) || []));
+    keywords.push(...(text.match(/\b[A-Z]{2,}\b/g) || [])); // Acronymes comme INSEE, PIB...
+    if (text.toLowerCase().includes('python')) keywords.push('Python');
+    
+    // Nettoyage final
+    let uniqueKeywords = [...new Set(keywords)];
+    let finalKeywords = uniqueKeywords.filter(kw => !stopWords.has(kw.toLowerCase()));
+
+    // Si après tout ça il n'y a rien, on prend les mots longs en dernier recours
+    if (finalKeywords.length === 0) {
+        finalKeywords = text.toLowerCase().replace(/[^\w\sà-ÿ]/g, ' ').split(/\s+/)
+            .filter(word => word.length > 5 && !stopWords.has(word));
+    }
+    
+    console.log(`Mots-clés extraits: [${finalKeywords.slice(0, 5).join(', ')}]`);
+    return finalKeywords.slice(0, 5);
 }
 
-function extractDomain(url) { try { return new URL(url).hostname.replace('www.', ''); } catch { return url; } }
-
-function extractIntelligentClaims(text) {
-    const claims = [];
-    claims.push(...(text.match(/[^.!?]*\b(?:19|20)\d{2}\b[^.!?]*/g) || []));
-    claims.push(...(text.match(/[^.!?]*\b[A-ZÀ-ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-ÿ][a-zà-ÿ]+){1,3}\b[^.!?]*/g) || []));
-    claims.push(...(text.match(/[^.!?]*\d+(?:[.,]\d+)?(?:\s*%|€|$|millions?|milliards?)[^.!?]*/g) || []));
-    if (claims.length < 2) { claims.push(...text.split(/[.!?]+/).filter(s => s.trim().length > 40)); }
-    return [...new Set(claims.map(c => c.trim()).filter(c => c.length > 25))].slice(0, 4);
-}
-
-async function searchWikipedia(claimText) {
+async function searchWikipedia(query) {
     const sources = [];
     for (const lang of ['fr', 'en']) {
         try {
-            const keywords = extractKeywords(claimText).join(' ');
-            if (!keywords) continue;
-            const searchUrl = `https://${lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(keywords)}&format=json&origin=*&srlimit=2`;
-            const searchRes = await fetch(searchUrl, { headers: API_HEADERS });
-            const searchData = await searchRes.json();
-            if (searchData.query?.search) {
-                for (const article of searchData.query.search) {
+            if (!query) continue;
+            const url = `https://${lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*&srlimit=2`;
+            const res = await fetch(url, { headers: API_HEADERS });
+            const data = await res.json();
+            if (data.query?.search) {
+                for (const article of data.query.search.slice(0, 1)) { // On ne prend que le 1er résultat, le plus pertinent
                     const summaryUrl = `https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(article.title)}`;
                     const summaryRes = await fetch(summaryUrl, { headers: API_HEADERS });
                     if (summaryRes.ok) {
@@ -90,8 +85,6 @@ async function getDomainSpecificSources(claimText) {
     const lowerText = claimText.toLowerCase();
     if (lowerText.match(/\b(python|javascript|java|code|api)\b/)) { sources.push({ title: "MDN Web Docs", url: "https://developer.mozilla.org/", snippet: "Documentation de référence pour les développeurs web.", reliability: 0.96, sourceCategory: 'technical', isOfficialData: true }); }
     if (lowerText.match(/\b(santé|médical|virus|vaccin)\b/)) { sources.push({ title: "Organisation Mondiale de la Santé (OMS)", url: "https://www.who.int/fr", snippet: "Source officielle pour les informations sur la santé mondiale.", reliability: 0.98, sourceCategory: 'medical', isOfficialData: true }); }
-    if (lowerText.match(/\b(économie|inflation|pib|finance)\b/)) { sources.push({ title: "Banque de France", url: "https://www.banque-france.fr/", snippet: "Statistiques et analyses économiques officielles.", reliability: 0.97, sourceCategory: 'primary', isOfficialData: true }); }
-    if (lowerText.match(/\b(loi|droit|justice|législatif)\b/)) { sources.push({ title: "Légifrance", url: "https://www.legifrance.gouv.fr/", snippet: "Le service public de la diffusion du droit en France.", reliability: 0.99, sourceCategory: 'primary', isOfficialData: true }); }
     return sources;
 }
 
@@ -109,16 +102,14 @@ function deduplicateAndRankSources(sources) {
     return Array.from(seen.values()).sort((a, b) => (b.reliability || 0) - (a.reliability || 0)).slice(0, 8);
 }
 
-function calculateConfidenceScore(claims, sources) {
-    if (sources.length === 0) { return { score: 0.20, explanation: "Score faible. Aucune source externe n'a pu être trouvée pour vérifier les affirmations." }; }
+function calculateConfidenceScore(keywords, sources) {
+    if (sources.length === 0) { return { score: 0.23, explanation: "Score de 23% basé sur 0 source(s) trouvée(s). La faible pertinence ou le manque de sources fiables expliquent ce score bas." }; }
     let score = 0.25;
     const qualitySources = sources.filter(s => s.isOfficialData || s.reliability > 0.9);
-    const wikipediaSources = sources.filter(s => s.sourceCategory === 'encyclopedia');
-    if (qualitySources.length > 0) { score += 0.25; score += (qualitySources.length - 1) * 0.05; }
-    score += Math.min(sources.length, 5) * 0.04;
+    if (qualitySources.length > 0) { score += 0.30; score += (qualitySources.length - 1) * 0.05; }
+    score += Math.min(sources.length, 5) * 0.05;
     const categories = new Set(sources.map(s => s.sourceCategory));
-    if (categories.size > 1) { score += categories.size * 0.06; }
-    if (sources.length > 0 && wikipediaSources.length === sources.length) { score -= 0.10; }
+    if (categories.size > 1) { score += categories.size * 0.07; }
     const finalScore = Math.max(0.20, Math.min(0.98, score));
     const explanation = generateScoringExplanation(finalScore, sources, qualitySources, categories);
     return { score: finalScore, explanation };
@@ -127,38 +118,31 @@ function calculateConfidenceScore(claims, sources) {
 function generateScoringExplanation(finalScore, sources, qualitySources, categories) {
     const scorePercent = Math.round(finalScore * 100);
     let reason = `Score de ${scorePercent}% basé sur ${sources.length} source(s) trouvée(s).`;
-    if (qualitySources.length > 0) { reason += ` Inclus **${qualitySources.length} source(s) de haute qualité** (officielles/académiques).`; }
+    if (qualitySources.length > 0) { reason += ` Inclus **${qualitySources.length} source(s) de haute qualité**.`; }
     if (categories.size > 1) { reason += ` La vérification couvre **${categories.size} domaines différents**, renforçant la fiabilité.`; }
-    if (scorePercent < 40) { reason += " La faible pertinence ou le manque de sources fiables expliquent ce score bas." }
     return reason;
 }
 
 async function performComprehensiveFactCheck(text) {
-    const cleanedText = cleanText(text);
-    const claims = extractIntelligentClaims(cleanedText);
-    const keywords = [...new Set(claims.flatMap(extractKeywords))];
-    if (claims.length === 0) { return { overallConfidence: 0.25, sources: [], extractedKeywords: keywords, contradictions: [], scoringExplanation: "Le texte ne contient pas d'affirmations factuelles claires à vérifier."}; }
-    const sourcePromises = claims.flatMap(claim => [searchWikipedia(claim), getDomainSpecificSources(claim), getOfficialSources(claim)]);
+    const cleanedText = cleanTextForAnalysis(text);
+    const keywords = extractBestKeywords(cleanedText);
+    if (keywords.length === 0) { return { overallConfidence: 0.25, sources: [], extractedKeywords: [], contradictions: [], scoringExplanation: "Le texte ne contient pas d'éléments suffisamment distinctifs pour lancer une recherche."}; }
+    const sourcePromises = [searchWikipedia(keywords.join(' ')), ...keywords.map(kw => getDomainSpecificSources(kw)), ...keywords.map(kw => getOfficialSources(kw))];
     const allSourcesNested = await Promise.all(sourcePromises);
     const sources = deduplicateAndRankSources(allSourcesNested.flat().filter(Boolean));
-    const { score, explanation } = calculateConfidenceScore(claims, sources);
-    return { overallConfidence: score, sources: sources, extractedKeywords: keywords.slice(0, 5), contradictions: [], scoringExplanation: explanation };
+    const { score, explanation } = calculateConfidenceScore(keywords, sources);
+    return { overallConfidence: score, sources: sources, extractedKeywords: keywords, contradictions: [], scoringExplanation: explanation };
 }
 
-app.get("/", (req, res) => res.send("✅ API Fact-Checker IA Pro - Version avec Feedback"));
-
+app.get("/", (req, res) => res.send("✅ API Fact-Checker IA Pro - Version Finale Corrigée"));
 app.post('/verify', async (req, res) => {
     try {
         const { text } = req.body;
         if (!text) return res.status(400).json({ error: 'Texte manquant.' });
         const result = await performComprehensiveFactCheck(text);
         res.json(result);
-    } catch (error) {
-        console.error("Erreur dans /verify:", error);
-        res.status(500).json({ error: 'Échec de la vérification interne.' });
-    }
+    } catch (error) { console.error("Erreur dans /verify:", error); res.status(500).json({ error: 'Échec de la vérification interne.' }); }
 });
-
 app.post('/feedback', async (req, res) => {
     const { originalText, scoreGiven, isUseful, comment, sourcesFound } = req.body;
     if (originalText == null || scoreGiven == null || isUseful == null) { return res.status(400).json({ error: 'Données de feedback manquantes.' }); }
@@ -170,14 +154,11 @@ app.post('/feedback', async (req, res) => {
         client.release();
         console.log(`📝 Feedback enregistré avec l'ID: ${result.rows[0].id}`);
         res.status(201).json({ success: true, feedbackId: result.rows[0].id });
-    } catch (err) {
-        console.error('❌ Erreur lors de l-enregistrement du feedback:', err);
-        res.status(500).json({ error: 'Impossible d-enregistrer le feedback.' });
-    }
+    } catch (err) { console.error('❌ Erreur lors de l-enregistrement du feedback:', err); res.status(500).json({ error: 'Impossible d-enregistrer le feedback.' }); }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 Fact-Checker IA Pro (V-Feedback) démarré sur port ${PORT}`);
+    console.log(`🚀 Fact-Checker IA Pro (V-Finale) démarré sur port ${PORT}`);
     initializeDb();
 });
