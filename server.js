@@ -1,10 +1,10 @@
-// server.js - VERSION FINALE - Architecture complète et robuste
+// server.js - VERSION FINALE GOLD - Architecture complète et robuste
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const app = express();
 const cache = new Map();
-const CACHE_TTL = 12 * 60 * 60 * 1000; // 12 heures
+const CACHE_TTL = 12 * 60 * 60 * 1000;
 
 app.use(cors({ origin: ['chrome-extension://*', 'https://fact-checker-ia-production.up.railway.app'] }));
 app.use(express.json());
@@ -14,17 +14,17 @@ function cleanText(text) { return text.trim().replace(/\s+/g, ' ').substring(0, 
 
 function extractBestKeywords(text) {
     const cleaned = text.split(/[.!?]/)[0]
-        .replace(/^(Bien sûr|Voici|Certainement|L'invention de|La vitesse de|La chute de|Déterminer)/i, '')
+        .replace(/^(Bien sûr|Voici|Certainement|L'invention de|La vitesse de|La chute de|Déterminer le "meilleur")/i, '')
+        .replace(/Il n'y a pas un seul "meilleur" /i, '')
+        .replace(/La question du meilleur.*est (ultra )?subjective/i, '')
+        .replace(/cela dépend des goûts personnels/i, '')
         .replace(/"/g, '').trim();
+
     let keywords = cleaned.match(/\b[A-ZÀ-ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-ÿa-zà-ÿ]+){1,3}\b/g) || [];
-    if (keywords.length === 0) {
-        keywords = cleaned.match(/\b[a-zà-ÿ]+ de la [a-zà-ÿ]+\b/gi) || [];
-    }
     if (keywords.length === 0) {
         keywords = cleaned.split(/\s+/).filter(w => w.length > 6);
     }
     const finalKeywords = [...new Set(keywords.map(k => k.trim().replace(/,$/, '')))];
-    console.log("Mots-clés extraits:", finalKeywords.slice(0, 4));
     return finalKeywords.slice(0, 4);
 }
 
@@ -46,7 +46,7 @@ function isStrongOpinionContent(text) {
     const opinionWords = ['meilleur', 'pire', 'préféré', 'déteste', 'adore', 'subjectif', 'avis', 'pense que'];
     if (opinionWords.some(word => lowerText.includes(word))) return true;
     const questionWords = ['quel est', 'qui est', 'penses-tu', 'selon toi'];
-    if (questionWords.some(word => lowerText.includes(word)) && (lowerText.includes('musique') || lowerText.includes('film') || lowerText.includes('art'))) return true;
+    if (questionWords.some(word => lowerText.includes(word)) && (lowerText.includes('musique') || lowerText.includes('film') || lowerText.includes('art') || lowerText.includes('style'))) return true;
     return false;
 }
 
@@ -54,7 +54,7 @@ function generateScoringExplanation(details, sources) {
     const { finalPercentage } = details;
     const relevantCount = sources.filter(s => (s.relevanceScore || 0) > 0.4).length;
     if (finalPercentage >= 80) return `Score très élevé, confirmé par ${relevantCount} sources fiables et très pertinentes.`;
-    if (finalPercentage >= 50) return `Score correct. ${relevantCount} sources corroborent les points principaux.`;
+    if (finalPercentage >= 50) return `Score correct, ${relevantCount} sources corroborent les points principaux.`;
     return `Score faible. Peu de sources (${relevantCount}) ont pu vérifier directement les affirmations.`;
 }
 
@@ -168,8 +168,7 @@ async function performComprehensiveFactCheck(text) {
 }
 
 // --- Routes API ---
-app.get("/", (req, res) => res.send("✅ API Fact-Checker IA Pro - Version Finale"));
-
+app.get("/", (req, res) => res.send("✅ API Fact-Checker IA Pro - Version GOLD"));
 app.post('/verify', async (req, res) => {
     try {
         const { text } = req.body;
@@ -183,4 +182,4 @@ app.post('/verify', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Fact-Checker IA Pro (V-Finale) démarré sur port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Fact-Checker IA Pro (V-GOLD) démarré sur port ${PORT}`));
