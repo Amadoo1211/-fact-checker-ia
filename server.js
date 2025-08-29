@@ -1,4 +1,4 @@
-// server.js - VERSION 1.8 - FINALE ET 100% COMPLÈTE
+// server.js - VERSION FINALE - Architecture complète et robuste
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
@@ -13,24 +13,16 @@ app.use(express.json());
 function cleanText(text) { return text.trim().replace(/\s+/g, ' ').substring(0, 8000); }
 
 function extractBestKeywords(text) {
-    // 1. Nettoyer les phrases de politesse et intros des IA
-    const cleaned = text.split(/[.!?]/)[0] // Travailler sur la première phrase
-        .replace(/^(Bien sûr|Certainement|Voici|Selon|D'après|L'invention de|La vitesse de|La chute de)/i, '')
-        .replace(/"/g, '')
-        .trim();
-
-    // 2. Priorité aux noms propres de plusieurs mots (ex: "Thomas Edison", "Mur de Berlin")
+    const cleaned = text.split(/[.!?]/)[0]
+        .replace(/^(Bien sûr|Voici|Certainement|L'invention de|La vitesse de|La chute de|Déterminer)/i, '')
+        .replace(/"/g, '').trim();
     let keywords = cleaned.match(/\b[A-ZÀ-ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-ÿa-zà-ÿ]+){1,3}\b/g) || [];
-    
-    // 3. Si aucun, chercher des sujets ou concepts clés (ex: "vitesse de la lumière")
     if (keywords.length === 0) {
         keywords = cleaned.match(/\b[a-zà-ÿ]+ de la [a-zà-ÿ]+\b/gi) || [];
     }
-    // 4. En dernier recours, prendre les mots les plus longs et significatifs
     if (keywords.length === 0) {
         keywords = cleaned.split(/\s+/).filter(w => w.length > 6);
     }
-
     const finalKeywords = [...new Set(keywords.map(k => k.trim().replace(/,$/, '')))];
     console.log("Mots-clés extraits:", finalKeywords.slice(0, 4));
     return finalKeywords.slice(0, 4);
@@ -62,7 +54,7 @@ function generateScoringExplanation(details, sources) {
     const { finalPercentage } = details;
     const relevantCount = sources.filter(s => (s.relevanceScore || 0) > 0.4).length;
     if (finalPercentage >= 80) return `Score très élevé, confirmé par ${relevantCount} sources fiables et très pertinentes.`;
-    if (finalPercentage >= 50) return `Score correct, ${relevantCount} sources corroborent les points principaux.`;
+    if (finalPercentage >= 50) return `Score correct. ${relevantCount} sources corroborent les points principaux.`;
     return `Score faible. Peu de sources (${relevantCount}) ont pu vérifier directement les affirmations.`;
 }
 
@@ -95,7 +87,7 @@ async function fetchWikipediaContent(lang, title, originalClaim) {
         const response = await fetch(summaryUrl, { timeout: 4000 });
         if (!response.ok) return null;
         const data = await response.json();
-        const content = data.title + ' ' + data.extract;
+        const content = data.title + ' ' + (data.extract || '');
         return {
             title: `Wikipedia (${lang.toUpperCase()}): ${data.title}`,
             url: data.content_urls.desktop.page,
@@ -119,25 +111,25 @@ function deduplicateAndRankSources(sources) {
             }
         } catch (e) {}
     });
-    return deduplicated.sort((a, b) => b.relevanceScore - a.relevanceScore).slice(0, 5);
+    return deduplicated.sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0)).slice(0, 5);
 }
 
 // --- Moteur de Scoring ---
 function calculateEnhancedConfidenceScore(text, sources) {
     let baseScore = 20;
     let sourceScore = 0;
-    const relevantSources = sources.filter(s => s.relevanceScore > 0.4); // Seuil de pertinence
+    const relevantSources = sources.filter(s => s.relevanceScore > 0.4);
     
     relevantSources.forEach(source => {
-        sourceScore += 35 * source.relevanceScore; // Bonus important par source pertinente
+        sourceScore += 35 * source.relevanceScore;
     });
 
     if (relevantSources.length === 0) {
-        baseScore = 15; // Pénalité si aucune source pertinente
+        baseScore = 15;
     }
 
     const rawScore = baseScore + sourceScore;
-    const finalScore = Math.min(95, rawScore); // Plafonné à 95%
+    const finalScore = Math.min(95, rawScore);
 
     return {
         finalScore: finalScore / 100,
@@ -176,7 +168,8 @@ async function performComprehensiveFactCheck(text) {
 }
 
 // --- Routes API ---
-app.get("/", (req, res) => res.send("✅ API Fact-Checker IA Pro V1.8 - Final"));
+app.get("/", (req, res) => res.send("✅ API Fact-Checker IA Pro - Version Finale"));
+
 app.post('/verify', async (req, res) => {
     try {
         const { text } = req.body;
@@ -190,4 +183,4 @@ app.post('/verify', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Fact-Checker IA Pro V1.8 démarré sur port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Fact-Checker IA Pro (V-Finale) démarré sur port ${PORT}`));
