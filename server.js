@@ -40,21 +40,22 @@ const initializeDb = async () => {
 
 function cleanText(text) {
     let cleaned = text.trim().replace(/\s+/g, ' ');
-    // **CORRECTION CLÉ** : On enlève les préfixes courants des IAs
-    cleaned = cleaned.replace(/^(ChatGPT a dit|Réponse de l'IA|Bien sûr|Voici|Clairement)\s*:\s*/i, '');
+    // **CORRECTION CLÉ** : On enlève les préfixes courants des IAs pour ne garder que le sujet
+    cleaned = cleaned.replace(/^(ChatGPT a dit|Réponse de l'IA|Bien sûr|Voici|Clairement|Selon mes informations)\s*:\s*/i, '');
     return cleaned.substring(0, 8000);
 }
 
 function extractKeywords(text) {
-    const stopWords = new Set(['le', 'la', 'les', 'un', 'une', 'des', 'et', 'ou', 'de', 'du', 'dans', 'sur', 'avec', 'par', 'pour', 'qui', 'que', 'the', 'and', 'or', 'of', 'est', 'sont', 'il']);
-    return text.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(word => word.length > 3 && !stopWords.has(word)).slice(0, 6);
+    const stopWords = new Set(['le', 'la', 'les', 'un', 'une', 'des', 'et', 'ou', 'de', 'du', 'dans', 'sur', 'avec', 'par', 'pour', 'qui', 'que', 'the', 'and', 'or', 'of', 'est', 'sont', 'il', 'elle']);
+    return text.toLowerCase().replace(/[^\w\sà-ÿ]/g, ' ').split(/\s+/).filter(word => word.length > 3 && !stopWords.has(word)).slice(0, 6);
 }
 
 function extractDomain(url) { try { return new URL(url).hostname.replace('www.', ''); } catch { return url; } }
+
 function extractIntelligentClaims(text) {
     const claims = [];
     claims.push(...(text.match(/[^.!?]*\b(?:19|20)\d{2}\b[^.!?]*/g) || []));
-    claims.push(...(text.match(/[^.!?]*\b[A-Z][a-z]+\s+[A-Z][a-z]+\b[^.!?]*/g) || []));
+    claims.push(...(text.match(/[^.!?]*\b[A-ZÀ-ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-ÿ][a-zà-ÿ]+){1,3}\b[^.!?]*/g) || []));
     claims.push(...(text.match(/[^.!?]*\d+(?:[.,]\d+)?(?:\s*%|€|$|millions?|milliards?)[^.!?]*/g) || []));
     if (claims.length < 2) { claims.push(...text.split(/[.!?]+/).filter(s => s.trim().length > 40)); }
     return [...new Set(claims.map(c => c.trim()).filter(c => c.length > 25))].slice(0, 4);
@@ -83,6 +84,7 @@ async function searchWikipedia(claimText) {
     }
     return sources;
 }
+
 async function getDomainSpecificSources(claimText) {
     const sources = [];
     const lowerText = claimText.toLowerCase();
@@ -92,6 +94,7 @@ async function getDomainSpecificSources(claimText) {
     if (lowerText.match(/\b(loi|droit|justice|législatif)\b/)) { sources.push({ title: "Légifrance", url: "https://www.legifrance.gouv.fr/", snippet: "Le service public de la diffusion du droit en France.", reliability: 0.99, sourceCategory: 'primary', isOfficialData: true }); }
     return sources;
 }
+
 async function getOfficialSources(claimText) {
     const sources = [];
     const lowerText = claimText.toLowerCase();
@@ -99,11 +102,13 @@ async function getOfficialSources(claimText) {
     if (lowerText.includes('france') && (lowerText.includes('population') || lowerText.includes('habitants'))) { sources.push({ title: "INSEE - Population de la France", url: "https://www.insee.fr/fr/statistiques/series/010565252", snippet: "Données démographiques officielles de l'Institut National de la Statistique.", reliability: 0.99, sourceCategory: 'primary', isOfficialData: true }); }
     return sources;
 }
+
 function deduplicateAndRankSources(sources) {
     const seen = new Map();
     sources.forEach(source => { const domain = extractDomain(source.url); if (!seen.has(domain)) { seen.set(domain, source); } });
     return Array.from(seen.values()).sort((a, b) => (b.reliability || 0) - (a.reliability || 0)).slice(0, 8);
 }
+
 function calculateConfidenceScore(claims, sources) {
     if (sources.length === 0) { return { score: 0.20, explanation: "Score faible. Aucune source externe n'a pu être trouvée pour vérifier les affirmations." }; }
     let score = 0.25;
@@ -118,6 +123,7 @@ function calculateConfidenceScore(claims, sources) {
     const explanation = generateScoringExplanation(finalScore, sources, qualitySources, categories);
     return { score: finalScore, explanation };
 }
+
 function generateScoringExplanation(finalScore, sources, qualitySources, categories) {
     const scorePercent = Math.round(finalScore * 100);
     let reason = `Score de ${scorePercent}% basé sur ${sources.length} source(s) trouvée(s).`;
@@ -126,6 +132,7 @@ function generateScoringExplanation(finalScore, sources, qualitySources, categor
     if (scorePercent < 40) { reason += " La faible pertinence ou le manque de sources fiables expliquent ce score bas." }
     return reason;
 }
+
 async function performComprehensiveFactCheck(text) {
     const cleanedText = cleanText(text);
     const claims = extractIntelligentClaims(cleanedText);
@@ -138,8 +145,8 @@ async function performComprehensiveFactCheck(text) {
     return { overallConfidence: score, sources: sources, extractedKeywords: keywords.slice(0, 5), contradictions: [], scoringExplanation: explanation };
 }
 
-// --- Routes API ---
 app.get("/", (req, res) => res.send("✅ API Fact-Checker IA Pro - Version avec Feedback"));
+
 app.post('/verify', async (req, res) => {
     try {
         const { text } = req.body;
@@ -151,6 +158,7 @@ app.post('/verify', async (req, res) => {
         res.status(500).json({ error: 'Échec de la vérification interne.' });
     }
 });
+
 app.post('/feedback', async (req, res) => {
     const { originalText, scoreGiven, isUseful, comment, sourcesFound } = req.body;
     if (originalText == null || scoreGiven == null || isUseful == null) { return res.status(400).json({ error: 'Données de feedback manquantes.' }); }
