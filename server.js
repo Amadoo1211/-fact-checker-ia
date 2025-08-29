@@ -1,4 +1,4 @@
-// server.js - VERSION FINALE CORRIGÉE - Logique de pertinence et scoring avancée
+// server.js - VERSION FINALE AVEC FEEDBACK & CORRECTION DE PERTINENCE
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
@@ -8,9 +8,7 @@ const app = express();
 app.use(cors({ origin: ['chrome-extension://*', 'https://fact-checker-ia-production.up.railway.app'] }));
 app.use(express.json());
 
-const API_HEADERS = {
-    'User-Agent': 'FactCheckerIA/2.3 (boud3285@gmail.com; https://github.com/Amadoo1211/-fact-checker-ia)'
-};
+const API_HEADERS = { 'User-Agent': 'FactCheckerIA/2.3 (boud3285@gmail.com; https://github.com/Amadoo1211/-fact-checker-ia)' };
 
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
@@ -34,45 +32,33 @@ function cleanTextForAnalysis(text) {
 
 function extractBestKeywords(text) {
     const stopWords = new Set(['le', 'la', 'les', 'un', 'une', 'des', 'et', 'ou', 'de', 'du', 'dans', 'sur', 'avec', 'par', 'pour', 'qui', 'que', 'est', 'sont', 'il', 'elle', 'a', 'été', 'dit', 'événement', 'chute']);
-    
-    // Priorité 1: Noms propres et lieux (ex: Mur de Berlin, Marie Curie, Guido van Rossum)
     let keywords = text.match(/\b[A-ZÀ-ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-ÿ][a-zà-ÿ]+){1,3}\b/g) || [];
-    
-    // Priorité 2: Dates (1989), acronymes (INSEE), et termes techniques (Python)
     keywords.push(...(text.match(/\b(19|20)\d{2}\b/g) || []));
-    keywords.push(...(text.match(/\b[A-Z]{2,}\b/g) || [])); // Acronymes comme INSEE, PIB...
+    keywords.push(...(text.match(/\b[A-Z]{2,}\b/g) || []));
     if (text.toLowerCase().includes('python')) keywords.push('Python');
-    
-    // Nettoyage final
-    let uniqueKeywords = [...new Set(keywords)];
-    let finalKeywords = uniqueKeywords.filter(kw => !stopWords.has(kw.toLowerCase()));
-
-    // Si après tout ça il n'y a rien, on prend les mots longs en dernier recours
+    let finalKeywords = [...new Set(keywords)].filter(kw => !stopWords.has(kw.toLowerCase()));
     if (finalKeywords.length === 0) {
-        finalKeywords = text.toLowerCase().replace(/[^\w\sà-ÿ]/g, ' ').split(/\s+/)
-            .filter(word => word.length > 5 && !stopWords.has(word));
+        finalKeywords = text.toLowerCase().replace(/[^\w\sà-ÿ]/g, ' ').split(/\s+/).filter(word => word.length > 5 && !stopWords.has(word));
     }
-    
     console.log(`Mots-clés extraits: [${finalKeywords.slice(0, 5).join(', ')}]`);
     return finalKeywords.slice(0, 5);
 }
 
 async function searchWikipedia(query) {
     const sources = [];
+    if (!query) return sources;
     for (const lang of ['fr', 'en']) {
         try {
-            if (!query) continue;
-            const url = `https://${lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*&srlimit=2`;
+            const url = `https://${lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*&srlimit=1`;
             const res = await fetch(url, { headers: API_HEADERS });
             const data = await res.json();
-            if (data.query?.search) {
-                for (const article of data.query.search.slice(0, 1)) { // On ne prend que le 1er résultat, le plus pertinent
-                    const summaryUrl = `https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(article.title)}`;
-                    const summaryRes = await fetch(summaryUrl, { headers: API_HEADERS });
-                    if (summaryRes.ok) {
-                        const d = await summaryRes.json();
-                        sources.push({ title: `Wikipedia (${lang.toUpperCase()}): ${d.title}`, url: d.content_urls.desktop.page, snippet: (d.extract || "").substring(0, 250) + '...', reliability: 0.85, sourceCategory: 'encyclopedia' });
-                    }
+            if (data.query?.search && data.query.search.length > 0) {
+                const article = data.query.search[0];
+                const summaryUrl = `https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(article.title)}`;
+                const summaryRes = await fetch(summaryUrl, { headers: API_HEADERS });
+                if (summaryRes.ok) {
+                    const d = await summaryRes.json();
+                    sources.push({ title: `Wikipedia (${lang.toUpperCase()}): ${d.title}`, url: d.content_urls.desktop.page, snippet: (d.extract || "").substring(0, 250) + '...', reliability: 0.85, sourceCategory: 'encyclopedia' });
                 }
             }
         } catch (e) { console.warn(`Wikipedia search failed for lang ${lang}:`, e); }
@@ -81,6 +67,7 @@ async function searchWikipedia(query) {
 }
 
 async function getDomainSpecificSources(claimText) {
+    // ... (cette fonction reste la même, elle est déjà bien)
     const sources = [];
     const lowerText = claimText.toLowerCase();
     if (lowerText.match(/\b(python|javascript|java|code|api)\b/)) { sources.push({ title: "MDN Web Docs", url: "https://developer.mozilla.org/", snippet: "Documentation de référence pour les développeurs web.", reliability: 0.96, sourceCategory: 'technical', isOfficialData: true }); }
@@ -89,6 +76,7 @@ async function getDomainSpecificSources(claimText) {
 }
 
 async function getOfficialSources(claimText) {
+    // ... (cette fonction reste la même)
     const sources = [];
     const lowerText = claimText.toLowerCase();
     if (lowerText.includes('marie') && lowerText.includes('curie')) { sources.push({ title: "The Nobel Prize: Marie Curie Facts", url: "https://www.nobelprize.org/prizes/physics/1903/marie-curie/facts/", snippet: "Biographie et faits officiels sur Marie Curie par la Fondation Nobel.", reliability: 0.98, sourceCategory: 'primary', isOfficialData: true }); }
@@ -98,11 +86,11 @@ async function getOfficialSources(claimText) {
 
 function deduplicateAndRankSources(sources) {
     const seen = new Map();
-    sources.forEach(source => { const domain = extractDomain(source.url); if (!seen.has(domain)) { seen.set(domain, source); } });
+    sources.forEach(source => { const domain = new URL(source.url).hostname; if (!seen.has(domain)) { seen.set(domain, source); } });
     return Array.from(seen.values()).sort((a, b) => (b.reliability || 0) - (a.reliability || 0)).slice(0, 8);
 }
 
-function calculateConfidenceScore(keywords, sources) {
+function calculateConfidenceScore(sources) {
     if (sources.length === 0) { return { score: 0.23, explanation: "Score de 23% basé sur 0 source(s) trouvée(s). La faible pertinence ou le manque de sources fiables expliquent ce score bas." }; }
     let score = 0.25;
     const qualitySources = sources.filter(s => s.isOfficialData || s.reliability > 0.9);
@@ -130,7 +118,7 @@ async function performComprehensiveFactCheck(text) {
     const sourcePromises = [searchWikipedia(keywords.join(' ')), ...keywords.map(kw => getDomainSpecificSources(kw)), ...keywords.map(kw => getOfficialSources(kw))];
     const allSourcesNested = await Promise.all(sourcePromises);
     const sources = deduplicateAndRankSources(allSourcesNested.flat().filter(Boolean));
-    const { score, explanation } = calculateConfidenceScore(keywords, sources);
+    const { score, explanation } = calculateConfidenceScore(sources);
     return { overallConfidence: score, sources: sources, extractedKeywords: keywords, contradictions: [], scoringExplanation: explanation };
 }
 
