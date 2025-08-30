@@ -1,11 +1,10 @@
-// server.js - VERSION 9.0 - FINALE STABLE
+// server.js - PYRAMIDE DE CONFIANCE - VERSION SIMPLE ET EFFICACE
 const express = require('express');
 const cors = require('cors');
-const fetch = require('node-fetch');
 const { Pool } = require('pg');
 const app = express();
 
-app.use(cors({ origin: ['chrome-extension://*'] }));
+app.use(cors({ origin: ['chrome-extension://*', 'https://fact-checker-ia-production.up.railway.app'] }));
 app.use(express.json());
 
 const pool = new Pool({
@@ -13,99 +12,219 @@ const pool = new Pool({
     ssl: { rejectUnauthorized: false }
 });
 
-const API_HEADERS = { 'User-Agent': 'FactCheckerIA/9.0 (boud3285@gmail.com)' };
+// Initialisation DB
+const initDb = async () => {
+    try {
+        const client = await pool.connect();
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS feedback (
+                id SERIAL PRIMARY KEY,
+                original_text TEXT,
+                score_given REAL,
+                is_useful BOOLEAN,
+                comment TEXT,
+                sources_found JSONB,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        client.release();
+        console.log('✅ DB prête');
+    } catch (err) {
+        console.error('Erreur DB:', err);
+    }
+};
 
-// FILTRE À OPINIONS (LOGIQUE INVERSÉE)
-function isFactCheckable(text) {
-    const textLower = text.toLowerCase();
-    const nonFactualIndicators = [
-        'je pense que', 'à mon avis', 'selon moi', 'il me semble', 'je crois que', 'un plaisir', 'j\'aime', 'personnellement',
-        'how can i help', 'hello!', 'bonjour!', 'je suis là pour vous aider', 'looks like you\'re testing'
+// ========== PYRAMIDE DE CONFIANCE ==========
+
+// ÉTAGE 1 : Détection Non-Factuel (10%)
+function isOpinion(text) {
+    const lower = text.toLowerCase();
+    const opinionMarkers = [
+        'je pense', 'je crois', 'à mon avis', 'selon moi', 
+        'j\'aime', 'c\'est agréable', 'les gens aiment',
+        'hello', 'bonjour', 'comment allez-vous'
     ];
-    if (nonFactualIndicators.some(i => textLower.includes(i))) return false;
-    const hasFactualClues = /\d/.test(text) || /\b[A-Z][a-z]{4,}/.test(text);
-    if (text.split(' ').length < 15 && !hasFactualClues) return false;
-    return true;
+    
+    // Si c'est une opinion ou conversation
+    if (opinionMarkers.some(marker => lower.includes(marker))) {
+        return true;
+    }
+    
+    // Si trop court et sans éléments factuels
+    if (text.length < 50 && !(/\d{4}/.test(text)) && !(/[A-Z][a-z]+\s+[A-Z]/.test(text))) {
+        return true;
+    }
+    
+    return false;
 }
 
-// EXTRACTION DE MOTS-CLÉS (POUR LE CLIENT)
-function extractKeywordsForClient(text) {
-    let keywords = (text.match(/\b[A-ZÀ-Ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ][a-zà-ÿ]+){0,2}\b/g) || []);
-    keywords = keywords.filter(k => k.length > 4 && k.toLowerCase() !== 'france');
-    if (keywords.length < 2) {
-        const generalWords = (text.match(/\b\w{7,}\b/g) || []);
-        keywords.push(...generalWords);
+// ÉTAGE 2-3-4 : Recherche de sources
+function findExpertSources(text) {
+    const lower = text.toLowerCase();
+    const sources = [];
+    
+    // Marie Curie
+    if (lower.includes('marie curie') || (lower.includes('marie') && lower.includes('nobel'))) {
+        sources.push({
+            title: "Nobel Prize - Marie Curie",
+            url: "https://www.nobelprize.org/prizes/physics/1903/marie-curie/",
+            snippet: "Marie Curie fut la première femme Prix Nobel en 1903.",
+            type: 'expert'
+        });
     }
-    const unique = [...new Set(keywords.map(k => k.toLowerCase().trim()))];
-    console.log('Mots-clés extraits pour client:', unique.slice(0, 3));
-    return unique.slice(0, 3);
+    
+    // Population France / INSEE
+    if ((lower.includes('population') && lower.includes('france')) || 
+        lower.includes('insee') || 
+        lower.includes('68 million')) {
+        sources.push({
+            title: "INSEE - Population France",
+            url: "https://www.insee.fr/fr/statistiques/",
+            snippet: "Population française : 68 millions d'habitants (2024)",
+            type: 'expert'
+        });
+    }
+    
+    // Climat / GIEC
+    if (lower.includes('giec') || 
+        lower.includes('ipcc') || 
+        (lower.includes('climat') && lower.includes('réchauffement')) ||
+        lower.includes('1.1°c')) {
+        sources.push({
+            title: "GIEC - Rapport Climat",
+            url: "https://www.ipcc.ch/",
+            snippet: "Réchauffement global de +1.1°C confirmé",
+            type: 'expert'
+        });
+    }
+    
+    return sources;
 }
 
-// FONCTION PRINCIPALE DU SERVEUR
-async function performExpertCheck(text) {
-    if (!isFactCheckable(text)) {
-        return {
-            status: 'NON_FACTUAL',
-            overallConfidence: 0.10,
-            sources: [],
-            scoringExplanation: "**Contenu non factuel**. Ce texte semble être une opinion ou une conversation."
-        };
-    }
+function extractMainKeywords(text) {
+    // Extraction simple et directe des mots importants
+    const entities = text.match(/\b[A-ZÀ-Ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ][a-zà-ÿ]+){0,2}\b/g) || [];
+    const years = text.match(/\b(19|20)\d{2}\b/g) || [];
+    
+    let keywords = [...entities, ...years]
+        .filter(k => k && k.length > 3)
+        .filter(k => !['Oui', 'Non', 'Cette', 'Voici'].includes(k));
+    
+    // Déduplication
+    keywords = [...new Set(keywords)].slice(0, 3);
+    
+    console.log('Mots-clés:', keywords);
+    return keywords;
+}
 
-    const textLower = text.toLowerCase();
-    const expertSources = [];
-
-    if (textLower.includes('insee') || (textLower.includes('population') && textLower.includes('france'))) {
-        expertSources.push({ title: "INSEE - Population française officielle", url: "https://www.insee.fr/fr/statistiques/1893198", snippet: "L'INSEE fournit les données démographiques officielles pour la France.", sourceCategory: 'expert' });
-    }
-    if (textLower.includes('giec') || textLower.includes('climat') || textLower.includes('réchauffement')) {
-        expertSources.push({ title: "GIEC - Rapports d'évaluation sur le climat", url: "https://www.ipcc.ch/reports/", snippet: "Le GIEC est l'organe de l'ONU chargé d'évaluer la science relative au changement climatique.", sourceCategory: 'expert' });
-    }
-
+// CALCUL DU SCORE FINAL
+function calculateScore(expertSources, wikiCount, keywords) {
+    // ÉTAGE 4 : Sources expertes (85-95%)
     if (expertSources.length > 0) {
+        if (wikiCount > 0) {
+            return {
+                score: 0.95,
+                explanation: "**Excellente fiabilité** (95%). Source officielle + Wikipedia confirment."
+            };
+        }
         return {
-            status: 'EXPERT_SUCCESS',
-            overallConfidence: 0.85,
-            sources: expertSources,
-            scoringExplanation: "Score: 85%. La présence d'une source officielle confère une très haute fiabilité."
-        };
-    } else {
-        return {
-            status: 'CLIENT_SEARCH_REQUIRED',
-            keywords: extractKeywordsForClient(text)
+            score: 0.85,
+            explanation: "**Très fiable** (85%). Confirmé par source officielle."
         };
     }
+    
+    // ÉTAGE 3 : Wikipedia seul (50-75%)
+    if (wikiCount >= 2) {
+        return {
+            score: 0.75,
+            explanation: "**Fiable** (75%). Plusieurs sources Wikipedia concordent."
+        };
+    }
+    if (wikiCount === 1) {
+        return {
+            score: 0.65,
+            explanation: "**Fiabilité correcte** (65%). Une source Wikipedia trouvée."
+        };
+    }
+    
+    // ÉTAGE 2 : Aucune source
+    return {
+        score: 0.20,
+        explanation: "**Faible fiabilité** (20%). Aucune source externe trouvée."
+    };
 }
 
-// ROUTES EXPRESS
-app.get("/", (req, res) => res.send("✅ Fact-Checker API v9.0 - Finale"));
-
+// ========== ROUTE PRINCIPALE ==========
 app.post('/verify', async (req, res) => {
     try {
-        let { text } = req.body;
-        if (!text || text.length < 20) return res.status(400).json({ error: 'Texte trop court' });
-        // Nettoyage du texte potentiellement "sale"
-        text = text.replace(/Regenerate response/gi, '').trim();
-        const result = await performExpertCheck(text);
-        res.json(result);
+        const { text } = req.body;
+        
+        if (!text || text.length < 20) {
+            return res.json({
+                overallConfidence: 0.15,
+                sources: [],
+                scoringExplanation: "Texte trop court pour analyse.",
+                keywords: []
+            });
+        }
+        
+        // ÉTAGE 1 : Filtre opinion
+        if (isOpinion(text)) {
+            return res.json({
+                overallConfidence: 0.10,
+                sources: [],
+                scoringExplanation: "**Non factuel** (10%). Opinion ou conversation détectée.",
+                keywords: []
+            });
+        }
+        
+        // ÉTAGE 2-4 : Recherche sources
+        const expertSources = findExpertSources(text);
+        const keywords = extractMainKeywords(text);
+        
+        // Pour le moment, on simule 0 Wikipedia (le client fera la vraie recherche)
+        const { score, explanation } = calculateScore(expertSources, 0, keywords);
+        
+        res.json({
+            overallConfidence: score,
+            sources: expertSources,
+            scoringExplanation: explanation,
+            keywords: keywords,
+            needsWikipedia: true // Signal pour le client
+        });
+        
     } catch (error) {
-        res.status(500).json({ error: "Erreur interne du serveur" });
+        console.error('Erreur:', error);
+        res.json({
+            overallConfidence: 0.25,
+            sources: [],
+            scoringExplanation: "Erreur d'analyse.",
+            keywords: []
+        });
     }
 });
 
+// Route feedback
 app.post('/feedback', async (req, res) => {
-    const { originalText, scoreGiven, isUseful, comment, sourcesFound } = req.body;
     try {
+        const { originalText, scoreGiven, isUseful, comment, sourcesFound } = req.body;
         const client = await pool.connect();
-        await client.query( `INSERT INTO feedback(original_text, score_given, is_useful, comment, sources_found) VALUES($1,$2,$3,$4,$5)`,
-            [originalText, scoreGiven, isUseful, comment, JSON.stringify(sourcesFound)]
+        await client.query(
+            'INSERT INTO feedback(original_text, score_given, is_useful, comment, sources_found) VALUES($1,$2,$3,$4,$5)',
+            [originalText?.substring(0, 5000), scoreGiven, isUseful, comment, JSON.stringify(sourcesFound)]
         );
         client.release();
         res.json({ success: true });
     } catch (err) {
-        res.status(500).json({ error: 'Erreur sauvegarde feedback' });
+        console.error('Erreur feedback:', err);
+        res.status(500).json({ error: 'Erreur' });
     }
 });
 
+app.get('/', (req, res) => res.send('✅ Fact-Checker API - Pyramide v1.0'));
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => { console.log(`🚀 Fact-Checker v9.0 (Finale) sur port ${PORT}`); });
+app.listen(PORT, () => {
+    console.log(`🚀 Pyramide de Confiance sur port ${PORT}`);
+    initDb();
+});
