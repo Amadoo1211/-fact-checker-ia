@@ -1,4 +1,4 @@
-// server.js - VERSION FINALE AVEC GOOGLE SEARCH ET FILTRE AMÉLIORÉ
+const fetch = require('node-fetch');// server.js - VERSION FINALE AVEC GOOGLE SEARCH ET FILTRE AMÉLIORÉ
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
