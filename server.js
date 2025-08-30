@@ -75,7 +75,7 @@ function isOpinionOrNonFactual(text) {
     if (opinionMarkers.some(marker => textWithoutAIQuestion.includes(marker))) return true;
     
     // NOUVELLE DÉTECTION : goûts et préférences avec regex
-    if (textWithoutAIQuestion.match(/\b(j'aime|j'adore|je préfère|je déteste|j'apprécie|je n'aime pas)\b/i)) {
+    if (textWithoutAIQuestion.match(/\b(j'aime|j'adore|je préfère|je déteste|j'apprécie|je n'aime pas|j aime)\b/i)) {
         return true;
     }
     
@@ -134,7 +134,7 @@ app.post('/verify', async (req, res) => {
             return res.json({ overallConfidence: 0.15, scoringExplanation: "Texte trop court.", keywords: [] });
         }
         if (isOpinionOrNonFactual(text)) {
-            return res.json({ overallConfidence: 0.10, scoringExplanation: "**Non factuel** (10%). Opinion, question ou contenu non vérifiable.", keywords: [] });
+            return res.json({ overallConfidence: 0.25, scoringExplanation: "**Opinion/Non factuel** (25%). Contenu subjectif non vérifiable.", keywords: [] });
         }
         
         const keywords = extractMainKeywords(text);
