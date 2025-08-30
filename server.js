@@ -1,4 +1,4 @@
-// server.js - VERSION 8.0 - ARCHITECTURE FINALE STABLE
+// server.js - VERSION 9.0 - FINALE STABLE
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
@@ -13,6 +13,8 @@ const pool = new Pool({
     ssl: { rejectUnauthorized: false }
 });
 
+const API_HEADERS = { 'User-Agent': 'FactCheckerIA/9.0 (boud3285@gmail.com)' };
+
 // FILTRE À OPINIONS (LOGIQUE INVERSÉE)
 function isFactCheckable(text) {
     const textLower = text.toLowerCase();
@@ -21,12 +23,8 @@ function isFactCheckable(text) {
         'how can i help', 'hello!', 'bonjour!', 'je suis là pour vous aider', 'looks like you\'re testing'
     ];
     if (nonFactualIndicators.some(i => textLower.includes(i))) return false;
-
-    // Doit contenir au moins un chiffre ou un nom propre pour être considéré comme factuel
     const hasFactualClues = /\d/.test(text) || /\b[A-Z][a-z]{4,}/.test(text);
-    if (text.split(' ').length < 15 && !hasFactualClues) {
-        return false;
-    }
+    if (text.split(' ').length < 15 && !hasFactualClues) return false;
     return true;
 }
 
@@ -34,17 +32,17 @@ function isFactCheckable(text) {
 function extractKeywordsForClient(text) {
     let keywords = (text.match(/\b[A-ZÀ-Ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ][a-zà-ÿ]+){0,2}\b/g) || []);
     keywords = keywords.filter(k => k.length > 4 && k.toLowerCase() !== 'france');
-    if (keywords.length === 0) {
-        keywords = (text.match(/\b\w{7,}\b/g) || []).slice(0, 3);
+    if (keywords.length < 2) {
+        const generalWords = (text.match(/\b\w{7,}\b/g) || []);
+        keywords.push(...generalWords);
     }
-    const unique = [...new Set(keywords.map(k => k.toLowerCase()))];
+    const unique = [...new Set(keywords.map(k => k.toLowerCase().trim()))];
     console.log('Mots-clés extraits pour client:', unique.slice(0, 3));
     return unique.slice(0, 3);
 }
 
 // FONCTION PRINCIPALE DU SERVEUR
 async function performExpertCheck(text) {
-    // Étape 1: Filtre à opinions
     if (!isFactCheckable(text)) {
         return {
             status: 'NON_FACTUAL',
@@ -57,7 +55,6 @@ async function performExpertCheck(text) {
     const textLower = text.toLowerCase();
     const expertSources = [];
 
-    // Étape 2: Recherche "Experte"
     if (textLower.includes('insee') || (textLower.includes('population') && textLower.includes('france'))) {
         expertSources.push({ title: "INSEE - Population française officielle", url: "https://www.insee.fr/fr/statistiques/1893198", snippet: "L'INSEE fournit les données démographiques officielles pour la France.", sourceCategory: 'expert' });
     }
@@ -65,17 +62,14 @@ async function performExpertCheck(text) {
         expertSources.push({ title: "GIEC - Rapports d'évaluation sur le climat", url: "https://www.ipcc.ch/reports/", snippet: "Le GIEC est l'organe de l'ONU chargé d'évaluer la science relative au changement climatique.", sourceCategory: 'expert' });
     }
 
-    // Étape 3: Décision
     if (expertSources.length > 0) {
-        // Cas A: L'expert a trouvé quelque chose, il renvoie le résultat complet.
         return {
             status: 'EXPERT_SUCCESS',
-            overallConfidence: 0.85, // Le client pourra l'augmenter à 95% s'il trouve aussi du Wiki
+            overallConfidence: 0.85,
             sources: expertSources,
             scoringExplanation: "Score: 85%. La présence d'une source officielle confère une très haute fiabilité."
         };
     } else {
-        // Cas B: Ce n'est pas la spécialité de l'expert, il délègue au client.
         return {
             status: 'CLIENT_SEARCH_REQUIRED',
             keywords: extractKeywordsForClient(text)
@@ -84,12 +78,14 @@ async function performExpertCheck(text) {
 }
 
 // ROUTES EXPRESS
-app.get("/", (req, res) => res.send("✅ Fact-Checker API v8.0 - Architecture Finale"));
+app.get("/", (req, res) => res.send("✅ Fact-Checker API v9.0 - Finale"));
 
 app.post('/verify', async (req, res) => {
     try {
-        const { text } = req.body;
-        if (!text || text.length < 10) return res.status(400).json({ error: 'Texte trop court' });
+        let { text } = req.body;
+        if (!text || text.length < 20) return res.status(400).json({ error: 'Texte trop court' });
+        // Nettoyage du texte potentiellement "sale"
+        text = text.replace(/Regenerate response/gi, '').trim();
         const result = await performExpertCheck(text);
         res.json(result);
     } catch (error) {
@@ -101,8 +97,7 @@ app.post('/feedback', async (req, res) => {
     const { originalText, scoreGiven, isUseful, comment, sourcesFound } = req.body;
     try {
         const client = await pool.connect();
-        await client.query(
-            `INSERT INTO feedback(original_text, score_given, is_useful, comment, sources_found) VALUES($1,$2,$3,$4,$5)`,
+        await client.query( `INSERT INTO feedback(original_text, score_given, is_useful, comment, sources_found) VALUES($1,$2,$3,$4,$5)`,
             [originalText, scoreGiven, isUseful, comment, JSON.stringify(sourcesFound)]
         );
         client.release();
@@ -113,6 +108,4 @@ app.post('/feedback', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`🚀 Fact-Checker v8.0 (Architecture Finale) sur port ${PORT}`);
-});
+app.listen(PORT, () => { console.log(`🚀 Fact-Checker v9.0 (Finale) sur port ${PORT}`); });
