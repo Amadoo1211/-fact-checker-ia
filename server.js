@@ -1,21 +1,20 @@
-// server.js - PYRAMIDE DE CONFIANCE - VERSION CORRIGÉE
+// server.js - PYRAMIDE DE CONFIANCE - VERSION AVEC DÉBOGAGE
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 const app = express();
 
 // Configuration
-// Laisser cette configuration CORS, elle est importante pour la sécurité.
 app.use(cors({ origin: ['chrome-extension://*', 'https://fact-checker-ia-production.up.railway.app'] }));
 app.use(express.json());
 
-// Connexion à la base de données (aucune modification nécessaire)
+// Connexion à la base de données
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false }
 });
 
-// Initialisation de la base de données (aucune modification nécessaire)
+// Initialisation de la base de données
 const initDb = async () => {
     try {
         const client = await pool.connect();
@@ -38,40 +37,43 @@ const initDb = async () => {
 };
 
 // ===================================================================
-//                 LA FONCTION CORRIGÉE (LE COEUR DU PROBLÈME)
+//                 LA FONCTION MODIFIÉE POUR LE DÉBOGAGE
 // ===================================================================
 
 function extractMainKeywords(text) {
-    // Nettoyer le texte
+    // --- NOS ESPIONS ---
+    console.log("--- DÉBUT DU DÉBUG ---");
+    console.log("1. Texte brut reçu :", JSON.stringify(text)); // Affiche le texte brut avec les caractères invisibles
+
     const cleaned = text.replace(/['']/g, "'").substring(0, 500);
-    
+    console.log("2. Texte après nettoyage :", JSON.stringify(cleaned)); // Affiche le texte nettoyé
+
+    // Le reste de la fonction est inchangé
     const keywords = [];
     
-    // Noms propres (Ex: "Emmanuel Macron", "Tour Eiffel")
     const properNouns = cleaned.match(/\b[A-ZÀ-Ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ][a-zà-ÿ]+){0,2}\b/g) || [];
     keywords.push(...properNouns);
     
-    // Années (Ex: "1889", "2017")
     const years = cleaned.match(/\b(19|20)\d{2}\b/g) || [];
     keywords.push(...years);
     
-    // Mots techniques longs (Ex: "République", "Exposition")
-    // On prend les 3 plus longs pour éviter le bruit
     const technical = cleaned.match(/\b[A-Za-zÀ-ÿ]{7,}\b/g) || [];
     keywords.push(...technical.slice(0, 3));
     
-    // Filtrer et dédupliquer pour n'garder que les 5 meilleurs
     const unique = [...new Set(keywords)]
         .filter(k => k && k.length > 3)
         .filter(k => !['Oui', 'Non', 'Cette', 'Voici', 'Selon', 'C’est', 'exact'].includes(k))
         .slice(0, 5); 
     
-    console.log('Mots-clés extraits:', unique);
+    console.log("3. Mots-clés finaux :", unique);
+    console.log("--- FIN DU DÉBUG ---");
+    
     return unique;
 }
 
+
 // ===================================================================
-//         LE RESTE DE LA LOGIQUE SERVEUR (PEU DE CHANGEMENTS)
+//         LE RESTE DE LA LOGIQUE SERVEUR (INCHANGÉ)
 // ===================================================================
 
 // ÉTAGE 1 : Détection Non-Factuel (Opinion, conversation...)
@@ -87,8 +89,6 @@ function isOpinion(text) {
 }
 
 // ÉTAGE 2-4 : Recherche de sources expertes (Limité mais fonctionnel)
-// NOTE : Cette fonction est très limitée, elle ne connaît que 3 sujets.
-// C'est une piste d'amélioration pour le futur, mais ce n'est pas un bug.
 function findExpertSources(text) {
     const lower = text.toLowerCase();
     const sources = [];
@@ -117,11 +117,8 @@ app.post('/verify', async (req, res) => {
         }
         
         const expertSources = findExpertSources(text);
-        // On utilise la NOUVELLE fonction ici !
         const keywords = extractMainKeywords(text);
         
-        // Le serveur donne un score de base de 20% si aucune source experte n'est trouvée.
-        // Le client (popup.js) recalculera le vrai score après la recherche Wikipedia.
         const initialScore = expertSources.length > 0 ? 0.85 : 0.20;
         const initialExplanation = expertSources.length > 0 ? "**Très fiable** (85%). Confirmé par source officielle." : "**Faible fiabilité** (20%). Aucune source externe trouvée.";
 
@@ -138,7 +135,7 @@ app.post('/verify', async (req, res) => {
     }
 });
 
-// Route feedback (aucune modification nécessaire)
+// Route feedback
 app.post('/feedback', async (req, res) => {
     try {
         const { originalText, scoreGiven, isUseful, comment, sourcesFound } = req.body;
