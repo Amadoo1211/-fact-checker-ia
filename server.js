@@ -1,4 +1,4 @@
-// server.js - PYRAMIDE DE CONFIANCE - VERSION AVEC DÉBOGAGE
+// server.js - VERSION DÉFINITIVE ET CORRIGÉE
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
@@ -37,37 +37,35 @@ const initDb = async () => {
 };
 
 // ===================================================================
-//                 LA FONCTION MODIFIÉE POUR LE DÉBOGAGE
+//              LA NOUVELLE FONCTION D'EXTRACTION (ROBUSTE)
 // ===================================================================
 
 function extractMainKeywords(text) {
-    // --- NOS ESPIONS ---
-    console.log("--- DÉBUT DU DÉBUG ---");
-    console.log("1. Texte brut reçu :", JSON.stringify(text)); // Affiche le texte brut avec les caractères invisibles
-
-    const cleaned = text.replace(/['']/g, "'").substring(0, 500);
-    console.log("2. Texte après nettoyage :", JSON.stringify(cleaned)); // Affiche le texte nettoyé
-
-    // Le reste de la fonction est inchangé
+    // Nettoyage initial du texte
+    const cleaned = text.normalize('NFC').replace(/['’]/g, "'").substring(0, 500);
+    
     const keywords = [];
     
-    const properNouns = cleaned.match(/\b[A-ZÀ-Ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ][a-zà-ÿ]+){0,2}\b/g) || [];
+    // Noms propres (Ex: "Emmanuel Macron") - Version Unicode robuste
+    // \p{Lu} = Lettre Majuscule, \p{Ll} = Lettre Minuscule, u = flag Unicode
+    const properNouns = cleaned.match(/\b\p{Lu}\p{Ll}+(?:\s+\p{Lu}\p{Ll}+){0,2}\b/gu) || [];
     keywords.push(...properNouns);
     
+    // Années (Ex: "1889", "2017")
     const years = cleaned.match(/\b(19|20)\d{2}\b/g) || [];
     keywords.push(...years);
     
-    const technical = cleaned.match(/\b[A-Za-zÀ-ÿ]{7,}\b/g) || [];
-    keywords.push(...technical.slice(0, 3));
+    // Mots importants (plus de 6 lettres) - Version Unicode robuste
+    const importantWords = cleaned.match(/\b\p{L}{6,}\b/gu) || [];
+    keywords.push(...importantWords.slice(0, 3));
     
+    // Filtrage final pour ne garder que les 5 meilleurs mots-clés
     const unique = [...new Set(keywords)]
         .filter(k => k && k.length > 3)
-        .filter(k => !['Oui', 'Non', 'Cette', 'Voici', 'Selon', 'C’est', 'exact'].includes(k))
-        .slice(0, 5); 
+        .filter(k => !/^(Oui|Non|Cette|Voici|Selon|C’est|exact|depuis|pour)$/i.test(k))
+        .slice(0, 5);
     
-    console.log("3. Mots-clés finaux :", unique);
-    console.log("--- FIN DU DÉBUG ---");
-    
+    console.log('Mots-clés extraits (version corrigée):', unique);
     return unique;
 }
 
@@ -76,19 +74,14 @@ function extractMainKeywords(text) {
 //         LE RESTE DE LA LOGIQUE SERVEUR (INCHANGÉ)
 // ===================================================================
 
-// ÉTAGE 1 : Détection Non-Factuel (Opinion, conversation...)
 function isOpinion(text) {
     const lower = text.toLowerCase();
-    const opinionMarkers = [
-        'je pense', 'je crois', 'à mon avis', 'selon moi', 
-        'j\'aime', 'je déteste', 'c\'est super', 'hello', 'bonjour'
-    ];
+    const opinionMarkers = [ 'je pense', 'je crois', 'à mon avis', 'selon moi', 'j\'aime', 'je déteste', 'c\'est super', 'hello', 'bonjour' ];
     if (opinionMarkers.some(marker => lower.includes(marker))) return true;
     if (text.length < 50 && !(/\d{4}/.test(text)) && !(/[A-Z][a-z]+\s+[A-Z]/.test(text))) return true;
     return false;
 }
 
-// ÉTAGE 2-4 : Recherche de sources expertes (Limité mais fonctionnel)
 function findExpertSources(text) {
     const lower = text.toLowerCase();
     const sources = [];
@@ -104,38 +97,31 @@ function findExpertSources(text) {
     return sources;
 }
 
-// Route principale /verify
 app.post('/verify', async (req, res) => {
     try {
         const { text } = req.body;
         if (!text || text.length < 20) {
             return res.json({ overallConfidence: 0.15, sources: [], scoringExplanation: "Texte trop court pour analyse.", keywords: [] });
         }
-
         if (isOpinion(text)) {
             return res.json({ overallConfidence: 0.10, sources: [], scoringExplanation: "**Non factuel** (10%). Opinion ou conversation détectée.", keywords: [] });
         }
-        
         const expertSources = findExpertSources(text);
         const keywords = extractMainKeywords(text);
-        
         const initialScore = expertSources.length > 0 ? 0.85 : 0.20;
         const initialExplanation = expertSources.length > 0 ? "**Très fiable** (85%). Confirmé par source officielle." : "**Faible fiabilité** (20%). Aucune source externe trouvée.";
-
         res.json({
             overallConfidence: initialScore,
             sources: expertSources,
             scoringExplanation: initialExplanation,
             keywords: keywords
         });
-        
     } catch (error) {
         console.error('Erreur:', error);
         res.status(500).json({ scoringExplanation: "Erreur d'analyse serveur." });
     }
 });
 
-// Route feedback
 app.post('/feedback', async (req, res) => {
     try {
         const { originalText, scoreGiven, isUseful, comment, sourcesFound } = req.body;
@@ -152,7 +138,6 @@ app.post('/feedback', async (req, res) => {
     }
 });
 
-// Démarrage du serveur
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`🚀 Pyramide de Confiance sur port ${PORT}`);
