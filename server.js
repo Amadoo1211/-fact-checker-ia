@@ -39,10 +39,20 @@ const initDb = async () => {
 // ÉTAGE 1 : Détection Non-Factuel (10%)
 function isOpinion(text) {
     const lower = text.toLowerCase();
+    
+    // Détecter le charabia / test
+    if (lower.match(/\b(dgfh|asdf|qwer|xyz|abc)\b/) || 
+        lower.match(/test\s+test/) ||
+        lower.match(/\?{3,}/) ||
+        lower.match(/\d{5,}/) ||
+        (text.match(/[a-z]{8,}/gi) || []).some(word => !/[aeiou]/i.test(word))) {
+        return true; // C'est du charabia
+    }
+    
     const opinionMarkers = [
         'je pense', 'je crois', 'à mon avis', 'selon moi', 
         'j\'aime', 'c\'est agréable', 'les gens aiment',
-        'hello', 'bonjour', 'comment allez-vous'
+        'hello', 'bonjour', 'comment allez-vous', 'testing'
     ];
     
     // Si c'est une opinion ou conversation
