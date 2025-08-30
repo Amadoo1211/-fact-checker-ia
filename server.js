@@ -112,19 +112,32 @@ function findExpertSources(text) {
 }
 
 function extractMainKeywords(text) {
-    // Extraction simple et directe des mots importants
-    const entities = text.match(/\b[A-ZÀ-Ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ][a-zà-ÿ]+){0,2}\b/g) || [];
-    const years = text.match(/\b(19|20)\d{2}\b/g) || [];
+    // Nettoyer le texte
+    const cleaned = text.replace(/['']/g, "'").substring(0, 500);
     
-    let keywords = [...entities, ...years]
+    // Extraire TOUS les mots importants
+    const keywords = [];
+    
+    // Noms propres (2-3 mots)
+    const properNouns = cleaned.match(/\b[A-ZÀ-Ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ][a-zà-ÿ]+){0,2}\b/g) || [];
+    keywords.push(...properNouns);
+    
+    // Années
+    const years = cleaned.match(/\b(19|20)\d{2}\b/g) || [];
+    keywords.push(...years);
+    
+    // Mots techniques longs
+    const technical = cleaned.match(/\b[A-Za-zÀ-ÿ]{7,}\b/g) || [];
+    keywords.push(...technical.slice(0, 3));
+    
+    // Filtrer et dédupliquer
+    const unique = [...new Set(keywords)]
         .filter(k => k && k.length > 3)
-        .filter(k => !['Oui', 'Non', 'Cette', 'Voici'].includes(k));
+        .filter(k => !['Oui', 'Non', 'Cette', 'Voici', 'Selon'].includes(k))
+        .slice(0, 5); // Augmenter à 5 mots-clés
     
-    // Déduplication
-    keywords = [...new Set(keywords)].slice(0, 3);
-    
-    console.log('Mots-clés:', keywords);
-    return keywords;
+    console.log('Mots-clés extraits:', unique);
+    return unique;
 }
 
 // CALCUL DU SCORE FINAL
