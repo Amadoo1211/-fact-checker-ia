@@ -1,4 +1,4 @@
-const fetch = require('node-fetch');// server.js - VERSION FINALE AVEC GOOGLE SEARCH ET FILTRE AMÉLIORÉ
+const fetch = require('node-fetch');
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
@@ -41,7 +41,7 @@ const initDb = async () => {
 // ===================================================================
 
 function extractMainKeywords(text) {
-    const cleaned = text.normalize('NFC').replace(/['’]/g, "'").substring(0, 500);
+    const cleaned = text.normalize('NFC').replace(/['']/g, "'").substring(0, 500);
     const keywords = [];
     const properNouns = cleaned.match(/\b\p{Lu}\p{Ll}+(?:\s+\p{Lu}\p{Ll}+){0,2}\b/gu) || [];
     keywords.push(...properNouns);
@@ -49,20 +49,39 @@ function extractMainKeywords(text) {
     keywords.push(...years);
     const importantWords = cleaned.match(/\b\p{L}{6,}\b/gu) || [];
     keywords.push(...importantWords.slice(0, 3));
-    const unique = [...new Set(keywords)].filter(k => k && k.length > 3).filter(k => !/^(Oui|Non|Cette|Voici|Selon|C’est|exact|depuis|pour)$/i.test(k)).slice(0, 5);
+    const unique = [...new Set(keywords)].filter(k => k && k.length > 3).filter(k => !/^(Oui|Non|Cette|Voici|Selon|C'est|exact|depuis|pour)$/i.test(k)).slice(0, 5);
     console.log('Mots-clés extraits :', unique);
     return unique;
 }
 
 function isOpinionOrNonFactual(text) {
     const lower = text.toLowerCase().normalize('NFC');
-    const opinionMarkers = [ 'je pense', 'je crois', 'à mon avis', 'selon moi', 'j\'ai l\'impression', 'je trouve que', 'il me semble que' ];
-    if (opinionMarkers.some(marker => lower.includes(marker))) return true;
+    
+    // MODIFICATION ICI : Ignorer les questions finales de l'IA
+    const textWithoutAIQuestion = lower
+        .replace(/tu veux que je.*?\?/g, '')
+        .replace(/veux-tu.*?\?/g, '')
+        .replace(/voulez-vous.*?\?/g, '')
+        .replace(/n'hésit.*?\./g, '')
+        .trim();
+    
+    // Vérifier les marqueurs d'opinion sur le texte nettoyé
+    const opinionMarkers = [ 
+        'je pense', 'je crois', 'à mon avis', 'selon moi', 
+        'j\'ai l\'impression', 'je trouve que', 'il me semble que',
+        'les gens aiment', 'tout le monde aime', 'la plupart des gens'
+    ];
+    if (opinionMarkers.some(marker => textWithoutAIQuestion.includes(marker))) return true;
+    
     const subjectiveWords = [ 'opinion', 'subjectif', 'avis', 'goût', 'perçu comme', 'semble', 'pourrait être', 'répandue' ];
-    if (subjectiveWords.some(word => lower.includes(word))) return true;
-    const metaMarkers = [ 'pas de sens', 'suite de lettres', 'tapée au hasard', 'une question', 'n\'hésitez pas' ];
-    if (metaMarkers.some(marker => lower.includes(marker))) return true;
-    if (lower.trim().endsWith('?')) return true;
+    if (subjectiveWords.some(word => textWithoutAIQuestion.includes(word))) return true;
+    
+    const metaMarkers = [ 'pas de sens', 'suite de lettres', 'tapée au hasard', 'une question' ];
+    if (metaMarkers.some(marker => textWithoutAIQuestion.includes(marker))) return true;
+    
+    // Ne pas considérer comme opinion si c'est juste une question de l'IA à la fin
+    if (textWithoutAIQuestion.length < 50) return true;
+    
     return false;
 }
 
@@ -79,7 +98,7 @@ async function findWebSources(keywords) {
 
     try {
         const response = await fetch(url);
-        if (!response.ok) { // Gérer les erreurs de l'API Google
+        if (!response.ok) {
             console.error("Erreur API Google:", response.status, await response.text());
             return [];
         }
@@ -142,6 +161,6 @@ app.post('/feedback', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 Pyramide de Confiance sur port ${PORT}`);
+    console.log('🚀 Fact-Checker v1.0 Stable');
     initDb();
 });
