@@ -133,7 +133,12 @@ app.post('/verify', async (req, res) => {
         if (!text || text.length < 20) {
             return res.json({ overallConfidence: 0.15, scoringExplanation: "Texte trop court.", keywords: [] });
         }
-        if (isOpinionOrNonFactual(text)) {
+        
+        // VÉRIFIER D'ABORD LE TEXTE ORIGINAL (avant analyse IA)
+        // Si le texte contient des mots-clés d'IA, on analyse le CONTENU UTILISATEUR
+        const userInput = text.split(/Hello|Je peux|Pouvez-vous|reformuler/i)[0] || text;
+        
+        if (isOpinionOrNonFactual(userInput)) {
             return res.json({ overallConfidence: 0.25, scoringExplanation: "**Opinion/Non factuel** (25%). Contenu subjectif non vérifiable.", keywords: [] });
         }
         
