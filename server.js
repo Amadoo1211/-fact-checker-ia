@@ -54,10 +54,11 @@ function extractMainKeywords(text) {
     return unique;
 }
 
+// CORRECTION PROBLÈME 1 : Détection d'opinion améliorée
 function isOpinionOrNonFactual(text) {
     const lower = text.toLowerCase().normalize('NFC');
     
-    // MODIFICATION ICI : Ignorer les questions finales de l'IA
+    // Ignorer les questions finales de l'IA
     const textWithoutAIQuestion = lower
         .replace(/tu veux que je.*?\?/g, '')
         .replace(/veux-tu.*?\?/g, '')
@@ -72,6 +73,11 @@ function isOpinionOrNonFactual(text) {
         'les gens aiment', 'tout le monde aime', 'la plupart des gens'
     ];
     if (opinionMarkers.some(marker => textWithoutAIQuestion.includes(marker))) return true;
+    
+    // NOUVELLE DÉTECTION : goûts et préférences avec regex
+    if (textWithoutAIQuestion.match(/\b(j'aime|j'adore|je préfère|je déteste|j'apprécie|je n'aime pas)\b/i)) {
+        return true;
+    }
     
     const subjectiveWords = [ 'opinion', 'subjectif', 'avis', 'goût', 'perçu comme', 'semble', 'pourrait être', 'répandue' ];
     if (subjectiveWords.some(word => textWithoutAIQuestion.includes(word))) return true;
