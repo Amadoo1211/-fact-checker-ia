@@ -1,4 +1,4 @@
-// server.js - VERSION DÉFINITIVE ET CORRIGÉE
+// server.js - VERSION FINALE AVEC GOOGLE SEARCH ET FILTRE AMÉLIORÉ
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
@@ -37,83 +37,88 @@ const initDb = async () => {
 };
 
 // ===================================================================
-//              LA NOUVELLE FONCTION D'EXTRACTION (ROBUSTE)
+//                 LA LOGIQUE DE L'APPLICATION
 // ===================================================================
 
 function extractMainKeywords(text) {
-    // Nettoyage initial du texte
     const cleaned = text.normalize('NFC').replace(/['’]/g, "'").substring(0, 500);
-    
     const keywords = [];
-    
-    // Noms propres (Ex: "Emmanuel Macron") - Version Unicode robuste
-    // \p{Lu} = Lettre Majuscule, \p{Ll} = Lettre Minuscule, u = flag Unicode
     const properNouns = cleaned.match(/\b\p{Lu}\p{Ll}+(?:\s+\p{Lu}\p{Ll}+){0,2}\b/gu) || [];
     keywords.push(...properNouns);
-    
-    // Années (Ex: "1889", "2017")
     const years = cleaned.match(/\b(19|20)\d{2}\b/g) || [];
     keywords.push(...years);
-    
-    // Mots importants (plus de 6 lettres) - Version Unicode robuste
     const importantWords = cleaned.match(/\b\p{L}{6,}\b/gu) || [];
     keywords.push(...importantWords.slice(0, 3));
-    
-    // Filtrage final pour ne garder que les 5 meilleurs mots-clés
-    const unique = [...new Set(keywords)]
-        .filter(k => k && k.length > 3)
-        .filter(k => !/^(Oui|Non|Cette|Voici|Selon|C’est|exact|depuis|pour)$/i.test(k))
-        .slice(0, 5);
-    
-    console.log('Mots-clés extraits (version corrigée):', unique);
+    const unique = [...new Set(keywords)].filter(k => k && k.length > 3).filter(k => !/^(Oui|Non|Cette|Voici|Selon|C’est|exact|depuis|pour)$/i.test(k)).slice(0, 5);
+    console.log('Mots-clés extraits :', unique);
     return unique;
 }
 
-
-// ===================================================================
-//         LE RESTE DE LA LOGIQUE SERVEUR (INCHANGÉ)
-// ===================================================================
-
-function isOpinion(text) {
-    const lower = text.toLowerCase();
-    const opinionMarkers = [ 'je pense', 'je crois', 'à mon avis', 'selon moi', 'j\'aime', 'je déteste', 'c\'est super', 'hello', 'bonjour' ];
+function isOpinionOrNonFactual(text) {
+    const lower = text.toLowerCase().normalize('NFC');
+    const opinionMarkers = [ 'je pense', 'je crois', 'à mon avis', 'selon moi', 'j\'ai l\'impression', 'je trouve que', 'il me semble que' ];
     if (opinionMarkers.some(marker => lower.includes(marker))) return true;
-    if (text.length < 50 && !(/\d{4}/.test(text)) && !(/[A-Z][a-z]+\s+[A-Z]/.test(text))) return true;
+    const subjectiveWords = [ 'opinion', 'subjectif', 'avis', 'goût', 'perçu comme', 'semble', 'pourrait être', 'répandue' ];
+    if (subjectiveWords.some(word => lower.includes(word))) return true;
+    const metaMarkers = [ 'pas de sens', 'suite de lettres', 'tapée au hasard', 'une question', 'n\'hésitez pas' ];
+    if (metaMarkers.some(marker => lower.includes(marker))) return true;
+    if (lower.trim().endsWith('?')) return true;
     return false;
 }
 
-function findExpertSources(text) {
-    const lower = text.toLowerCase();
-    const sources = [];
-    if (lower.includes('marie curie')) {
-        sources.push({ title: "Nobel Prize - Marie Curie", url: "https://www.nobelprize.org/prizes/physics/1903/marie-curie/", snippet: "Marie Curie fut la première femme Prix Nobel en 1903.", type: 'expert' });
+async function findWebSources(keywords) {
+    const API_KEY = process.env.GOOGLE_API_KEY;
+    const SEARCH_ENGINE_ID = process.env.SEARCH_ENGINE_ID;
+
+    if (!API_KEY || !SEARCH_ENGINE_ID || keywords.length === 0) {
+        return [];
     }
-    if (lower.includes('population') && lower.includes('france') || lower.includes('insee')) {
-        sources.push({ title: "INSEE - Population France", url: "https://www.insee.fr/fr/statistiques/", snippet: "Population française : 68 millions d'habitants (2024)", type: 'expert' });
+    
+    const query = keywords.join(' ');
+    const url = `https://www.googleapis.com/customsearch/v1?key=${API_KEY}&cx=${SEARCH_ENGINE_ID}&q=${encodeURIComponent(query)}&num=3`;
+
+    try {
+        const response = await fetch(url);
+        if (!response.ok) { // Gérer les erreurs de l'API Google
+            console.error("Erreur API Google:", response.status, await response.text());
+            return [];
+        }
+        const data = await response.json();
+        if (!data.items) return [];
+
+        return data.items.map(item => ({
+            title: item.title,
+            url: item.link,
+            snippet: item.snippet,
+            type: 'web'
+        }));
+    } catch (error) {
+        console.error("Erreur lors de la recherche Google:", error);
+        return [];
     }
-    if (lower.includes('giec') || lower.includes('ipcc') || (lower.includes('climat') && lower.includes('réchauffement'))) {
-        sources.push({ title: "GIEC - Rapport Climat", url: "https://www.ipcc.ch/", snippet: "Réchauffement global de +1.1°C confirmé", type: 'expert' });
-    }
-    return sources;
 }
+
+// ===================================================================
+//                          LES ROUTES DE L'API
+// ===================================================================
 
 app.post('/verify', async (req, res) => {
     try {
         const { text } = req.body;
         if (!text || text.length < 20) {
-            return res.json({ overallConfidence: 0.15, sources: [], scoringExplanation: "Texte trop court pour analyse.", keywords: [] });
+            return res.json({ overallConfidence: 0.15, scoringExplanation: "Texte trop court.", keywords: [] });
         }
-        if (isOpinion(text)) {
-            return res.json({ overallConfidence: 0.10, sources: [], scoringExplanation: "**Non factuel** (10%). Opinion ou conversation détectée.", keywords: [] });
+        if (isOpinionOrNonFactual(text)) {
+            return res.json({ overallConfidence: 0.10, scoringExplanation: "**Non factuel** (10%). Opinion, question ou contenu non vérifiable.", keywords: [] });
         }
-        const expertSources = findExpertSources(text);
+        
         const keywords = extractMainKeywords(text);
-        const initialScore = expertSources.length > 0 ? 0.85 : 0.20;
-        const initialExplanation = expertSources.length > 0 ? "**Très fiable** (85%). Confirmé par source officielle." : "**Faible fiabilité** (20%). Aucune source externe trouvée.";
+        const webSources = await findWebSources(keywords);
+        
         res.json({
-            overallConfidence: initialScore,
-            sources: expertSources,
-            scoringExplanation: initialExplanation,
+            overallConfidence: 0.20,
+            sources: webSources,
+            scoringExplanation: "Analyse initiale...",
             keywords: keywords
         });
     } catch (error) {
@@ -126,10 +131,7 @@ app.post('/feedback', async (req, res) => {
     try {
         const { originalText, scoreGiven, isUseful, comment, sourcesFound } = req.body;
         const client = await pool.connect();
-        await client.query(
-            'INSERT INTO feedback(original_text, score_given, is_useful, comment, sources_found) VALUES($1,$2,$3,$4,$5)',
-            [originalText?.substring(0, 5000), scoreGiven, isUseful, comment, JSON.stringify(sourcesFound)]
-        );
+        await client.query( 'INSERT INTO feedback(original_text, score_given, is_useful, comment, sources_found) VALUES($1,$2,$3,$4,$5)', [originalText?.substring(0, 5000), scoreGiven, isUseful, comment, JSON.stringify(sourcesFound)] );
         client.release();
         res.json({ success: true });
     } catch (err) {
