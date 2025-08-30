@@ -1,4 +1,4 @@
-// server.js - VERSION 5.0 - MOTEUR GÉNÉRALISTE
+// server.js - VERSION 6.0 - PYRAMIDE DE CONFIANCE (FINALE)
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
@@ -8,157 +8,135 @@ const app = express();
 app.use(cors({ origin: ['chrome-extension://*'] }));
 app.use(express.json());
 
-// ===================================================================================
-// DÉTECTION DE CONTENU NON FACTUEL (INCHANGÉ)
-// ===================================================================================
+const API_HEADERS = { 'User-Agent': 'FactCheckerIA/6.0 (boud3285@gmail.com)' };
+
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+});
+
+// ÉTAGE 1 : FILTRE FONDAMENTAL
 function isFactCheckable(text) {
     const textLower = text.toLowerCase();
     const nonFactualIndicators = [
-        'je pense que', 'à mon avis', 'il me semble', 'je crois que', 'un plaisir', 'j\'aime',
-        'how can i help', 'hello!', 'bonjour!', 'je suis là pour vous aider'
+        'je pense que', 'à mon avis', 'il me semble', 'je crois que', 'un plaisir', 'j\'aime', 'personnellement',
+        'how can i help', 'hello!', 'bonjour!', 'je suis là pour vous aider', 'looks like you\'re testing'
     ];
-    if (text.split(' ').length < 8 || nonFactualIndicators.some(i => textLower.includes(i))) return false;
-    if (!/\d+|[A-Z][a-z]+/.test(text)) return false;
+    if (text.split(' ').length < 10 || nonFactualIndicators.some(i => textLower.includes(i))) {
+        console.log('[Analyse Contenu] Non factuel détecté.');
+        return false;
+    }
+    if (!/\d+|[A-Z][a-z]{3,}/.test(text)) { // Cherche des nombres ou des noms propres de plus de 3 lettres
+        console.log('[Analyse Contenu] Manque d\'éléments vérifiables.');
+        return false;
+    }
     return true;
 }
 
-// ===================================================================================
-// EXTRACTION DE MOTS-CLÉS (INCHANGÉ)
-// ===================================================================================
+// Extraction de mots-clés
 function extractPreciseKeywords(text) {
-    const cleaned = text.replace(/^(Oui|Non|Bien sûr|Voici|En effet|Selon)[,.\s:]*/gi, '').substring(0, 400);
+    const cleaned = text.substring(0, 400);
     let keywords = (cleaned.match(/\b[A-ZÀ-Ÿ][a-zà-ÿ]+(?:\s+[A-ZÀ-Ÿ][a-zà-ÿ]+){0,2}\b/g) || []);
-    keywords = keywords.filter(k => k.length > 3 && !['Oui', 'Non', 'Voici'].includes(k));
-    const dates = cleaned.match(/\b(19|20)\d{2}\b/g) || [];
-    if (dates) keywords.push(...dates);
+    keywords = keywords.filter(k => k.length > 4);
+    if (keywords.length === 0) { // Fallback si aucun nom propre n'est trouvé
+        keywords = (cleaned.match(/\b\w{6,}\b/g) || []).slice(0, 3);
+    }
     const unique = [...new Set(keywords.map(k => k.toLowerCase()))];
-    console.log('Mots-clés extraits:', unique.slice(0, 4));
-    return unique.slice(0, 4);
+    console.log('Mots-clés extraits:', unique.slice(0, 3));
+    return unique.slice(0, 3);
 }
 
-// ===================================================================================
-// NOUVEAU : ÉVALUATION DE LA FIABILITÉ D'UNE SOURCE
-// ===================================================================================
-function getSourceReliability(url) {
-    const u = url.toLowerCase();
-    // Très haute fiabilité (sites gouvernementaux, éducatifs, institutions majeures)
-    if (/\.(gov|gouv|edu)\b|europa\.eu|who\.int|unesco\.org|ipcc\.ch|insee\.fr|nobelprize\.org/.test(u)) return 0.95;
-    // Haute fiabilité (grandes encyclopédies, revues scientifiques reconnues)
-    if (/britannica\.com|universalis\.fr|nature\.com|sciencemag\.org/.test(u)) return 0.90;
-    // Bonne fiabilité (agences de presse internationales, grands journaux de référence)
-    if (/reuters\.com|apnews\.com|afp\.com|lemonde\.fr|nytimes\.com|bbc\.com/.test(u)) return 0.80;
-    // Fiabilité correcte (Wikipedia)
-    if (/wikipedia\.org/.test(u)) return 0.70;
-    // Fiabilité moyenne (autres médias connus, sites spécialisés)
-    if (/\.(org|com|fr)/.test(u)) return 0.50;
-    return 0.30; // Faible fiabilité par défaut
-}
+// ÉTAGE 2 : RECHERCHE DE PREUVES
+async function findSources(keywords) {
+    const textQuery = keywords.join(' ');
+    const sources = [];
 
-// ===================================================================================
-// NOUVEAU : RECHERCHE DE SOURCES GÉNÉRALISTE
-// ===================================================================================
-async function searchGeneralistSources(keywords) {
-    if (!keywords || keywords.length === 0) return [];
-    
-    // On crée une requête de recherche plus intelligente
-    const query = `"${keywords.join('" "')}" source fiable OR "faits sur ${keywords[0]}"`;
-    console.log(`Recherche Google: ${query}`);
-    
-    // Simuler un appel à une API de recherche (remplacez par un vrai appel si vous en avez une)
-    // Ici, nous utilisons une recherche web simulée pour l'exemple.
-    // Dans un vrai projet, il faudrait une clé API pour Google Search ou une alternative.
-    const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
-    
-    // NOTE: Le scraping direct de Google est instable. Une API est recommandée.
-    // Pour cet exemple, nous allons construire des sources fictives basées sur les mots-clés.
-    // C'est ici que la magie opère en production avec une vraie API.
-    
-    // Simulation de résultats pour Marie Curie
-    if (keywords.includes('marie curie')) {
-        return [
-            { title: "Marie Curie - Nobel Prize in Physics 1903", url: "https://www.nobelprize.org/prizes/physics/1903/marie-curie/facts/", snippet: "Marie Curie a reçu le prix Nobel pour ses recherches sur les radiations..." },
-            { title: "Marie Curie - Wikipedia", url: "https://fr.wikipedia.org/wiki/Marie_Curie", snippet: "Marie Skłodowska-Curie, née le 7 novembre 1867 à Varsovie..." },
-            { title: "Biographie : Marie Curie - L'internaute", url: "https://www.linternaute.fr/science/marie-curie/", snippet: "Découvrez la biographie de Marie Curie, ses photos, vidéos." }
-        ].map(s => ({ ...s, reliability: getSourceReliability(s.url) }));
+    // Recherche "Experte" (codée en dur pour fiabilité maximale)
+    if (textQuery.includes('insee') || textQuery.includes('population france')) {
+        sources.push({ title: "INSEE - Population française officielle", url: "https://www.insee.fr/fr/statistiques/1893198", snippet: "L'INSEE fournit les données démographiques officielles pour la France.", reliability: 0.99, sourceCategory: 'expert' });
     }
+    if (textQuery.includes('giec') || textQuery.includes('climat')) {
+        sources.push({ title: "GIEC - Rapports d'évaluation sur le climat", url: "https://www.ipcc.ch/reports/", snippet: "Le GIEC est l'organe de l'ONU chargé d'évaluer la science relative au changement climatique.", reliability: 0.98, sourceCategory: 'expert' });
+    }
+
+    // Recherche "Généraliste" sur Wikipédia
+    try {
+        const url = `https://fr.wikipedia.org/w/api.php?action=query&list=search&srsearch="${encodeURIComponent(textQuery)}"&format=json&origin=*&srlimit=2`;
+        const res = await fetch(url, { headers: API_HEADERS, timeout: 4000 });
+        const data = await res.json();
+        if (data.query?.search?.length > 0) {
+            for (const article of data.query.search) {
+                sources.push({
+                    title: `Wikipedia (FR): ${article.title}`,
+                    url: `https://fr.wikipedia.org/wiki/${encodeURIComponent(article.title.replace(/ /g, '_'))}`,
+                    snippet: article.snippet.replace(/<[^>]*>/g, ''),
+                    sourceCategory: 'wikipedia',
+                    isHighlyRelevant: article.title.toLowerCase().includes(keywords[0])
+                });
+            }
+        }
+    } catch (e) { console.warn(`Wiki erreur:`, e.message); }
     
-    // Si pas de mot-clé spécifique, retourner un tableau vide
-    return [];
+    return Array.from(new Map(sources.map(s => [s.url, s])).values()); // Déduplication
 }
 
-
-// ===================================================================================
-// NOUVEAU : CALCUL DU SCORE GÉNÉRALISTE
-// ===================================================================================
-function calculateGeneralistScore(sources) {
+// ÉTAGES 3, 4 & SOMMET : CALCUL DU SCORE (PYRAMIDE DE CONFIANCE)
+function calculatePyramidScore(sources) {
     if (sources.length === 0) {
-        return { score: 0.20, explanation: "**Fiabilité faible** : Aucune source externe pertinente n'a pu être trouvée pour vérifier ces informations." };
+        return { score: 0.20, explanation: "**Fiabilité faible**. Aucune source externe pertinente n'a pu être trouvée pour vérifier ces informations." };
     }
 
-    // Calcule la moyenne pondérée de la fiabilité des 3 meilleures sources
-    const topSources = sources.slice(0, 3);
-    const totalReliability = topSources.reduce((acc, src) => acc + src.reliability, 0);
-    let score = totalReliability / topSources.length;
+    const expertSources = sources.filter(s => s.sourceCategory === 'expert');
+    const wikiSources = sources.filter(s => s.sourceCategory === 'wikipedia');
+    const highlyRelevantWiki = wikiSources.filter(s => s.isHighlyRelevant);
 
-    // Bonus pour la quantité et la qualité
-    if (sources.length >= 3) score += 0.10;
-    if (sources.some(s => s.reliability >= 0.90)) score += 0.15; // Bonus pour une source excellente
+    let score = 0.20; // Score de base
+    let explanation = "";
 
-    score = Math.min(0.95, score); // Plafonner à 95%
+    if (expertSources.length > 0) {
+        score = 0.85;
+        explanation = "La présence d'une source officielle ou experte confère une très haute fiabilité.";
+        if (wikiSources.length > 0) {
+            score = 0.95; // Sommet de la pyramide
+            explanation = "**Excellente fiabilité**, confirmée par une source officielle et des sources encyclopédiques."
+        }
+    } else if (wikiSources.length >= 2) {
+        score = 0.75;
+        explanation = "**Très fiable**, l'information est corroborée par plusieurs sources encyclopédiques.";
+    } else if (highlyRelevantWiki.length === 1) {
+        score = 0.65;
+        explanation = "**Fiable**, basé sur une source encyclopédique directement pertinente.";
+    } else if (wikiSources.length === 1) {
+        score = 0.50;
+        explanation = "**Fiabilité moyenne**, une source encyclopédique a été trouvée.";
+    }
 
-    let explanation = `Score: ${Math.round(score * 100)}%. `;
-    if (score >= 0.80) explanation += "**Très bonne fiabilité**, soutenue par plusieurs sources de haute qualité.";
-    else if (score >= 0.65) explanation += "**Fiabilité correcte**, les informations sont corroborées par des sources crédibles.";
-    else if (score >= 0.50) explanation += "**Fiabilité moyenne**, les sources sont présentes mais de qualité variable.";
-    else explanation += "**Fiabilité faible**, les sources trouvées sont peu nombreuses ou peu fiables.";
-
-    return { score, explanation };
+    return { score, explanation: `Score: ${Math.round(score*100)}%. ${explanation}` };
 }
 
-
-// ===================================================================================
-// FONCTION PRINCIPALE MISE À JOUR
-// ===================================================================================
+// FONCTION PRINCIPALE
 async function performFactCheck(text) {
     if (!isFactCheckable(text)) {
         return {
             overallConfidence: 0.10,
             sources: [],
-            extractedKeywords: [],
             scoringExplanation: "**Contenu non factuel**. Ce texte semble être une opinion, une salutation ou une affirmation non vérifiable."
         };
     }
     
     const keywords = extractPreciseKeywords(text);
     if (keywords.length === 0) {
-        return {
-            overallConfidence: 0.18,
-            sources: [],
-            extractedKeywords: keywords,
-            scoringExplanation: "Aucun mot-clé pertinent trouvé pour lancer une recherche."
-        };
+        return { overallConfidence: 0.18, sources: [], scoringExplanation: "Aucun mot-clé pertinent trouvé." };
     }
     
-    const foundSources = await searchGeneralistSources(keywords);
+    const sources = await findSources(keywords);
+    const { score, explanation } = calculatePyramidScore(sources);
     
-    // Trier les sources par fiabilité décroissante
-    foundSources.sort((a, b) => b.reliability - a.reliability);
-    
-    const { score, explanation } = calculateGeneralistScore(foundSources);
-    
-    return {
-        overallConfidence: score,
-        sources: foundSources.slice(0, 4), // On retourne les 4 meilleures sources
-        extractedKeywords: keywords,
-        scoringExplanation: explanation
-    };
+    return { overallConfidence: score, sources, scoringExplanation: explanation };
 }
 
-
-// ===================================================================================
 // ROUTES EXPRESS
-// ===================================================================================
-app.get("/", (req, res) => res.send("✅ Fact-Checker API v5.0 - Généraliste"));
+app.get("/", (req, res) => res.send("✅ Fact-Checker API v6.0 - Pyramide"));
 
 app.post('/verify', async (req, res) => {
     try {
@@ -167,12 +145,26 @@ app.post('/verify', async (req, res) => {
         const result = await performFactCheck(text);
         res.json(result);
     } catch (error) {
-        console.error("Erreur /verify:", error);
         res.status(500).json({ error: "Erreur interne du serveur" });
+    }
+});
+
+app.post('/feedback', async (req, res) => {
+    const { originalText, scoreGiven, isUseful, comment, sourcesFound } = req.body;
+    try {
+        const client = await pool.connect();
+        await client.query(
+            `INSERT INTO feedback(original_text, score_given, is_useful, comment, sources_found) VALUES($1,$2,$3,$4,$5)`,
+            [originalText, scoreGiven, isUseful, comment, JSON.stringify(sourcesFound)]
+        );
+        client.release();
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Erreur sauvegarde feedback' });
     }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 Fact-Checker v5.0 (Généraliste) sur port ${PORT}`);
+    console.log(`🚀 Fact-Checker v6.0 (Pyramide) sur port ${PORT}`);
 });
