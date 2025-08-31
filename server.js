@@ -85,8 +85,13 @@ function isOpinionOrNonFactual(text) {
     ];
     if (opinionMarkers.some(marker => textWithoutAIQuestion.includes(marker))) return true;
     
-    // Détection des goûts et préférences
-    if (textWithoutAIQuestion.match(/\b(j'aime|j'adore|je préfère|je déteste|j'apprécie|je n'aime pas|j aime)\b/i)) {
+    // Détection des goûts et préférences GLOBALE
+    if (textWithoutAIQuestion.match(/\b(j'aime|j'adore|je préfère|je déteste|j'apprécie|je n'aime pas|j aime|tu l'aimes|l'aimes)\b/i)) {
+        return true;
+    }
+    
+    // Détection patterns opinion généraux
+    if (textWithoutAIQuestion.match(/\b(quelque chose de.*apaisant|très apaisant|assez.*pour|pour l'ambiance)\b/i)) {
         return true;
     }
     
