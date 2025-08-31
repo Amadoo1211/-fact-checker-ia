@@ -58,6 +58,17 @@ function extractMainKeywords(text) {
 function isOpinionOrNonFactual(text) {
     const lower = text.toLowerCase().normalize('NFC');
     
+    // DÉTECTION CHARABIA : ratio consonnes/voyelles anormal
+    const cleanText = lower.replace(/[^a-z]/g, '');
+    const vowels = (cleanText.match(/[aeiouy]/g) || []).length;
+    const consonants = cleanText.length - vowels;
+    const vowelRatio = cleanText.length > 10 ? vowels / cleanText.length : 0.3;
+    
+    // Si moins de 15% de voyelles = charabia probable
+    if (vowelRatio < 0.15 && cleanText.length > 10) {
+        return true;
+    }
+    
     // Ignorer les questions finales de l'IA
     const textWithoutAIQuestion = lower
         .replace(/tu veux que je.*?\?/g, '')
@@ -66,7 +77,7 @@ function isOpinionOrNonFactual(text) {
         .replace(/n'hésit.*?\./g, '')
         .trim();
     
-    // Vérifier les marqueurs d'opinion sur le texte nettoyé
+    // Vérifier les marqueurs d'opinion
     const opinionMarkers = [ 
         'je pense', 'je crois', 'à mon avis', 'selon moi', 
         'j\'ai l\'impression', 'je trouve que', 'il me semble que',
@@ -74,7 +85,7 @@ function isOpinionOrNonFactual(text) {
     ];
     if (opinionMarkers.some(marker => textWithoutAIQuestion.includes(marker))) return true;
     
-    // NOUVELLE DÉTECTION : goûts et préférences avec regex
+    // Détection des goûts et préférences
     if (textWithoutAIQuestion.match(/\b(j'aime|j'adore|je préfère|je déteste|j'apprécie|je n'aime pas|j aime)\b/i)) {
         return true;
     }
@@ -85,7 +96,7 @@ function isOpinionOrNonFactual(text) {
     const metaMarkers = [ 'pas de sens', 'suite de lettres', 'tapée au hasard', 'une question' ];
     if (metaMarkers.some(marker => textWithoutAIQuestion.includes(marker))) return true;
     
-    // Ne pas considérer comme opinion si c'est juste une question de l'IA à la fin
+    // Texte trop court = non factuel
     if (textWithoutAIQuestion.length < 50) return true;
     
     return false;
