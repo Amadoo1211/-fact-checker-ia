@@ -58,9 +58,15 @@ function isOpinionOrNonFactual(text) {
     // DÉTECTION CHARABIA : ratio consonnes/voyelles anormal
     const cleanText = lower.replace(/[^a-z]/g, '');
     const vowels = (cleanText.match(/[aeiouy]/g) || []).length;
-    const vowelRatio = cleanText.length > 10 ? vowels / cleanText.length : 0.3;
+    const vowelRatio = cleanText.length > 5 ? vowels / cleanText.length : 0.3;
     
-    if (vowelRatio < 0.15 && cleanText.length > 10) {
+    // Si moins de 15% de voyelles ET plus de 5 caractères = charabia probable
+    if (vowelRatio < 0.15 && cleanText.length > 5) {
+        return true;
+    }
+    
+    // Texte très court = non factuel
+    if (text.length < 30) {
         return true;
     }
     
@@ -72,7 +78,7 @@ function isOpinionOrNonFactual(text) {
         .replace(/n'hésit.*?\./g, '')
         .trim();
     
-    // Marqueurs d'opinion
+    // Marqueurs d'opinion directs
     const opinionMarkers = [ 
         'je pense', 'je crois', 'à mon avis', 'selon moi', 
         'j\'ai l\'impression', 'je trouve que', 'il me semble que',
@@ -82,8 +88,15 @@ function isOpinionOrNonFactual(text) {
         return true;
     }
     
-    // Détection des goûts et préférences
-    if (textWithoutAIQuestion.match(/\b(j'aime|j'adore|je préfère|je déteste|j'apprécie|je n'aime pas|j aime|i love|i like|i hate|i prefer)\b/i)) {
+    // Détection RENFORCÉE des goûts et préférences
+    const preferencePatterns = [
+        /\bj'aime\b/i, /\bj'adore\b/i, /\bje préfère\b/i, /\bje déteste\b/i,
+        /\bj'apprécie\b/i, /\bje n'aime pas\b/i, /\bj aime\b/i,
+        /\bi love\b/i, /\bi like\b/i, /\bi hate\b/i, /\bi prefer\b/i,
+        /\bc'est mieux\b/i, /\bc'est meilleur\b/i, /\bplus agréable\b/i
+    ];
+    
+    if (preferencePatterns.some(pattern => pattern.test(textWithoutAIQuestion))) {
         return true;
     }
     
