@@ -97,10 +97,10 @@ function isOpinionOrNonFactual(text) {
     
     // Détection RENFORCÉE des goûts et préférences
     const preferencePatterns = [
-        /\bj'aime\b/i, /\bj'adore\b/i, /\bje préfère\b/i, /\bje déteste\b/i,
-        /\bj'apprécie\b/i, /\bje n'aime pas\b/i, /\bj aime\b/i,
-        /\bi love\b/i, /\bi like\b/i, /\bi hate\b/i, /\bi prefer\b/i,
-        /\bc'est mieux\b/i, /\bc'est meilleur\b/i, /\bplus agréable\b/i
+        /j'aime/i, /j'adore/i, /je préfère/i, /je déteste/i,
+        /j'apprécie/i, /je n'aime pas/i, /j aime/i,
+        /i love/i, /i like/i, /i hate/i, /i prefer/i,
+        /c'est mieux/i, /c'est meilleur/i, /plus agréable/i
     ];
     
     if (preferencePatterns.some(pattern => pattern.test(textWithoutAIQuestion))) {
