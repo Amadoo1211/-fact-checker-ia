@@ -147,7 +147,7 @@ app.post('/verify', async (req, res) => {
         if (!text || text.length < 20) {
             return res.json({ 
                 overallConfidence: 0.15, 
-                scoringExplanation: "Texte trop court.", 
+                scoringExplanation: "**Texte trop court** (15%). Impossible à analyser.", 
                 keywords: [] 
             });
         }
@@ -155,18 +155,38 @@ app.post('/verify', async (req, res) => {
         if (isOpinionOrNonFactual(text)) {
             return res.json({ 
                 overallConfidence: 0.25, 
-                scoringExplanation: "**Opinion/Non factuel** (25%). Contenu subjectif non vérifiable.", 
+                scoringExplanation: "**Opinion/Subjectif** (25%). Contenu non vérifiable factuellement.", 
                 keywords: [] 
             });
         }
         
+        // Pour les faits potentiels, calculer le score selon les sources
         const keywords = extractMainKeywords(text);
         const webSources = await findWebSources(keywords);
         
+        let finalScore = 0.30;
+        let explanation = "**Faible fiabilité** (30%). Aucune source trouvée pour vérifier.";
+        
+        const sourceCount = webSources.length;
+        
+        if (sourceCount >= 3) {
+            finalScore = 0.85;
+            explanation = "**Très fiable** (85%). Plusieurs sources web concordantes trouvées.";
+        } else if (sourceCount === 2) {
+            finalScore = 0.70;
+            explanation = "**Fiabilité correcte** (70%). Deux sources web trouvées.";
+        } else if (sourceCount === 1) {
+            finalScore = 0.55;
+            explanation = "**Fiabilité moyenne** (55%). Une source web trouvée.";
+        } else if (keywords.length >= 3) {
+            finalScore = 0.45;
+            explanation = "**Fiabilité incertaine** (45%). Contenu factuel probable mais non confirmé.";
+        }
+        
         res.json({
-            overallConfidence: 0.20,
+            overallConfidence: finalScore,
             sources: webSources,
-            scoringExplanation: "Analyse initiale...",
+            scoringExplanation: explanation,
             keywords: keywords
         });
     } catch (error) {
