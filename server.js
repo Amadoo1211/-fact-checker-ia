@@ -4,9 +4,18 @@ const cors = require('cors');
 const { Pool } = require('pg');
 const app = express();
 
-// Configuration
-app.use(cors({ origin: ['chrome-extension://*', 'https://fact-checker-ia-production.up.railway.app'] }));
-app.use(express.json());
+// Configuration avec logs
+app.use(cors({ 
+    origin: ['chrome-extension://*', 'https://fact-checker-ia-production.up.railway.app'],
+    credentials: true
+}));
+app.use(express.json({ limit: '10mb' }));
+
+// Log middleware pour debug
+app.use((req, res, next) => {
+    console.log(`${req.method} ${req.path}`, req.body ? 'avec body' : 'sans body');
+    next();
+});
 
 // Connexion à la base de données
 const pool = new Pool({
@@ -29,10 +38,13 @@ const initDb = async () => {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
+        
+        // Test de connexion
+        const result = await client.query('SELECT COUNT(*) FROM feedback');
+        console.log(`✅ DB prête - ${result.rows[0].count} feedbacks en base`);
         client.release();
-        console.log('✅ DB prête');
     } catch (err) {
-        console.error('Erreur DB:', err);
+        console.error('❌ Erreur DB:', err);
     }
 };
 
@@ -54,14 +66,12 @@ function extractMainKeywords(text) {
     return unique;
 }
 
-// CORRECTION PROBLÈME 1 : Détection d'opinion améliorée
 function isOpinionOrNonFactual(text) {
     const lower = text.toLowerCase().normalize('NFC');
     
     // DÉTECTION CHARABIA : ratio consonnes/voyelles anormal
     const cleanText = lower.replace(/[^a-z]/g, '');
     const vowels = (cleanText.match(/[aeiouy]/g) || []).length;
-    const consonants = cleanText.length - vowels;
     const vowelRatio = cleanText.length > 10 ? vowels / cleanText.length : 0.3;
     
     // Si moins de 15% de voyelles = charabia probable
@@ -86,7 +96,7 @@ function isOpinionOrNonFactual(text) {
     if (opinionMarkers.some(marker => textWithoutAIQuestion.includes(marker))) return true;
     
     // Détection des goûts et préférences GLOBALE
-    if (textWithoutAIQuestion.match(/\b(j'aime|j'adore|je préfère|je déteste|j'apprécie|je n'aime pas|j aime|tu l'aimes|l'aimes)\b/i)) {
+    if (textWithoutAIQuestion.match(/\b(j'aime|j'adore|je préfère|je déteste|j'apprécie|je n'aime pas|j aime|tu l'aimes|l'aimes|i love|i like|i hate|i prefer)\b/i)) {
         return true;
     }
     
@@ -112,6 +122,7 @@ async function findWebSources(keywords) {
     const SEARCH_ENGINE_ID = process.env.SEARCH_ENGINE_ID;
 
     if (!API_KEY || !SEARCH_ENGINE_ID || keywords.length === 0) {
+        console.log('⚠️ API Google non configurée ou pas de mots-clés');
         return [];
     }
     
@@ -127,6 +138,7 @@ async function findWebSources(keywords) {
         const data = await response.json();
         if (!data.items) return [];
 
+        console.log(`✅ ${data.items.length} sources web trouvées`);
         return data.items.map(item => ({
             title: item.title,
             url: item.link,
@@ -146,16 +158,22 @@ async function findWebSources(keywords) {
 app.post('/verify', async (req, res) => {
     try {
         const { text } = req.body;
+        console.log('📝 Analyse demandée pour:', text?.substring(0, 100) + '...');
+        
         if (!text || text.length < 20) {
             return res.json({ overallConfidence: 0.15, scoringExplanation: "Texte trop court.", keywords: [] });
         }
         
         // VÉRIFIER D'ABORD LE TEXTE ORIGINAL (avant analyse IA)
-        // Si le texte contient des mots-clés d'IA, on analyse le CONTENU UTILISATEUR
         const userInput = text.split(/Hello|Je peux|Pouvez-vous|reformuler/i)[0] || text;
         
         if (isOpinionOrNonFactual(userInput)) {
-            return res.json({ overallConfidence: 0.25, scoringExplanation: "**Opinion/Non factuel** (25%). Contenu subjectif non vérifiable.", keywords: [] });
+            console.log('👤 Détecté comme opinion/non-factuel');
+            return res.json({ 
+                overallConfidence: 0.25, 
+                scoringExplanation: "**Opinion/Non factuel** (25%). Contenu subjectif non vérifiable.", 
+                keywords: [] 
+            });
         }
         
         const keywords = extractMainKeywords(text);
@@ -168,26 +186,91 @@ app.post('/verify', async (req, res) => {
             keywords: keywords
         });
     } catch (error) {
-        console.error('Erreur:', error);
+        console.error('❌ Erreur verify:', error);
         res.status(500).json({ scoringExplanation: "Erreur d'analyse serveur." });
     }
 });
 
+// ROUTE FEEDBACK CORRIGÉE AVEC LOGS
 app.post('/feedback', async (req, res) => {
+    console.log('🔔 Feedback reçu:', {
+        hasOriginalText: !!req.body.originalText,
+        scoreGiven: req.body.scoreGiven,
+        isUseful: req.body.isUseful,
+        hasComment: !!req.body.comment,
+        sourcesCount: req.body.sourcesFound?.length || 0
+    });
+    
     try {
         const { originalText, scoreGiven, isUseful, comment, sourcesFound } = req.body;
+        
+        if (!originalText || scoreGiven === undefined || isUseful === undefined) {
+            console.log('❌ Données feedback incomplètes');
+            return res.status(400).json({ error: 'Données incomplètes' });
+        }
+        
         const client = await pool.connect();
-        await client.query( 'INSERT INTO feedback(original_text, score_given, is_useful, comment, sources_found) VALUES($1,$2,$3,$4,$5)', [originalText?.substring(0, 5000), scoreGiven, isUseful, comment, JSON.stringify(sourcesFound)] );
+        
+        const result = await client.query(
+            'INSERT INTO feedback(original_text, score_given, is_useful, comment, sources_found) VALUES($1,$2,$3,$4,$5) RETURNING id',
+            [
+                originalText?.substring(0, 5000), 
+                scoreGiven, 
+                isUseful, 
+                comment || '', 
+                JSON.stringify(sourcesFound || [])
+            ]
+        );
+        
         client.release();
-        res.json({ success: true });
+        console.log('✅ Feedback sauvé avec ID:', result.rows[0].id);
+        res.json({ success: true, feedbackId: result.rows[0].id });
+        
     } catch (err) {
-        console.error('Erreur feedback:', err);
+        console.error('❌ Erreur feedback:', err);
+        res.status(500).json({ error: 'Erreur serveur' });
+    }
+});
+
+// ROUTE DE DEBUG POUR VOIR LES FEEDBACKS
+app.get('/feedback-debug', async (req, res) => {
+    try {
+        const client = await pool.connect();
+        const result = await client.query(`
+            SELECT 
+                id, 
+                LEFT(original_text, 100) as text_preview,
+                score_given,
+                is_useful,
+                comment,
+                created_at
+            FROM feedback 
+            ORDER BY created_at DESC 
+            LIMIT 20
+        `);
+        client.release();
+        
+        res.json({
+            count: result.rows.length,
+            feedbacks: result.rows
+        });
+    } catch (err) {
+        console.error('❌ Erreur debug:', err);
         res.status(500).json({ error: 'Erreur' });
     }
 });
 
+// Route de santé
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'OK', 
+        timestamp: new Date().toISOString(),
+        version: '1.0'
+    });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log('🚀 Fact-Checker v1.0 Stable');
+    console.log('🚀 Fact-Checker v1.0 Stable - Port:', PORT);
     initDb();
 });
