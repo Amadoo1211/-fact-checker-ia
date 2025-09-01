@@ -55,12 +55,19 @@ function extractMainKeywords(text) {
 function isOpinionOrNonFactual(text) {
     const lower = text.toLowerCase().normalize('NFC');
     
+    // DÉTECTION RÉPONSES D'IA (souvent factuelles mais génériques)
+    if (lower.includes('excellent choix') || lower.includes('c\'est délicieux') || 
+        lower.includes('tu as une préférence') || lower.includes('tu préfères') ||
+        lower.includes('bonne question') || lower.includes('intéressant') ||
+        lower.includes('effectivement') || lower.includes('en effet')) {
+        return true; // Traiter comme opinion car c'est du contenu générique d'IA
+    }
+    
     // DÉTECTION CHARABIA : ratio consonnes/voyelles anormal
     const cleanText = lower.replace(/[^a-z]/g, '');
     const vowels = (cleanText.match(/[aeiouy]/g) || []).length;
     const vowelRatio = cleanText.length > 5 ? vowels / cleanText.length : 0.3;
     
-    // Si moins de 15% de voyelles ET plus de 5 caractères = charabia probable
     if (vowelRatio < 0.15 && cleanText.length > 5) {
         return true;
     }
