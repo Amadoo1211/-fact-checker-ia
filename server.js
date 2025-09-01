@@ -48,10 +48,6 @@ const initDb = async () => {
     }
 };
 
-// ===================================================================
-//                 LA LOGIQUE DE L'APPLICATION
-// ===================================================================
-
 function extractMainKeywords(text) {
     const cleaned = text.normalize('NFC').replace(/['']/g, "'").substring(0, 500);
     const keywords = [];
@@ -76,6 +72,7 @@ function isOpinionOrNonFactual(text) {
     
     // Si moins de 15% de voyelles = charabia probable
     if (vowelRatio < 0.15 && cleanText.length > 10) {
+        console.log('🎲 Charabia détecté - ratio voyelles:', vowelRatio);
         return true;
     }
     
@@ -93,26 +90,40 @@ function isOpinionOrNonFactual(text) {
         'j\'ai l\'impression', 'je trouve que', 'il me semble que',
         'les gens aiment', 'tout le monde aime', 'la plupart des gens'
     ];
-    if (opinionMarkers.some(marker => textWithoutAIQuestion.includes(marker))) return true;
+    if (opinionMarkers.some(marker => textWithoutAIQuestion.includes(marker))) {
+        console.log('💭 Opinion détectée - marqueur trouvé');
+        return true;
+    }
     
     // Détection des goûts et préférences GLOBALE
     if (textWithoutAIQuestion.match(/\b(j'aime|j'adore|je préfère|je déteste|j'apprécie|je n'aime pas|j aime|tu l'aimes|l'aimes|i love|i like|i hate|i prefer)\b/i)) {
+        console.log('❤️ Goût/préférence détecté');
         return true;
     }
     
     // Détection patterns opinion généraux
     if (textWithoutAIQuestion.match(/\b(quelque chose de.*apaisant|très apaisant|assez.*pour|pour l'ambiance)\b/i)) {
+        console.log('🌟 Pattern subjectif détecté');
         return true;
     }
     
     const subjectiveWords = [ 'opinion', 'subjectif', 'avis', 'goût', 'perçu comme', 'semble', 'pourrait être', 'répandue' ];
-    if (subjectiveWords.some(word => textWithoutAIQuestion.includes(word))) return true;
+    if (subjectiveWords.some(word => textWithoutAIQuestion.includes(word))) {
+        console.log('📝 Mot subjectif détecté');
+        return true;
+    }
     
     const metaMarkers = [ 'pas de sens', 'suite de lettres', 'tapée au hasard', 'une question' ];
-    if (metaMarkers.some(marker => textWithoutAIQuestion.includes(marker))) return true;
+    if (metaMarkers.some(marker => textWithoutAIQuestion.includes(marker))) {
+        console.log('🔍 Marqueur méta détecté');
+        return true;
+    }
     
     // Texte trop court = non factuel
-    if (textWithoutAIQuestion.length < 50) return true;
+    if (textWithoutAIQuestion.length < 50) {
+        console.log('📏 Texte trop court:', textWithoutAIQuestion.length);
+        return true;
+    }
     
     return false;
 }
@@ -151,10 +162,6 @@ async function findWebSources(keywords) {
     }
 }
 
-// ===================================================================
-//                          LES ROUTES DE L'API
-// ===================================================================
-
 app.post('/verify', async (req, res) => {
     try {
         const { text } = req.body;
@@ -191,7 +198,6 @@ app.post('/verify', async (req, res) => {
     }
 });
 
-// ROUTE FEEDBACK CORRIGÉE AVEC LOGS
 app.post('/feedback', async (req, res) => {
     console.log('🔔 Feedback reçu:', {
         hasOriginalText: !!req.body.originalText,
@@ -232,7 +238,6 @@ app.post('/feedback', async (req, res) => {
     }
 });
 
-// ROUTE DE DEBUG POUR VOIR LES FEEDBACKS
 app.get('/feedback-debug', async (req, res) => {
     try {
         const client = await pool.connect();
@@ -260,7 +265,6 @@ app.get('/feedback-debug', async (req, res) => {
     }
 });
 
-// Route de santé
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'OK', 
