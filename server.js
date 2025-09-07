@@ -33,163 +33,135 @@ const initDb = async () => {
             );
         `);
         client.release();
-        console.log('✅ DB prête');
+        console.log('✅ Database ready');
     } catch (err) {
-        console.error('❌ Erreur DB:', err);
+        console.error('❌ Database error:', err);
     }
 };
 
+// SYSTÈME DE DÉTECTION AMÉLIORÉ
 function extractMainKeywords(text) {
-    const cleaned = text.normalize('NFC').replace(/['']/g, "'").substring(0, 500);
+    const cleaned = text.normalize('NFC').replace(/['']/g, "'").substring(0, 800);
     const keywords = [];
+    
+    // Noms propres (personnes, lieux, organisations)
     const properNouns = cleaned.match(/\b\p{Lu}\p{Ll}+(?:\s+\p{Lu}\p{Ll}+){0,2}\b/gu) || [];
     keywords.push(...properNouns);
-    const years = cleaned.match(/\b(19|20)\d{2}\b/g) || [];
-    keywords.push(...years);
-    const importantWords = cleaned.match(/\b\p{L}{6,}\b/gu) || [];
-    keywords.push(...importantWords.slice(0, 3));
-    const unique = [...new Set(keywords)].filter(k => k && k.length > 3).filter(k => !/^(Oui|Non|Cette|Voici|Selon|C'est|exact|depuis|pour|Yes|No|This|Here|According|It's|exactly|since|for)$/i.test(k)).slice(0, 5);
+    
+    // Dates et années
+    const dates = cleaned.match(/\b(19|20)\d{2}\b/g) || [];
+    keywords.push(...dates);
+    
+    // Chiffres importants
+    const numbers = cleaned.match(/\b\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:million|billion|trillion|percent|%|km|meters|miles|dollars|euros)?\b/gi) || [];
+    keywords.push(...numbers.slice(0, 3));
+    
+    // Mots techniques/scientifiques longs
+    const technicalWords = cleaned.match(/\b\p{L}{7,}\b/gu) || [];
+    keywords.push(...technicalWords.slice(0, 4));
+    
+    // Nettoyer et déduper
+    const unique = [...new Set(keywords)]
+        .filter(k => k && k.length > 2)
+        .filter(k => !/^(this|that|with|from|they|were|have|been|will|would|could|should|might|since|until|before|after|during|through|across|about|above|below|under|over)$/i.test(k))
+        .slice(0, 6);
+    
     return unique;
 }
 
-function isOpinionOrNonFactual(text) {
+function analyzeContentType(text) {
     const lower = text.toLowerCase().normalize('NFC');
     
-    // NOUVEAU : Détecter les faits historiques avec dates
+    // PATTERN 1: FAITS HISTORIQUES AVEC DATES
     if (text.match(/\b(19|20)\d{2}\b/)) {
-        const historicalWords = [
+        const historicalIndicators = [
             'fell', 'founded', 'established', 'died', 'born', 'war', 'ended', 'began',
             'started', 'built', 'discovered', 'invented', 'signed', 'declared',
             'wall', 'berlin', 'revolution', 'independence', 'treaty', 'battle',
-            'elected', 'assassinated', 'created', 'launched', 'opened', 'closed'
+            'elected', 'assassinated', 'created', 'launched', 'opened', 'closed',
+            'empire', 'dynasty', 'kingdom', 'republic', 'constitution', 'president'
         ];
         
-        if (historicalWords.some(word => lower.includes(word))) {
-            return false; // C'est un fait historique avec date
+        if (historicalIndicators.some(word => lower.includes(word))) {
+            return { type: 'HISTORICAL_FACT', confidence: 0.9 };
         }
     }
     
-    // NOUVEAU : Détecter les faits géographiques courts
+    // PATTERN 2: FAITS GÉOGRAPHIQUES
     const geoPatterns = [
-        /capital.*is/i,
-        /\b\w+ is the capital/i,
-        /located in/i,
-        /currency.*is/i,
-        /population.*is/i,
-        /situated in/i,
-        /borders/i,
-        /largest city/i
+        /capital.*is/i, /\b\w+ is the capital/i, /located in/i, /currency.*is/i,
+        /population.*is/i, /situated in/i, /borders/i, /largest city/i,
+        /official language/i, /time zone/i, /area.*square/i, /elevation/i
     ];
     
     if (geoPatterns.some(pattern => pattern.test(text))) {
-        return false; // C'est un fait géographique
+        return { type: 'GEOGRAPHIC_FACT', confidence: 0.85 };
     }
     
-    // NOUVEAU : Détecter les faits scientifiques simples
+    // PATTERN 3: FAITS SCIENTIFIQUES/TECHNIQUES
     const sciencePatterns = [
-        /speed of light/i,
-        /boiling point/i,
-        /melting point/i,
-        /atomic number/i,
-        /discovered by/i,
-        /invented by/i,
-        /formula.*is/i,
-        /temperature.*is/i
+        /speed of light/i, /boiling point/i, /melting point/i, /atomic number/i,
+        /discovered by/i, /invented by/i, /formula.*is/i, /temperature.*is/i,
+        /molecular weight/i, /chemical formula/i, /scientific name/i, /theorem/i
     ];
     
     if (sciencePatterns.some(pattern => pattern.test(text))) {
-        return false; // C'est un fait scientifique
+        return { type: 'SCIENTIFIC_FACT', confidence: 0.8 };
     }
     
-    // DÉTECTION RÉPONSES D'IA (souvent factuelles mais génériques)
-    if (lower.includes('excellent choix') || lower.includes('c\'est délicieux') || 
-        lower.includes('tu as une préférence') || lower.includes('tu préfères') ||
-        lower.includes('bonne question') || lower.includes('intéressant') ||
-        lower.includes('effectivement') || lower.includes('en effet') ||
-        lower.includes('excellent choice') || lower.includes('it\'s delicious') ||
-        lower.includes('good question') || lower.includes('interesting') ||
-        lower.includes('indeed') || lower.includes('in fact')) {
-        return true; // Traiter comme opinion car c'est du contenu générique d'IA
+    // PATTERN 4: DÉFINITIONS ET FAITS GÉNÉRAUX
+    const definitionPatterns = [
+        /\w+ is a/i, /\w+ refers to/i, /\w+ means/i, /defined as/i,
+        /known as/i, /also called/i, /type of/i, /form of/i
+    ];
+    
+    if (definitionPatterns.some(pattern => pattern.test(text))) {
+        return { type: 'DEFINITION', confidence: 0.7 };
     }
     
-    // DÉTECTION CHARABIA : ratio consonnes/voyelles anormal
+    // PATTERN 5: DÉTECTION OPINIONS/SUBJECTIF
+    const opinionIndicators = [
+        'je pense', 'je crois', 'à mon avis', 'selon moi', 'il me semble',
+        'i think', 'i believe', 'in my opinion', 'i feel', 'seems to me',
+        'délicieux', 'excellent', 'agréable', 'beau', 'laid', 'bon', 'mauvais',
+        'delicious', 'excellent', 'pleasant', 'beautiful', 'ugly', 'good', 'bad',
+        'j\'aime', 'j\'adore', 'je préfère', 'i love', 'i like', 'i prefer',
+        'meilleur', 'pire', 'better', 'worse', 'best', 'worst'
+    ];
+    
+    if (opinionIndicators.some(indicator => lower.includes(indicator))) {
+        return { type: 'OPINION', confidence: 0.9 };
+    }
+    
+    // PATTERN 6: DÉTECTION CONTENU IA GÉNÉRIQUE
+    const aiGeneratedPatterns = [
+        'voici quelques', 'n\'hésitez pas', 'si vous avez', 'puis-je vous aider',
+        'here are some', 'feel free to', 'if you have', 'can i help you',
+        'bonne question', 'intéressant', 'effectivement', 'en effet',
+        'good question', 'interesting', 'indeed', 'actually'
+    ];
+    
+    if (aiGeneratedPatterns.some(pattern => lower.includes(pattern))) {
+        return { type: 'AI_GENERIC', confidence: 0.8 };
+    }
+    
+    // PATTERN 7: TEXTE TROP COURT
+    if (text.length < 25) {
+        return { type: 'TOO_SHORT', confidence: 0.9 };
+    }
+    
+    // PATTERN 8: DÉTECTION CHARABIA/CODE
     const cleanText = lower.replace(/[^a-z]/g, '');
     const vowels = (cleanText.match(/[aeiouy]/g) || []).length;
     const vowelRatio = cleanText.length > 5 ? vowels / cleanText.length : 0.3;
     
-    if (vowelRatio < 0.15 && cleanText.length > 5) {
-        return true;
+    if (vowelRatio < 0.15 && cleanText.length > 10) {
+        return { type: 'GIBBERISH', confidence: 0.95 };
     }
     
-    // Texte très court = non factuel (SAUF si c'est un fait simple détecté ci-dessus)
-    if (text.length < 30) {
-        return true;
-    }
-    
-    // Ignorer les questions finales de l'IA
-    const textWithoutAIQuestion = lower
-        .replace(/tu veux que je.*?\?/g, '')
-        .replace(/veux-tu.*?\?/g, '')
-        .replace(/voulez-vous.*?\?/g, '')
-        .replace(/n'hésit.*?\./g, '')
-        .replace(/would you like me.*?\?/g, '')
-        .replace(/do you want.*?\?/g, '')
-        .replace(/would you.*?\?/g, '')
-        .replace(/don't hesitate.*?\./g, '')
-        .trim();
-    
-    // Marqueurs d'opinion directs
-    const opinionMarkers = [ 
-        'je pense', 'je crois', 'à mon avis', 'selon moi', 
-        'j\'ai l\'impression', 'je trouve que', 'il me semble que',
-        'les gens aiment', 'tout le monde aime', 'la plupart des gens',
-        'i think', 'i believe', 'in my opinion', 'i feel',
-        'it seems to me', 'people like', 'everyone likes', 'most people'
-    ];
-    if (opinionMarkers.some(marker => textWithoutAIQuestion.includes(marker))) {
-        return true;
-    }
-    
-    // Détection RENFORCÉE des goûts et préférences
-    const preferencePatterns = [
-        /j'aime/i, /j'adore/i, /je préfère/i, /je déteste/i,
-        /j'apprécie/i, /je n'aime pas/i, /j aime/i,
-        /i love/i, /i like/i, /i hate/i, /i prefer/i,
-        /c'est mieux/i, /c'est meilleur/i, /plus agréable/i,
-        /it's better/i, /more pleasant/i, /tastes better/i
-    ];
-    
-    if (preferencePatterns.some(pattern => pattern.test(textWithoutAIQuestion))) {
-        return true;
-    }
-    
-    // Patterns opinion généraux
-    if (textWithoutAIQuestion.match(/\b(quelque chose de.*apaisant|très apaisant|assez.*pour|pour l'ambiance|something.*soothing|very soothing|enough.*for|for the ambiance)\b/i)) {
-        return true;
-    }
-    
-    const subjectiveWords = [ 
-        'opinion', 'subjectif', 'avis', 'goût', 'perçu comme', 'semble', 'pourrait être', 'répandue',
-        'subjective', 'taste', 'perceived as', 'seems', 'could be', 'widespread'
-    ];
-    if (subjectiveWords.some(word => textWithoutAIQuestion.includes(word))) {
-        return true;
-    }
-    
-    const metaMarkers = [ 
-        'pas de sens', 'suite de lettres', 'tapée au hasard', 'une question',
-        'no sense', 'string of letters', 'typed randomly', 'a question'
-    ];
-    if (metaMarkers.some(marker => textWithoutAIQuestion.includes(marker))) {
-        return true;
-    }
-    
-    // Texte trop court = non factuel
-    if (textWithoutAIQuestion.length < 50) {
-        return true;
-    }
-    
-    return false;
+    // Par défaut: contenu factuel potentiel
+    const factualScore = Math.min(0.6 + (text.length / 1000) * 0.2, 0.8);
+    return { type: 'POTENTIAL_FACT', confidence: factualScore };
 }
 
 async function findWebSources(keywords) {
@@ -200,12 +172,14 @@ async function findWebSources(keywords) {
         return [];
     }
     
-    const query = keywords.join(' ');
-    const url = `https://www.googleapis.com/customsearch/v1?key=${API_KEY}&cx=${SEARCH_ENGINE_ID}&q=${encodeURIComponent(query)}&num=3`;
+    // Améliorer la requête de recherche
+    const query = keywords.slice(0, 4).join(' ');
+    const url = `https://www.googleapis.com/customsearch/v1?key=${API_KEY}&cx=${SEARCH_ENGINE_ID}&q=${encodeURIComponent(query)}&num=4`;
 
     try {
         const response = await fetch(url);
         if (!response.ok) {
+            console.log('Search API error:', response.status);
             return [];
         }
         const data = await response.json();
@@ -218,70 +192,174 @@ async function findWebSources(keywords) {
             type: 'web'
         }));
     } catch (error) {
+        console.error('Search error:', error.message);
         return [];
     }
 }
 
+function calculateFinalScore(contentAnalysis, sourceCount, keywords) {
+    const { type, confidence } = contentAnalysis;
+    
+    // SCORES DE BASE SELON LE TYPE DE CONTENU
+    let baseScore = 0.3;
+    let explanation = "";
+    
+    switch (type) {
+        case 'HISTORICAL_FACT':
+            baseScore = 0.75;
+            explanation = "**Historical content detected** - ";
+            break;
+            
+        case 'GEOGRAPHIC_FACT':
+            baseScore = 0.7;
+            explanation = "**Geographic information** - ";
+            break;
+            
+        case 'SCIENTIFIC_FACT':
+            baseScore = 0.65;
+            explanation = "**Scientific content** - ";
+            break;
+            
+        case 'DEFINITION':
+            baseScore = 0.6;
+            explanation = "**Definition/explanation** - ";
+            break;
+            
+        case 'POTENTIAL_FACT':
+            baseScore = 0.5;
+            explanation = "**Factual content** - ";
+            break;
+            
+        case 'OPINION':
+            return {
+                score: 0.25,
+                explanation: "**Opinion/Subjective** (25%). Personal viewpoint, not verifiable fact."
+            };
+            
+        case 'AI_GENERIC':
+            return {
+                score: 0.3,
+                explanation: "**AI-generated response** (30%). Generic conversational content."
+            };
+            
+        case 'TOO_SHORT':
+            return {
+                score: 0.2,
+                explanation: "**Insufficient content** (20%). Text too short for analysis."
+            };
+            
+        case 'GIBBERISH':
+            return {
+                score: 0.1,
+                explanation: "**Unreadable content** (10%). Contains garbled or nonsensical text."
+            };
+    }
+    
+    // BONUS SELON LES SOURCES TROUVÉES
+    let sourceBonus = 0;
+    let sourceText = "";
+    
+    if (sourceCount >= 3) {
+        sourceBonus = 0.2;
+        sourceText = "Multiple reliable sources confirm this information.";
+    } else if (sourceCount === 2) {
+        sourceBonus = 0.15;
+        sourceText = "Two sources found supporting this information.";
+    } else if (sourceCount === 1) {
+        sourceBonus = 0.1;
+        sourceText = "One source found related to this topic.";
+    } else if (keywords.length >= 3) {
+        sourceBonus = 0.05;
+        sourceText = "Contains specific factual elements but no sources found.";
+    } else {
+        sourceBonus = 0;
+        sourceText = "No supporting sources found for verification.";
+    }
+    
+    // CALCUL FINAL
+    const finalScore = Math.min(baseScore + sourceBonus, 0.95);
+    const finalPercent = Math.round(finalScore * 100);
+    
+    // GÉNÉRATION DE L'EXPLICATION
+    let reliabilityLabel = "";
+    if (finalPercent >= 85) {
+        reliabilityLabel = "Highly reliable";
+    } else if (finalPercent >= 70) {
+        reliabilityLabel = "Good reliability";
+    } else if (finalPercent >= 55) {
+        reliabilityLabel = "Moderate reliability";
+    } else if (finalPercent >= 40) {
+        reliabilityLabel = "Low reliability";
+    } else {
+        reliabilityLabel = "Very low reliability";
+    }
+    
+    const fullExplanation = `${explanation}**${reliabilityLabel}** (${finalPercent}%). ${sourceText}`;
+    
+    return {
+        score: finalScore,
+        explanation: fullExplanation
+    };
+}
+
+// ENDPOINT PRINCIPAL
 app.post('/verify', async (req, res) => {
     try {
         const { text } = req.body;
         
-        if (!text || text.length < 20) {
+        if (!text || text.length < 10) {
             return res.json({ 
                 overallConfidence: 0.15, 
-                scoringExplanation: "**Text too short** (15%). Cannot analyze.", 
-                keywords: [] 
+                scoringExplanation: "**Insufficient input** (15%). Text too short for meaningful analysis.", 
+                keywords: [],
+                sources: []
             });
         }
         
-        if (isOpinionOrNonFactual(text)) {
-            return res.json({ 
-                overallConfidence: 0.25, 
-                scoringExplanation: "**Opinion/Subjective** (25%). Non-verifiable content.", 
-                keywords: [] 
-            });
-        }
+        // ANALYSE DU CONTENU
+        const contentAnalysis = analyzeContentType(text);
+        console.log(`Content analysis: ${contentAnalysis.type} (${contentAnalysis.confidence})`);
         
-        // Pour les faits potentiels, calculer le score selon les sources
+        // EXTRACTION DES MOTS-CLÉS
         const keywords = extractMainKeywords(text);
-        const webSources = await findWebSources(keywords);
+        console.log(`Keywords extracted: ${keywords.join(', ')}`);
         
-        let finalScore = 0.30;
-        let explanation = "**Low reliability** (30%). No sources found to verify.";
-        
-        const sourceCount = webSources.length;
-        
-        if (sourceCount >= 3) {
-            finalScore = 0.85;
-            explanation = "**Highly reliable** (85%). Multiple concordant web sources found.";
-        } else if (sourceCount === 2) {
-            finalScore = 0.70;
-            explanation = "**Good reliability** (70%). Two web sources found.";
-        } else if (sourceCount === 1) {
-            finalScore = 0.55;
-            explanation = "**Average reliability** (55%). One web source found.";
-        } else if (keywords.length >= 3) {
-            finalScore = 0.45;
-            explanation = "**Uncertain reliability** (45%). Probable factual content but unconfirmed.";
+        // RECHERCHE DE SOURCES (seulement pour le contenu factuel)
+        let sources = [];
+        if (['HISTORICAL_FACT', 'GEOGRAPHIC_FACT', 'SCIENTIFIC_FACT', 'DEFINITION', 'POTENTIAL_FACT'].includes(contentAnalysis.type)) {
+            sources = await findWebSources(keywords);
+            console.log(`Sources found: ${sources.length}`);
         }
+        
+        // CALCUL DU SCORE FINAL
+        const result = calculateFinalScore(contentAnalysis, sources.length, keywords);
         
         res.json({
-            overallConfidence: finalScore,
-            sources: webSources,
-            scoringExplanation: explanation,
-            keywords: keywords
+            overallConfidence: result.score,
+            sources: sources,
+            scoringExplanation: result.explanation,
+            keywords: keywords,
+            contentType: contentAnalysis.type
         });
+        
     } catch (error) {
-        res.status(500).json({ scoringExplanation: "Server analysis error." });
+        console.error('Verification error:', error);
+        res.status(500).json({ 
+            overallConfidence: 0.1,
+            scoringExplanation: "**Server error** (10%). Unable to complete analysis.",
+            keywords: [],
+            sources: []
+        });
     }
 });
 
+// ENDPOINT FEEDBACK
 app.post('/feedback', async (req, res) => {
     try {
         const { originalText, scoreGiven, isUseful, comment, sourcesFound } = req.body;
         
         if (!originalText || scoreGiven === undefined || isUseful === undefined) {
-            return res.status(400).json({ error: 'Incomplete data' });
+            return res.status(400).json({ error: 'Incomplete feedback data' });
         }
         
         const client = await pool.connect();
@@ -298,40 +376,59 @@ app.post('/feedback', async (req, res) => {
         );
         
         client.release();
+        console.log(`Feedback received: ${isUseful ? 'Positive' : 'Negative'}`);
         res.json({ success: true });
         
     } catch (err) {
-        res.status(500).json({ error: 'Server error' });
+        console.error('Feedback error:', err);
+        res.status(500).json({ error: 'Server error saving feedback' });
     }
 });
 
-app.get('/feedback-debug', async (req, res) => {
+// ENDPOINT DEBUG
+app.get('/feedback-stats', async (req, res) => {
     try {
         const client = await pool.connect();
         const result = await client.query(`
             SELECT 
-                id, 
-                LEFT(original_text, 100) as text_preview,
-                score_given,
-                is_useful,
-                created_at
+                COUNT(*) as total_feedback,
+                COUNT(CASE WHEN is_useful = true THEN 1 END) as positive_feedback,
+                COUNT(CASE WHEN is_useful = false THEN 1 END) as negative_feedback,
+                AVG(score_given) as avg_score
             FROM feedback 
-            ORDER BY created_at DESC 
-            LIMIT 20
+            WHERE created_at > NOW() - INTERVAL '30 days'
         `);
         client.release();
         
+        const stats = result.rows[0];
         res.json({
-            count: result.rows.length,
-            feedbacks: result.rows
+            total_feedback: parseInt(stats.total_feedback),
+            positive_feedback: parseInt(stats.positive_feedback),
+            negative_feedback: parseInt(stats.negative_feedback),
+            satisfaction_rate: stats.total_feedback > 0 ? Math.round((stats.positive_feedback / stats.total_feedback) * 100) : 0,
+            average_score: parseFloat(stats.avg_score) || 0
         });
+        
     } catch (err) {
-        res.status(500).json({ error: 'Error' });
+        console.error('Stats error:', err);
+        res.status(500).json({ error: 'Error retrieving stats' });
     }
 });
 
+// ENDPOINT SANTÉ
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'ok', 
+        version: '1.2-final',
+        timestamp: new Date().toISOString()
+    });
+});
+
+// DÉMARRAGE DU SERVEUR
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log('🚀 Fact-Checker v1.1 - Historical Facts Fixed');
+    console.log(`🚀 VerifyAI Backend v1.2 - Production Ready`);
+    console.log(`📡 Server running on port ${PORT}`);
+    console.log(`🔍 Enhanced content analysis enabled`);
     initDb();
 });
