@@ -1,4 +1,75 @@
-// Fonction améliortée pour analyser le type de contenu
+const fetch = require('node-fetch');
+const express = require('express');
+const cors = require('cors');
+const { Pool } = require('pg');
+const app = express();
+
+// Configuration
+app.use(cors({ 
+    origin: ['chrome-extension://*', 'https://fact-checker-ia-production.up.railway.app'],
+    credentials: true
+}));
+app.use(express.json({ limit: '10mb' }));
+
+// Connexion à la base de données
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+});
+
+// Initialisation de la base de données
+const initDb = async () => {
+    try {
+        const client = await pool.connect();
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS feedback (
+                id SERIAL PRIMARY KEY,
+                original_text TEXT,
+                score_given REAL,
+                is_useful BOOLEAN,
+                comment TEXT,
+                sources_found JSONB,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        client.release();
+        console.log('✅ Database ready');
+    } catch (err) {
+        console.error('❌ Database error:', err);
+    }
+};
+
+// SYSTÈME DE DÉTECTION AMÉLIORÉ
+function extractMainKeywords(text) {
+    const cleaned = text.normalize('NFC').replace(/['']/g, "'").substring(0, 800);
+    const keywords = [];
+    
+    // Noms propres (personnes, lieux, organisations)
+    const properNouns = cleaned.match(/\b\p{Lu}\p{Ll}+(?:\s+\p{Lu}\p{Ll}+){0,2}\b/gu) || [];
+    keywords.push(...properNouns);
+    
+    // Dates et années
+    const dates = cleaned.match(/\b(19|20)\d{2}\b/g) || [];
+    keywords.push(...dates);
+    
+    // Chiffres importants
+    const numbers = cleaned.match(/\b\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(?:million|billion|trillion|percent|%|km|meters|miles|dollars|euros)?\b/gi) || [];
+    keywords.push(...numbers.slice(0, 3));
+    
+    // Mots techniques/scientifiques longs
+    const technicalWords = cleaned.match(/\b\p{L}{7,}\b/gu) || [];
+    keywords.push(...technicalWords.slice(0, 4));
+    
+    // Nettoyer et déduper
+    const unique = [...new Set(keywords)]
+        .filter(k => k && k.length > 2)
+        .filter(k => !/^(this|that|with|from|they|were|have|been|will|would|could|should|might|since|until|before|after|during|through|across|about|above|below|under|over)$/i.test(k))
+        .slice(0, 6);
+    
+    return unique;
+}
+
+// Fonction améliorée pour analyser le type de contenu
 function analyzeContentType(text) {
     const lower = text.toLowerCase().normalize('NFC');
     
@@ -133,7 +204,34 @@ function isSourceRelevant(source, originalText) {
     return relevanceScore >= 0.4;
 }
 
-// Fonction modifiée de recherche avec filtre de pertinence
+// Calculer la pertinence d'une source
+function calculateRelevance(item, query) {
+    const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+    const titleWords = (item.title || '').toLowerCase().split(/\s+/);
+    const snippetWords = (item.snippet || '').toLowerCase().split(/\s+/);
+    
+    let relevanceScore = 0;
+    
+    // Bonus pour mots dans le titre
+    for (const qWord of queryWords) {
+        if (titleWords.some(tWord => tWord.includes(qWord))) {
+            relevanceScore += 0.3;
+        }
+        if (snippetWords.some(sWord => sWord.includes(qWord))) {
+            relevanceScore += 0.1;
+        }
+    }
+    
+    // Bonus pour sources de qualité
+    const url = (item.link || '').toLowerCase();
+    if (url.includes('wikipedia')) relevanceScore += 0.4;
+    else if (url.includes('.edu') || url.includes('.gov')) relevanceScore += 0.3;
+    else if (url.includes('britannica') || url.includes('larousse')) relevanceScore += 0.2;
+    
+    return Math.min(relevanceScore, 1.0);
+}
+
+// RECHERCHE INTELLIGENTE avec filtre de pertinence
 async function findWebSourcesIntelligent(smartQueries, fallbackKeywords, originalText) {
     const API_KEY = process.env.GOOGLE_API_KEY;
     const SEARCH_ENGINE_ID = process.env.SEARCH_ENGINE_ID;
@@ -230,6 +328,39 @@ async function findWebSourcesIntelligent(smartQueries, fallbackKeywords, origina
     }
     
     return uniqueSources.slice(0, 6);
+}
+
+// RECHERCHE STANDARD (fallback)
+async function findWebSources(keywords) {
+    const API_KEY = process.env.GOOGLE_API_KEY;
+    const SEARCH_ENGINE_ID = process.env.SEARCH_ENGINE_ID;
+
+    if (!API_KEY || !SEARCH_ENGINE_ID || keywords.length === 0) {
+        return [];
+    }
+    
+    const query = keywords.slice(0, 4).join(' ');
+    const url = `https://www.googleapis.com/customsearch/v1?key=${API_KEY}&cx=${SEARCH_ENGINE_ID}&q=${encodeURIComponent(query)}&num=4`;
+
+    try {
+        const response = await fetch(url);
+        if (!response.ok) {
+            console.log('Search API error:', response.status);
+            return [];
+        }
+        const data = await response.json();
+        if (!data.items) return [];
+
+        return data.items.map(item => ({
+            title: item.title,
+            url: item.link,
+            snippet: item.snippet,
+            type: 'standard_search'
+        }));
+    } catch (error) {
+        console.error('Search error:', error.message);
+        return [];
+    }
 }
 
 // Fonction de scoring corrigée
@@ -348,7 +479,7 @@ function calculateFinalScore(contentAnalysis, sourceCount, keywords, sources = [
     };
 }
 
-// ENDPOINT PRINCIPAL corrigé
+// ENDPOINT PRINCIPAL AVEC RECHERCHE INTELLIGENTE ET DÉTECTION D'OPINIONS
 app.post('/verify', async (req, res) => {
     try {
         const { text, smartQueries, analysisType } = req.body;
@@ -432,7 +563,7 @@ app.post('/verify', async (req, res) => {
                 searchMethod: smartQueries && smartQueries.length > 0 ? 'intelligent' : 'fallback',
                 sourcesFound: sources.length,
                 contentConfidence: contentAnalysis.confidence,
-                relevantSourcesRatio: sources.length > 0 ? 1.0 : 0.0 // Toutes les sources retournées sont pertinentes maintenant
+                relevantSourcesRatio: sources.length > 0 ? 1.0 : 0.0
             };
         }
         
@@ -448,4 +579,87 @@ app.post('/verify', async (req, res) => {
             sources: []
         });
     }
+});
+
+// ENDPOINT FEEDBACK
+app.post('/feedback', async (req, res) => {
+    try {
+        const { originalText, scoreGiven, isUseful, comment, sourcesFound } = req.body;
+        
+        if (!originalText || scoreGiven === undefined || isUseful === undefined) {
+            return res.status(400).json({ error: 'Incomplete feedback data' });
+        }
+        
+        const client = await pool.connect();
+        
+        await client.query(
+            'INSERT INTO feedback(original_text, score_given, is_useful, comment, sources_found) VALUES($1,$2,$3,$4,$5)',
+            [
+                originalText?.substring(0, 5000), 
+                scoreGiven, 
+                isUseful, 
+                comment || '', 
+                JSON.stringify(sourcesFound || [])
+            ]
+        );
+        
+        client.release();
+        console.log(`📝 Feedback received: ${isUseful ? 'Positive' : 'Negative'}`);
+        res.json({ success: true });
+        
+    } catch (err) {
+        console.error('❌ Feedback error:', err);
+        res.status(500).json({ error: 'Server error saving feedback' });
+    }
+});
+
+// ENDPOINT DEBUG
+app.get('/feedback-stats', async (req, res) => {
+    try {
+        const client = await pool.connect();
+        const result = await client.query(`
+            SELECT 
+                COUNT(*) as total_feedback,
+                COUNT(CASE WHEN is_useful = true THEN 1 END) as positive_feedback,
+                COUNT(CASE WHEN is_useful = false THEN 1 END) as negative_feedback,
+                AVG(score_given) as avg_score
+            FROM feedback 
+            WHERE created_at > NOW() - INTERVAL '30 days'
+        `);
+        client.release();
+        
+        const stats = result.rows[0];
+        res.json({
+            total_feedback: parseInt(stats.total_feedback),
+            positive_feedback: parseInt(stats.positive_feedback),
+            negative_feedback: parseInt(stats.negative_feedback),
+            satisfaction_rate: stats.total_feedback > 0 ? Math.round((stats.positive_feedback / stats.total_feedback) * 100) : 0,
+            average_score: parseFloat(stats.avg_score) || 0
+        });
+        
+    } catch (err) {
+        console.error('❌ Stats error:', err);
+        res.status(500).json({ error: 'Error retrieving stats' });
+    }
+});
+
+// ENDPOINT SANTÉ
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'ok', 
+        version: '2.1-intelligent-opinions',
+        features: ['intelligent_search', 'opinion_detection', 'source_relevance', 'multi_query'],
+        timestamp: new Date().toISOString()
+    });
+});
+
+// DÉMARRAGE DU SERVEUR
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`🚀 VerifyAI Backend v2.1 - Complete Intelligence System`);
+    console.log(`📡 Server running on port ${PORT}`);
+    console.log(`🧠 Enhanced opinion detection enabled`);
+    console.log(`🎯 Smart source relevance filtering active`);
+    console.log(`🔍 Multi-query intelligent search system ready`);
+    initDb();
 });
