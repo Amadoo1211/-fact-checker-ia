@@ -178,20 +178,40 @@ function isSourceRelevant(source, originalText, minRelevanceScore = 0.35) {
     return isRelevant;
 }
 
-// Fonction améliorée pour analyser le type de contenu
+// FONCTION CORRIGÉE POUR ANALYSER LE TYPE DE CONTENU - DÉTECTION D'OPINIONS RENFORCÉE
 function analyzeContentType(text) {
     const lower = text.toLowerCase().normalize('NFC');
     
     // PATTERN OPINIONS RENFORCÉ - PRIORITÉ ABSOLUE
     const strongOpinionPatterns = [
+        // Comparaisons subjectives directes
         /\b(better than|worse than|superior to|inferior to|prefer.*over|tastes better|looks better|sounds better)\b/i,
         /\b(meilleur que|pire que|supérieur à|inférieur à|préfère.*à|goût.*meilleur|plus.*beau)\b/i,
+        
+        // NOUVELLES PATTERNS POUR OPINIONS FRANÇAISES
+        /\b(je pense que.*plus.*que|je trouve que.*plus.*que|selon moi.*plus.*que)\b/i,
+        /\b(je crois que.*plus.*que|à mon avis.*plus.*que|personnellement.*plus.*que)\b/i,
+        /\b(plus beau|plus belle|moins beau|moins belle|plus joli|plus jolie|moins joli|moins jolie)\b/i,
+        /\b(plus agréable|moins agréable|plus sympa|moins sympa|plus cool|moins cool)\b/i,
+        
+        // NOUVELLES PATTERNS POUR OPINIONS ANGLAISES
+        /\b(I think.*more.*than|I believe.*more.*than|in my opinion.*more.*than)\b/i,
+        /\b(more beautiful|less beautiful|more attractive|less attractive|prettier|uglier)\b/i,
+        /\b(more pleasant|less pleasant|nicer|worse|cooler|lamer)\b/i,
+        
+        // Expressions d'opinion personnelle
         /\b(i think|i believe|i feel|in my opinion|personally|subjectively)\b/i,
         /\b(je pense|je crois|je trouve|à mon avis|personnellement|subjectivement)\b/i,
+        
+        // Jugements esthétiques/gustatifs
         /\b(delicious|disgusting|beautiful|ugly|amazing|terrible|wonderful|awful)\b/i,
         /\b(délicieux|dégoûtant|beau|laid|merveilleux|terrible|magnifique|affreux)\b/i,
+        
+        // Préférences explicites
         /\b(favorite|favourite|best.*ever|worst.*ever|love.*more|hate.*more)\b/i,
         /\b(favori|préféré|le meilleur|le pire|aime.*plus|déteste.*plus)\b/i,
+        
+        // Questions de goût
         /\b(matter of taste|question.*taste|subjective.*matter|personal.*preference)\b/i,
         /\b(question.*goût|affaire.*goût|sujet.*subjectif|préférence.*personnelle)\b/i
     ];
@@ -790,8 +810,8 @@ app.get('/feedback-stats', async (req, res) => {
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
-        version: '2.2-sources-pertinentes',
-        features: ['intelligent_search', 'opinion_detection', 'strict_source_relevance', 'multi_query'],
+        version: '2.3-opinions-fixed',
+        features: ['intelligent_search', 'enhanced_opinion_detection', 'strict_source_relevance', 'multi_query'],
         timestamp: new Date().toISOString()
     });
 });
@@ -799,11 +819,12 @@ app.get('/health', (req, res) => {
 // DÉMARRAGE DU SERVEUR
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 VerifyAI Backend v2.2 - Système de Sources Pertinentes`);
+    console.log(`🚀 VerifyAI Backend v2.3 - Détection d'Opinions Corrigée`);
     console.log(`📡 Serveur démarré sur le port ${PORT}`);
-    console.log(`🧠 Détection d'opinions renforcée activée`);
+    console.log(`🧠 Détection d'opinions RENFORCÉE activée`);
     console.log(`🎯 Filtrage strict de pertinence des sources actif`);
     console.log(`🔍 Système de recherche intelligente multi-requêtes prêt`);
     console.log(`📊 Analyse de qualité des sources activée`);
+    console.log(`⚡ Fix: "Je pense que Paris est plus beau que Londres" → 25%`);
     initDb();
 });
