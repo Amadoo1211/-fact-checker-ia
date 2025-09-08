@@ -4,20 +4,19 @@ const cors = require('cors');
 const { Pool } = require('pg');
 const app = express();
 
-// Configuration sécurisée finale
+// Configuration finale
 app.use(cors({ 
     origin: ['chrome-extension://*', 'https://fact-checker-ia-production.up.railway.app'],
     credentials: true
 }));
 app.use(express.json({ limit: '5mb' }));
 
-// Connexion sécurisée à la base de données
+// Base de données
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false }
 });
 
-// Initialisation sécurisée de la base de données
 const initDb = async () => {
     try {
         const client = await pool.connect();
@@ -35,11 +34,11 @@ const initDb = async () => {
         client.release();
         console.log('✅ Database prête');
     } catch (err) {
-        console.error('❌ Erreur base de données:', err.message);
+        console.error('❌ Database error:', err.message);
     }
 };
 
-// Validation et nettoyage sécurisé des entrées
+// Nettoyage sécurisé
 function sanitizeInput(text) {
     if (!text || typeof text !== 'string') return '';
     
@@ -52,149 +51,105 @@ function sanitizeInput(text) {
         .trim();
 }
 
-// ANALYSE DU TYPE DE CONTENU - APPROCHE GÉNÉRALISTE
+// ANALYSE INTELLIGENTE DU CONTENU
 function analyzeContentType(text) {
     const sanitizedText = sanitizeInput(text);
-    const lower = sanitizedText.toLowerCase().normalize('NFC');
+    const lower = sanitizedText.toLowerCase();
     
-    console.log(`🔍 Analyse: "${sanitizedText.substring(0, 80)}..."`);
+    console.log(`🔍 Analyse: "${sanitizedText.substring(0, 60)}..."`);
     
-    // DÉTECTION D'OPINIONS - Plus équilibrée pour usage général
+    // 1. DÉTECTION OPINIONS SUBJECTIVES
     const opinionPatterns = [
-        // Opinions subjectives explicites
         /\b(i think|i believe|i feel|in my opinion|personally|subjectively)\b/i,
-        /\b(je pense|je crois|je trouve|à mon avis|personnellement|subjectivement)\b/i,
-        
-        // Comparaisons subjectives
-        /\b(better than|worse than|prefer.*over|tastes better|looks better|sounds better)\b/i,
-        /\b(meilleur que|pire que|préfère.*à|goût.*meilleur|plus.*beau)\b/i,
-        
-        // Jugements esthétiques/gustatifs
-        /\b(delicious|disgusting|beautiful|ugly|amazing|terrible|wonderful|awful)\b/i,
-        /\b(délicieux|dégoûtant|beau|laid|merveilleux|terrible|magnifique|affreux)\b/i,
-        
-        // Préférences personnelles
-        /\b(favorite|favourite|best.*ever|worst.*ever|love.*more|hate.*more)\b/i,
-        /\b(favori|préféré|le meilleur|le pire|aime.*plus|déteste.*plus)\b/i,
-        
-        // Questions de goût
-        /\b(matter of taste|question.*taste|subjective.*matter|personal.*preference)\b/i,
-        /\b(question.*goût|affaire.*goût|sujet.*subjectif|préférence.*personnelle)\b/i
+        /\b(better than|worse than|prefer|favorite|best|worst)\b/i,
+        /\b(beautiful|ugly|delicious|terrible|amazing|awful)\b/i,
+        /\b(love|hate|like|dislike).*more\b/i,
+        /\b(matter of taste|subjective|personal preference)\b/i
     ];
     
-    // Vérification pour opinions
-    for (const [index, pattern] of opinionPatterns.entries()) {
+    for (const pattern of opinionPatterns) {
         if (pattern.test(sanitizedText)) {
-            console.log(`💭 Opinion détectée avec pattern ${index + 1}`);
-            return { type: 'OPINION', confidence: 0.85 };
+            console.log(`💭 Opinion subjective détectée`);
+            return { type: 'OPINION', confidence: 0.9 };
         }
     }
     
-    // DÉTECTION DE QUESTIONS UTILISATEUR
-    const questionPatterns = [
-        /^(what|how|why|when|where|which|who|can you|could you|please tell me)/i,
-        /^(qu'est-ce que|comment|pourquoi|quand|où|quel|qui|peux-tu|pouvez-vous)/i,
-        /\?$/,
-        /^(explain|describe|give me|tell me about)/i,
-        /^(explique|décris|donne-moi|parle-moi de)/i
-    ];
-    
-    for (const pattern of questionPatterns) {
-        if (pattern.test(sanitizedText.trim()) && sanitizedText.length < 300) {
-            console.log(`❓ Question utilisateur détectée`);
-            return { type: 'USER_QUESTION', confidence: 0.9 };
-        }
+    // 2. DÉTECTION QUESTIONS
+    if (sanitizedText.length < 300 && /^(what|how|why|when|where|which|who|can you|could you)\b/i.test(sanitizedText.trim())) {
+        return { type: 'QUESTION', confidence: 0.95 };
     }
     
-    // DÉTECTION DE FAITS HISTORIQUES
-    if (sanitizedText.match(/\b(19|20)\d{2}\b/)) {
-        const historicalIndicators = [
-            'founded', 'established', 'died', 'born', 'war', 'ended', 'began',
-            'built', 'discovered', 'invented', 'signed', 'declared',
-            'revolution', 'independence', 'treaty', 'battle',
-            'elected', 'created', 'launched', 'opened',
-            'empire', 'kingdom', 'republic', 'constitution', 'president',
-            'victory', 'defeat', 'surrender', 'official'
-        ];
-        
-        if (historicalIndicators.some(word => lower.includes(word))) {
+    // 3. DÉTECTION FAITS VÉRIFIABLES
+    
+    // Faits historiques avec dates
+    if (/\b(19|20)\d{2}\b/.test(sanitizedText)) {
+        const historicalWords = ['founded', 'established', 'born', 'died', 'war', 'treaty', 'independence', 'victory', 'defeat', 'empire', 'president', 'revolution'];
+        if (historicalWords.some(word => lower.includes(word))) {
             console.log(`📚 Fait historique détecté`);
-            return { type: 'HISTORICAL_FACT', confidence: 0.8 };
+            return { type: 'HISTORICAL_FACT', confidence: 0.85 };
         }
     }
     
-    // DÉTECTION DE FAITS GÉOGRAPHIQUES
-    const geoPatterns = [
-        /capital.*is|capitale.*de|population.*is|population.*de/i,
-        /area.*square|superficie|located in|situé.*en/i,
-        /largest city|plus.*grande.*ville|official language|langue.*officielle/i,
-        /borders|frontière|elevation|altitude|climate|climat/i,
-        /square.*kilometers|km²|square.*miles/i
-    ];
-    
-    if (geoPatterns.some(pattern => pattern.test(sanitizedText))) {
+    // Faits géographiques
+    if (/\b(capital|population|area|square.*kilometers|km²|located.*in|borders)\b/i.test(sanitizedText)) {
         console.log(`🌍 Fait géographique détecté`);
-        return { type: 'GEOGRAPHIC_FACT', confidence: 0.8 };
+        return { type: 'GEOGRAPHIC_FACT', confidence: 0.85 };
     }
     
-    // DÉTECTION DE FAITS SCIENTIFIQUES
-    const sciencePatterns = [
-        /speed of light|vitesse.*lumière|299.*792.*458/i,
-        /boiling point|point.*ébullition|melting point|point.*fusion/i,
-        /atomic number|numéro.*atomique|molecular weight|masse.*molaire/i,
-        /scientific name|nom.*scientifique|chemical formula|formule.*chimique/i,
-        /relativity|relativité|quantum|quantique|theorem|théorème/i
-    ];
-    
-    if (sciencePatterns.some(pattern => pattern.test(sanitizedText))) {
+    // Faits scientifiques
+    if (/\b(speed.*light|boiling.*point|atomic.*number|chemical.*formula|299.*792.*458)\b/i.test(sanitizedText)) {
         console.log(`🔬 Fait scientifique détecté`);
-        return { type: 'SCIENTIFIC_FACT', confidence: 0.8 };
+        return { type: 'SCIENTIFIC_FACT', confidence: 0.9 };
     }
     
-    // Texte trop court
-    if (sanitizedText.length < 25) {
-        console.log(`⚠️ Texte trop court`);
-        return { type: 'TOO_SHORT', confidence: 0.9 };
+    // Faits statistiques
+    if (/\b\d+(\.\d+)?\s*(percent|%|million|billion|trillion)\b/i.test(sanitizedText)) {
+        console.log(`📊 Fait statistique détecté`);
+        return { type: 'STATISTICAL_FACT', confidence: 0.8 };
     }
     
-    // Contenu factuel potentiel par défaut
-    const factualScore = Math.min(0.5 + (sanitizedText.length / 1000) * 0.2, 0.7);
-    console.log(`📄 Contenu factuel potentiel`);
-    return { type: 'POTENTIAL_FACT', confidence: factualScore };
+    // 4. CONTENU TROP COURT
+    if (sanitizedText.length < 30) {
+        return { type: 'TOO_SHORT', confidence: 0.95 };
+    }
+    
+    // 5. INFORMATION GÉNÉRALE
+    console.log(`📄 Information générale`);
+    return { type: 'GENERAL_INFO', confidence: 0.6 };
 }
 
-// EXTRACTION SÉCURISÉE DE MOTS-CLÉS
+// EXTRACTION MOTS-CLÉS INTELLIGENTE
 function extractMainKeywords(text) {
-    const cleaned = sanitizeInput(text).normalize('NFC').substring(0, 1200);
+    const cleaned = sanitizeInput(text).substring(0, 1000);
     const keywords = [];
     
     try {
-        // Entités nommées
-        const namedEntities = cleaned.match(/\b[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,3}\b/g) || [];
+        // Entités nommées (noms propres)
+        const namedEntities = cleaned.match(/\b[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,2}\b/g) || [];
         const filteredEntities = namedEntities.filter(entity => 
-            entity.length > 3 && entity.length < 50 &&
-            !entity.match(/^(The|This|That|When|Where|What|How|Why|Who|Yes|World|War|Day|May|Victory)$/i)
+            entity.length > 3 && entity.length < 40 &&
+            !/^(The|This|That|When|Where|What|How|Why|Who|Yes|World|War|Day|May|Will|Can)$/i.test(entity)
         );
-        keywords.push(...filteredEntities.slice(0, 4));
+        keywords.push(...filteredEntities.slice(0, 5));
         
-        // Dates et années
+        // Dates importantes
         const dates = cleaned.match(/\b(19|20)\d{2}\b/g) || [];
         keywords.push(...dates.slice(0, 2));
         
-        // Nombres avec contexte
-        const numbers = cleaned.match(/\b\d{1,3}(?:[,\s]\d{3})*(?:\.\d+)?\s*(?:million|billion|trillion|percent|%|km²|square\s*kilometers|meters|miles|dollars|euros|kilometres|population)\b/gi) || [];
-        keywords.push(...numbers.slice(0, 3));
+        // Nombres avec unités
+        const numbersWithUnits = cleaned.match(/\b\d{1,3}(?:[,\s]\d{3})*(?:\.\d+)?\s*(?:million|billion|percent|%|km²|kilometers|meters|miles|population)\b/gi) || [];
+        keywords.push(...numbersWithUnits.slice(0, 3));
         
-        // Termes techniques
-        const technicalTerms = cleaned.match(/\b(?:approximately|exactly|officially|capital|area|population|founded|established|located|situated|declared|independence|surrender|treaty|victory|defeat|government|constitution|republic|democracy)\b/gi) || [];
-        keywords.push(...technicalTerms.slice(0, 3));
+        // Mots-clés importants
+        const importantWords = cleaned.match(/\b(?:capital|president|founded|established|independence|victory|defeat|treaty|constitution|republic|democracy|population|area|temperature|speed|light|atomic|chemical)\b/gi) || [];
+        keywords.push(...importantWords.slice(0, 4));
         
         // Mots significatifs longs
-        const significantWords = cleaned.match(/\b[a-zA-Z]{6,25}\b/g) || [];
-        const filteredWords = significantWords.filter(word => 
-            !word.match(/^(however|therefore|because|through|without|although|sometimes|everything|anything|something|nothing|correct|exactly|javascript|document|function)$/i)
+        const significantWords = cleaned.match(/\b[a-zA-Z]{6,20}\b/g) || [];
+        const cleanedWords = significantWords.filter(word => 
+            !/^(however|therefore|because|through|without|although|sometimes|something|anything|everything|nothing|javascript|function|document)$/i.test(word)
         );
-        keywords.push(...filteredWords.slice(0, 4));
+        keywords.push(...cleanedWords.slice(0, 3));
         
         return [...new Set(keywords)].filter(k => k && k.length > 2).slice(0, 8);
     } catch (e) {
@@ -203,53 +158,20 @@ function extractMainKeywords(text) {
     }
 }
 
-// RECHERCHE SÉCURISÉE DE SOURCES
-async function findWebSources(keywords) {
-    const API_KEY = process.env.GOOGLE_API_KEY;
-    const SEARCH_ENGINE_ID = process.env.SEARCH_ENGINE_ID;
-
-    if (!API_KEY || !SEARCH_ENGINE_ID || keywords.length === 0) {
-        return [];
-    }
-    
-    const query = keywords.slice(0, 4).join(' ');
-    const url = `https://www.googleapis.com/customsearch/v1?key=${API_KEY}&cx=${SEARCH_ENGINE_ID}&q=${encodeURIComponent(query)}&num=5`;
-
-    try {
-        const response = await fetch(url);
-        if (!response.ok) {
-            console.log('Search API error:', response.status);
-            return [];
-        }
-        const data = await response.json();
-        if (!data.items) return [];
-
-        return data.items.map(item => ({
-            title: item.title || 'Untitled',
-            url: item.link || '',
-            snippet: item.snippet || 'No description',
-            type: 'search'
-        }));
-    } catch (error) {
-        console.error('Search error:', error.message);
-        return [];
-    }
-}
-
-// RECHERCHE INTELLIGENTE AVEC REQUÊTES MULTIPLES
-async function findWebSourcesIntelligent(smartQueries, fallbackKeywords, originalText) {
+// RECHERCHE SOURCES INTELLIGENTE
+async function findWebSources(keywords, smartQueries, originalText) {
     const API_KEY = process.env.GOOGLE_API_KEY;
     const SEARCH_ENGINE_ID = process.env.SEARCH_ENGINE_ID;
 
     if (!API_KEY || !SEARCH_ENGINE_ID) {
-        console.log('❌ Missing API credentials');
+        console.log('❌ API credentials manquantes');
         return [];
     }
     
     let allSources = [];
-    console.log(`🔍 Recherche intelligente avec ${smartQueries?.length || 0} requêtes`);
+    console.log(`🔍 Recherche avec ${smartQueries?.length || 0} requêtes intelligentes`);
     
-    // Utiliser les requêtes intelligentes
+    // 1. Utiliser requêtes intelligentes du frontend
     if (smartQueries && smartQueries.length > 0) {
         for (const [index, query] of smartQueries.slice(0, 3).entries()) {
             try {
@@ -261,18 +183,18 @@ async function findWebSourcesIntelligent(smartQueries, fallbackKeywords, origina
                     const data = await response.json();
                     if (data.items) {
                         const sources = data.items.map(item => ({
-                            title: item.title || 'Untitled',
+                            title: item.title || 'Sans titre',
                             url: item.link || '',
-                            snippet: item.snippet || 'No description',
-                            type: 'intelligent_search',
-                            query_used: query
+                            snippet: item.snippet || 'Pas de description',
+                            query_used: query,
+                            relevance: calculateRelevance(item, originalText)
                         }));
                         allSources.push(...sources);
-                        console.log(`✅ ${sources.length} sources trouvées`);
+                        console.log(`✅ ${sources.length} sources pour "${query}"`);
                     }
                 }
                 
-                await new Promise(resolve => setTimeout(resolve, 250));
+                await new Promise(resolve => setTimeout(resolve, 200));
                 
             } catch (error) {
                 console.error(`❌ Erreur requête "${query}":`, error.message);
@@ -280,13 +202,11 @@ async function findWebSourcesIntelligent(smartQueries, fallbackKeywords, origina
         }
     }
     
-    // Fallback si nécessaire
-    if (allSources.length < 2 && fallbackKeywords && fallbackKeywords.length > 0) {
-        console.log('🔄 Utilisation fallback');
-        
+    // 2. Fallback avec mots-clés si peu de sources
+    if (allSources.length < 2 && keywords.length > 0) {
         try {
-            const fallbackQuery = fallbackKeywords.slice(0, 4).join(' ');
-            console.log(`🔍 Requête fallback: "${fallbackQuery}"`);
+            const fallbackQuery = keywords.slice(0, 4).join(' ');
+            console.log(`🔄 Fallback: "${fallbackQuery}"`);
             const url = `https://www.googleapis.com/customsearch/v1?key=${API_KEY}&cx=${SEARCH_ENGINE_ID}&q=${encodeURIComponent(fallbackQuery)}&num=3`;
             const response = await fetch(url);
             
@@ -294,14 +214,14 @@ async function findWebSourcesIntelligent(smartQueries, fallbackKeywords, origina
                 const data = await response.json();
                 if (data.items) {
                     const sources = data.items.map(item => ({
-                        title: item.title || 'Untitled',
+                        title: item.title || 'Sans titre',
                         url: item.link || '',
-                        snippet: item.snippet || 'No description',
-                        type: 'fallback_search',
-                        query_used: fallbackQuery
+                        snippet: item.snippet || 'Pas de description',
+                        query_used: fallbackQuery,
+                        relevance: calculateRelevance(item, originalText)
                     }));
                     allSources.push(...sources);
-                    console.log(`✅ Fallback: ${sources.length} sources supplémentaires`);
+                    console.log(`✅ Fallback: ${sources.length} sources`);
                 }
             }
         } catch (error) {
@@ -309,122 +229,168 @@ async function findWebSourcesIntelligent(smartQueries, fallbackKeywords, origina
         }
     }
     
-    // Déduplication
+    // 3. Filtrage et tri par pertinence
+    const filteredSources = allSources.filter(source => source.relevance > 0.3);
+    
+    // 4. Déduplication
     const uniqueSources = [];
     const seenUrls = new Set();
     
-    for (const source of allSources) {
+    filteredSources.sort((a, b) => b.relevance - a.relevance);
+    
+    for (const source of filteredSources) {
         if (!seenUrls.has(source.url) && uniqueSources.length < 6) {
             seenUrls.add(source.url);
             uniqueSources.push(source);
         }
     }
     
-    console.log(`📋 ${uniqueSources.length} sources finales`);
+    console.log(`📋 ${uniqueSources.length} sources finales sélectionnées`);
     return uniqueSources;
 }
 
-// CALCUL DU SCORE FINAL - APPROCHE ÉQUILIBRÉE
-function calculateFinalScore(contentAnalysis, sourceCount, keywords, sources = []) {
+// CALCUL PERTINENCE SOURCE
+function calculateRelevance(item, originalText) {
+    const title = (item.title || '').toLowerCase();
+    const snippet = (item.snippet || '').toLowerCase();
+    const url = (item.link || '').toLowerCase();
+    const original = originalText.toLowerCase();
+    
+    let score = 0;
+    
+    // Mots-clés communs
+    const originalWords = original.split(/\s+/).filter(w => w.length > 3);
+    const titleWords = title.split(/\s+/);
+    const snippetWords = snippet.split(/\s+/);
+    
+    let commonWords = 0;
+    for (const word of originalWords.slice(0, 10)) {
+        if (titleWords.includes(word) || snippetWords.includes(word)) {
+            commonWords++;
+        }
+    }
+    
+    score += (commonWords / Math.min(originalWords.length, 10)) * 0.5;
+    
+    // Bonus sources fiables
+    if (url.includes('wikipedia.org')) score += 0.4;
+    else if (url.includes('.edu') || url.includes('.gov')) score += 0.35;
+    else if (url.includes('britannica') || url.includes('nationalgeographic')) score += 0.3;
+    else if (url.includes('history.com') || url.includes('smithsonianmag')) score += 0.25;
+    
+    // Malus sources peu fiables
+    if (url.includes('reddit.com') || url.includes('quora.com')) score -= 0.2;
+    if (url.includes('blog') || url.includes('forum')) score -= 0.15;
+    
+    return Math.max(0, Math.min(1, score));
+}
+
+// SCORING LOGIQUE FINAL
+function calculateFinalScore(contentAnalysis, sources, keywords) {
     const { type, confidence } = contentAnalysis;
     
-    // GESTION DES OPINIONS - Score modéré au lieu de très bas
+    console.log(`🎯 Calcul score pour ${type}`);
+    
+    // 1. OPINIONS - Score modéré
     if (type === 'OPINION') {
-        console.log('💭 Opinion détectée - Score modéré');
         return {
-            score: 0.40,
-            explanation: "**Opinion/Subjective** (40%). Personal viewpoint or subjective statement. Consider seeking additional perspectives."
+            score: 0.35,
+            explanation: "**Opinion subjective** (35%). Point de vue personnel qui nécessite d'autres perspectives pour être équilibré."
         };
     }
     
-    // GESTION DES QUESTIONS UTILISATEUR
-    if (type === 'USER_QUESTION') {
+    // 2. QUESTIONS - Score bas
+    if (type === 'QUESTION') {
+        return {
+            score: 0.25,
+            explanation: "**Question utilisateur** (25%). Ceci semble être une question plutôt qu'une affirmation factuelle."
+        };
+    }
+    
+    // 3. CONTENU TROP COURT
+    if (type === 'TOO_SHORT') {
         return {
             score: 0.20,
-            explanation: "**User Question** (20%). This appears to be a question rather than a factual statement."
+            explanation: "**Contenu insuffisant** (20%). Texte trop court pour une analyse fiable."
         };
     }
     
-    // SCORES DE BASE équilibrés
-    let baseScore = 0.40;
+    // 4. FAITS VÉRIFIABLES - Scoring basé sur type + sources
+    let baseScore = 0.45;
     let explanation = "";
     
     switch (type) {
         case 'HISTORICAL_FACT':
-            baseScore = 0.65;
-            explanation = "**Historical information** - ";
+            baseScore = 0.70;
+            explanation = "**Fait historique** - ";
             break;
         case 'GEOGRAPHIC_FACT':
-            baseScore = 0.70;
-            explanation = "**Geographic information** - ";
+            baseScore = 0.75;
+            explanation = "**Information géographique** - ";
             break;
         case 'SCIENTIFIC_FACT':
-            baseScore = 0.75;
-            explanation = "**Scientific information** - ";
+            baseScore = 0.80;
+            explanation = "**Fait scientifique** - ";
             break;
-        case 'POTENTIAL_FACT':
-            baseScore = 0.55;
-            explanation = "**Factual information** - ";
+        case 'STATISTICAL_FACT':
+            baseScore = 0.65;
+            explanation = "**Donnée statistique** - ";
             break;
-        case 'TOO_SHORT':
-            return {
-                score: 0.25,
-                explanation: "**Insufficient content** (25%). Text too short for reliable analysis."
-            };
+        case 'GENERAL_INFO':
+            baseScore = 0.50;
+            explanation = "**Information générale** - ";
+            break;
     }
     
-    // BONUS BASÉ SUR LES SOURCES
+    // 5. BONUS SOURCES
     let sourceBonus = 0;
     let sourceText = "";
     
     if (sources && sources.length > 0) {
         const wikipediaSources = sources.filter(s => s.url && s.url.includes('wikipedia')).length;
         const academicSources = sources.filter(s => s.url && (s.url.includes('.edu') || s.url.includes('.gov'))).length;
+        const highQualitySources = sources.filter(s => s.relevance > 0.6).length;
         
+        // Bonus par qualité
         if (wikipediaSources >= 1) {
-            sourceBonus += 0.15;
-            sourceText += "Wikipedia sources found. ";
+            sourceBonus += 0.12;
+            sourceText += "Sources Wikipedia trouvées. ";
         }
         
         if (academicSources >= 1) {
-            sourceBonus += 0.10;
-            sourceText += "Academic/official sources found. ";
+            sourceBonus += 0.08;
+            sourceText += "Sources académiques/officielles. ";
         }
         
-        if (sources.length >= 3) {
+        if (highQualitySources >= 2) {
             sourceBonus += 0.10;
-            sourceText += "Multiple sources support this information.";
+            sourceText += "Plusieurs sources très pertinentes.";
+        } else if (sources.length >= 3) {
+            sourceBonus += 0.06;
+            sourceText += "Multiples sources de vérification.";
         } else if (sources.length >= 1) {
-            sourceBonus += 0.05;
-            sourceText += "Limited source verification available.";
+            sourceBonus += 0.03;
+            sourceText += "Vérification limitée disponible.";
         }
     } else {
-        sourceText += "No supporting sources found for verification.";
+        sourceText += "Aucune source de vérification trouvée.";
     }
     
-    // CALCUL FINAL avec plafond réaliste
-    const finalScore = Math.min(baseScore + sourceBonus, 0.90);
+    // 6. CALCUL FINAL
+    const finalScore = Math.min(baseScore + sourceBonus, 0.92);
     const finalPercent = Math.round(finalScore * 100);
     
-    // LABELS DE FIABILITÉ
-    let reliabilityLabel = "";
-    if (finalPercent >= 80) {
-        reliabilityLabel = "High reliability";
-    } else if (finalPercent >= 65) {
-        reliabilityLabel = "Good reliability";
-    } else if (finalPercent >= 50) {
-        reliabilityLabel = "Moderate reliability";
-    } else if (finalPercent >= 35) {
-        reliabilityLabel = "Limited reliability";
-    } else {
-        reliabilityLabel = "Low reliability";
-    }
-    
-    const fullExplanation = `${explanation}**${reliabilityLabel}** (${finalPercent}%). ${sourceText}`;
+    // 7. LABELS LOGIQUES
+    let reliabilityLabel;
+    if (finalPercent >= 85) reliabilityLabel = "Très fiable";
+    else if (finalPercent >= 70) reliabilityLabel = "Bonne fiabilité";
+    else if (finalPercent >= 55) reliabilityLabel = "Fiabilité modérée";
+    else if (finalPercent >= 40) reliabilityLabel = "Fiabilité limitée";
+    else reliabilityLabel = "Faible fiabilité";
     
     return {
         score: finalScore,
-        explanation: fullExplanation
+        explanation: `${explanation}**${reliabilityLabel}** (${finalPercent}%). ${sourceText}`
     };
 }
 
@@ -433,42 +399,38 @@ app.post('/verify', async (req, res) => {
     try {
         const { text, smartQueries, analysisType } = req.body;
         
-        console.log(`🔍 Analyse: Type ${analysisType || 'standard'}`);
+        console.log(`🔍 Nouvelle analyse: ${analysisType || 'standard'}`);
         
         if (!text || text.length < 10) {
             return res.json({ 
                 overallConfidence: 0.20, 
-                scoringExplanation: "**Insufficient input** (20%). Text too short for meaningful analysis.", 
+                scoringExplanation: "**Entrée insuffisante** (20%). Texte trop court pour une analyse significative.", 
                 keywords: [],
                 sources: []
             });
         }
         
-        // ANALYSE DU CONTENU
+        // 1. ANALYSE TYPE DE CONTENU
         const contentAnalysis = analyzeContentType(text);
-        console.log(`📊 Type: ${contentAnalysis.type} (${(contentAnalysis.confidence * 100).toFixed(0)}%)`);
+        console.log(`📊 Type détecté: ${contentAnalysis.type}`);
         
-        // EXTRACTION DES MOTS-CLÉS
+        // 2. EXTRACTION MOTS-CLÉS
         const keywords = extractMainKeywords(text);
+        console.log(`🏷️ Mots-clés: ${keywords.slice(0, 3).join(', ')}`);
         
-        // RECHERCHE DE SOURCES pour contenu factuel
+        // 3. RECHERCHE SOURCES (seulement pour faits vérifiables)
         let sources = [];
-        if (['HISTORICAL_FACT', 'GEOGRAPHIC_FACT', 'SCIENTIFIC_FACT', 'POTENTIAL_FACT'].includes(contentAnalysis.type)) {
-            
-            if (analysisType === 'intelligent' && smartQueries && smartQueries.length > 0) {
-                console.log('🧠 Recherche intelligente');
-                sources = await findWebSourcesIntelligent(smartQueries, keywords, text);
-            } else {
-                console.log('🔍 Recherche standard');
-                sources = await findWebSources(keywords);
-            }
-            
-            console.log(`📄 Sources trouvées: ${sources.length}`);
+        if (['HISTORICAL_FACT', 'GEOGRAPHIC_FACT', 'SCIENTIFIC_FACT', 'STATISTICAL_FACT', 'GENERAL_INFO'].includes(contentAnalysis.type)) {
+            console.log('🔍 Recherche de sources...');
+            sources = await findWebSources(keywords, smartQueries, text);
+        } else {
+            console.log('⏭️ Pas de recherche de sources pour ce type de contenu');
         }
         
-        // CALCUL DU SCORE FINAL
-        const result = calculateFinalScore(contentAnalysis, sources.length, keywords, sources);
+        // 4. CALCUL SCORE FINAL
+        const result = calculateFinalScore(contentAnalysis, sources, keywords);
         
+        // 5. RÉPONSE
         const response = {
             overallConfidence: result.score,
             sources: sources,
@@ -477,14 +439,14 @@ app.post('/verify', async (req, res) => {
             contentType: contentAnalysis.type
         };
         
-        console.log(`✅ Score: ${Math.round(result.score * 100)}% (${contentAnalysis.type})`);
+        console.log(`✅ Score final: ${Math.round(result.score * 100)}%`);
         res.json(response);
         
     } catch (error) {
-        console.error('❌ Erreur:', error);
+        console.error('❌ Erreur analyse:', error);
         res.status(500).json({ 
             overallConfidence: 0.15,
-            scoringExplanation: "**Server error** (15%). Unable to complete analysis.",
+            scoringExplanation: "**Erreur serveur** (15%). Impossible de compléter l'analyse.",
             keywords: [],
             sources: []
         });
@@ -497,7 +459,7 @@ app.post('/feedback', async (req, res) => {
         const { originalText, scoreGiven, isUseful, comment, sourcesFound } = req.body;
         
         if (!originalText || scoreGiven === undefined || isUseful === undefined) {
-            return res.status(400).json({ error: 'Incomplete feedback data' });
+            return res.status(400).json({ error: 'Données feedback incomplètes' });
         }
         
         const client = await pool.connect();
@@ -505,49 +467,49 @@ app.post('/feedback', async (req, res) => {
         await client.query(
             'INSERT INTO feedback(original_text, score_given, is_useful, comment, sources_found) VALUES($1,$2,$3,$4,$5)',
             [
-                sanitizeInput(originalText).substring(0, 3000), 
+                sanitizeInput(originalText).substring(0, 2000), 
                 scoreGiven, 
                 isUseful, 
-                sanitizeInput(comment || '').substring(0, 1000), 
+                sanitizeInput(comment || '').substring(0, 500), 
                 JSON.stringify(sourcesFound || [])
             ]
         );
         
         client.release();
-        console.log(`📝 Feedback: ${isUseful ? 'Positif' : 'Négatif'}`);
+        console.log(`📝 Feedback reçu: ${isUseful ? 'Utile' : 'Pas utile'}`);
         res.json({ success: true });
         
     } catch (err) {
         console.error('❌ Erreur feedback:', err);
-        res.status(500).json({ error: 'Server error' });
+        res.status(500).json({ error: 'Erreur serveur' });
     }
 });
 
-// ENDPOINT STATISTIQUES
+// ENDPOINT STATS
 app.get('/stats', async (req, res) => {
     try {
         const client = await pool.connect();
         const result = await client.query(`
             SELECT 
-                COUNT(*) as total_feedback,
-                COUNT(CASE WHEN is_useful = true THEN 1 END) as positive_feedback,
-                AVG(score_given) as avg_score
+                COUNT(*) as total,
+                COUNT(CASE WHEN is_useful = true THEN 1 END) as positif,
+                AVG(score_given) as score_moyen
             FROM feedback 
-            WHERE created_at > NOW() - INTERVAL '30 days'
+            WHERE created_at > NOW() - INTERVAL '7 days'
         `);
         client.release();
         
         const stats = result.rows[0];
         res.json({
-            total_feedback: parseInt(stats.total_feedback),
-            positive_feedback: parseInt(stats.positive_feedback),
-            satisfaction_rate: stats.total_feedback > 0 ? Math.round((stats.positive_feedback / stats.total_feedback) * 100) : 0,
-            average_score: parseFloat(stats.avg_score) || 0
+            total_feedback: parseInt(stats.total),
+            feedback_positif: parseInt(stats.positif),
+            taux_satisfaction: stats.total > 0 ? Math.round((stats.positif / stats.total) * 100) : 0,
+            score_moyen: parseFloat(stats.score_moyen) || 0
         });
         
     } catch (err) {
         console.error('❌ Erreur stats:', err);
-        res.status(500).json({ error: 'Error retrieving stats' });
+        res.status(500).json({ error: 'Erreur stats' });
     }
 });
 
@@ -555,21 +517,20 @@ app.get('/stats', async (req, res) => {
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
-        version: '3.0-final',
-        features: ['intelligent_search', 'balanced_scoring', 'gemini_support', 'secure_inputs'],
+        version: 'FINAL-1.0',
+        features: ['capture_universelle', 'scoring_logique', 'sources_pertinentes'],
         timestamp: new Date().toISOString()
     });
 });
 
-// DÉMARRAGE DU SERVEUR
+// DÉMARRAGE
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 VerifyAI Backend v3.0 - VERSION FINALE`);
-    console.log(`📡 Port ${PORT}`);
-    console.log(`🌍 Système généraliste US/International`);
-    console.log(`🔍 Support Gemini renforcé`);
-    console.log(`⚖️ Scoring équilibré et pratique`);
-    console.log(`🔒 Sécurité Chrome Web Store complète`);
-    console.log(`✅ PRÊT POUR PRODUCTION`);
+    console.log(`🚀 VerifyAI Backend FINAL v1.0`);
+    console.log(`📡 Port: ${PORT}`);
+    console.log(`🎯 CAPTURE UNIVERSELLE ChatGPT/Claude/Gemini`);
+    console.log(`⚖️ SCORING LOGIQUE équilibré`);
+    console.log(`🔍 SOURCES PERTINENTES intelligentes`);
+    console.log(`✅ AUCUNE MODIFICATION NÉCESSAIRE APRÈS DÉPLOIEMENT`);
     initDb();
 });
