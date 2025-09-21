@@ -523,6 +523,95 @@ app.get('/health', (req, res) => {
     });
 });
 
+// ANALYTICS ENDPOINTS - AJOUTÉS POUR TRACKING
+app.post('/analytics', async (req, res) => {
+    try {
+        const { 
+            event_type, 
+            user_id, 
+            session_id, 
+            event_data 
+        } = req.body;
+
+        // Validation basique
+        if (!event_type || !user_id) {
+            return res.status(400).json({ error: 'event_type et user_id requis' });
+        }
+
+        console.log(`Analytics: ${event_type} from ${user_id}`);
+
+        // Sauvegarder l'événement
+        const client = await pool.connect();
+        
+        await client.query(`
+            INSERT INTO analytics_events (
+                event_type, 
+                user_id, 
+                session_id, 
+                timestamp, 
+                event_data, 
+                ip_address
+            ) VALUES ($1, $2, $3, NOW(), $4, $5)
+        `, [
+            event_type,
+            user_id,
+            session_id || null,
+            JSON.stringify(event_data || {}),
+            req.ip || null
+        ]);
+
+        client.release();
+
+        res.json({ success: true });
+
+    } catch (error) {
+        console.error('Analytics error:', error);
+        res.status(500).json({ error: 'Failed to save analytics' });
+    }
+});
+
+// DASHBOARD SIMPLE POUR VOIR LES DONNÉES
+app.get('/dashboard', async (req, res) => {
+    try {
+        const client = await pool.connect();
+        
+        // Stats simples des 7 derniers jours
+        const events = await client.query(`
+            SELECT 
+                event_type,
+                COUNT(*) as count,
+                COUNT(DISTINCT user_id) as unique_users
+            FROM analytics_events 
+            WHERE timestamp > NOW() - INTERVAL '7 days'
+            GROUP BY event_type
+            ORDER BY count DESC
+        `);
+
+        const dailyStats = await client.query(`
+            SELECT 
+                DATE(timestamp) as date,
+                COUNT(DISTINCT user_id) as daily_users,
+                COUNT(*) as total_events
+            FROM analytics_events 
+            WHERE timestamp > NOW() - INTERVAL '7 days'
+            GROUP BY DATE(timestamp)
+            ORDER BY date DESC
+        `);
+
+        client.release();
+
+        res.json({
+            events_last_7_days: events.rows,
+            daily_stats: dailyStats.rows,
+            generated_at: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Dashboard error:', error);
+        res.status(500).json({ error: 'Dashboard error' });
+    }
+});
+
 // STARTUP
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
@@ -531,6 +620,7 @@ app.listen(PORT, () => {
     console.log(`🎯 UNIVERSAL CAPTURE ChatGPT/Claude/Gemini`);
     console.log(`⚖️ LOGICAL SCORING balanced`);
     console.log(`🔍 RELEVANT SOURCES intelligent`);
+    console.log(`📊 Analytics endpoints ajoutés pour tracking`);
     console.log(`✅ NO MODIFICATIONS NEEDED AFTER DEPLOYMENT`);
     initDb();
 });
