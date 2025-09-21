@@ -20,6 +20,8 @@ const pool = new Pool({
 const initDb = async () => {
     try {
         const client = await pool.connect();
+        
+        // Table feedback existante
         await client.query(`
             CREATE TABLE IF NOT EXISTS feedback (
                 id SERIAL PRIMARY KEY,
@@ -31,8 +33,39 @@ const initDb = async () => {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
+        
+        // NOUVELLE TABLE ANALYTICS
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS analytics_events (
+                id SERIAL PRIMARY KEY,
+                event_type VARCHAR(100) NOT NULL,
+                user_id VARCHAR(100) NOT NULL,
+                session_id VARCHAR(100),
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                event_data JSONB,
+                ip_address INET,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        
+        // Index pour performance
+        await client.query(`
+            CREATE INDEX IF NOT EXISTS idx_analytics_timestamp 
+            ON analytics_events(timestamp);
+        `);
+        
+        await client.query(`
+            CREATE INDEX IF NOT EXISTS idx_analytics_user_id 
+            ON analytics_events(user_id);
+        `);
+        
+        await client.query(`
+            CREATE INDEX IF NOT EXISTS idx_analytics_event_type 
+            ON analytics_events(event_type);
+        `);
+        
         client.release();
-        console.log('✅ Database ready');
+        console.log('✅ Database ready with analytics table');
     } catch (err) {
         console.error('❌ Database error:', err.message);
     }
@@ -518,12 +551,12 @@ app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
         version: 'ENGLISH-FINAL-1.0',
-        features: ['universal_capture', 'logical_scoring', 'relevant_sources'],
+        features: ['universal_capture', 'logical_scoring', 'relevant_sources', 'enhanced_analytics'],
         timestamp: new Date().toISOString()
     });
 });
 
-// ANALYTICS ENDPOINTS - AJOUTÉS POUR TRACKING
+// ANALYTICS ENDPOINTS
 app.post('/analytics', async (req, res) => {
     try {
         const { 
@@ -538,7 +571,7 @@ app.post('/analytics', async (req, res) => {
             return res.status(400).json({ error: 'event_type et user_id requis' });
         }
 
-        console.log(`Analytics: ${event_type} from ${user_id}`);
+        console.log(`📊 Analytics: ${event_type} from ${user_id}`);
 
         // Sauvegarder l'événement
         const client = await pool.connect();
@@ -557,7 +590,7 @@ app.post('/analytics', async (req, res) => {
             user_id,
             session_id || null,
             JSON.stringify(event_data || {}),
-            req.ip || null
+            req.ip || req.connection?.remoteAddress || null
         ]);
 
         client.release();
@@ -565,17 +598,17 @@ app.post('/analytics', async (req, res) => {
         res.json({ success: true });
 
     } catch (error) {
-        console.error('Analytics error:', error);
+        console.error('❌ Analytics error:', error);
         res.status(500).json({ error: 'Failed to save analytics' });
     }
 });
 
-// DASHBOARD SIMPLE POUR VOIR LES DONNÉES
+// DASHBOARD ENRICHI
 app.get('/dashboard', async (req, res) => {
     try {
         const client = await pool.connect();
         
-        // Stats simples des 7 derniers jours
+        // Stats des 7 derniers jours
         const events = await client.query(`
             SELECT 
                 event_type,
@@ -587,10 +620,11 @@ app.get('/dashboard', async (req, res) => {
             ORDER BY count DESC
         `);
 
+        // Stats quotidiennes
         const dailyStats = await client.query(`
             SELECT 
                 DATE(timestamp) as date,
-                COUNT(DISTINCT user_id) as daily_users,
+                COUNT(DISTINCT user_id) as unique_users,
                 COUNT(*) as total_events
             FROM analytics_events 
             WHERE timestamp > NOW() - INTERVAL '7 days'
@@ -598,29 +632,111 @@ app.get('/dashboard', async (req, res) => {
             ORDER BY date DESC
         `);
 
+        // Segmentation utilisateur
+        const userSegments = await client.query(`
+            SELECT 
+                (event_data->>'userSegment') as segment,
+                COUNT(DISTINCT user_id) as users
+            FROM analytics_events 
+            WHERE event_type = 'user_performance_metrics'
+            AND timestamp > NOW() - INTERVAL '7 days'
+            AND event_data->>'userSegment' IS NOT NULL
+            GROUP BY (event_data->>'userSegment')
+        `);
+
+        // Plateformes populaires
+        const platforms = await client.query(`
+            SELECT 
+                (event_data->>'platform') as platform,
+                COUNT(*) as count
+            FROM analytics_events 
+            WHERE event_type = 'analysis_completed'
+            AND timestamp > NOW() - INTERVAL '7 days'
+            AND event_data->>'platform' IS NOT NULL
+            GROUP BY (event_data->>'platform')
+            ORDER BY count DESC
+        `);
+
         client.release();
 
         res.json({
             events_last_7_days: events.rows,
             daily_stats: dailyStats.rows,
+            user_segments: userSegments.rows,
+            popular_platforms: platforms.rows,
             generated_at: new Date().toISOString()
         });
 
     } catch (error) {
-        console.error('Dashboard error:', error);
+        console.error('❌ Dashboard error:', error);
         res.status(500).json({ error: 'Dashboard error' });
+    }
+});
+
+// ENDPOINT DÉTAILS ANALYTICS
+app.get('/analytics/detailed', async (req, res) => {
+    try {
+        const client = await pool.connect();
+        
+        // Taux de conversion
+        const conversionRate = await client.query(`
+            SELECT 
+                COUNT(CASE WHEN event_type = 'extension_opened' THEN 1 END) as opens,
+                COUNT(CASE WHEN event_type = 'analysis_started' THEN 1 END) as starts,
+                COUNT(CASE WHEN event_type = 'analysis_completed' THEN 1 END) as completes,
+                COUNT(CASE WHEN event_type = 'feedback_given' THEN 1 END) as feedbacks
+            FROM analytics_events 
+            WHERE timestamp > NOW() - INTERVAL '7 days'
+        `);
+
+        // Moyenne des scores
+        const averageScores = await client.query(`
+            SELECT 
+                AVG((event_data->>'score')::numeric) as avg_confidence_score,
+                AVG((event_data->>'duration')::numeric) as avg_analysis_duration
+            FROM analytics_events 
+            WHERE event_type = 'analysis_completed'
+            AND timestamp > NOW() - INTERVAL '7 days'
+        `);
+
+        client.release();
+
+        const conversion = conversionRate.rows[0];
+        const scores = averageScores.rows[0];
+
+        res.json({
+            conversion_funnel: {
+                opens: parseInt(conversion.opens),
+                starts: parseInt(conversion.starts), 
+                completes: parseInt(conversion.completes),
+                feedbacks: parseInt(conversion.feedbacks),
+                open_to_start_rate: conversion.opens > 0 ? Math.round((conversion.starts / conversion.opens) * 100) : 0,
+                start_to_complete_rate: conversion.starts > 0 ? Math.round((conversion.completes / conversion.starts) * 100) : 0,
+                feedback_rate: conversion.completes > 0 ? Math.round((conversion.feedbacks / conversion.completes) * 100) : 0
+            },
+            performance: {
+                average_confidence_score: parseFloat(scores.avg_confidence_score) || 0,
+                average_analysis_duration_ms: parseInt(scores.avg_analysis_duration) || 0
+            },
+            generated_at: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('❌ Detailed analytics error:', error);
+        res.status(500).json({ error: 'Detailed analytics error' });
     }
 });
 
 // STARTUP
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 VerifyAI Backend ENGLISH FINAL v1.0`);
+    console.log(`🚀 VerifyAI Backend ENGLISH FINAL v1.0 - ANALYTICS ENABLED`);
     console.log(`📡 Port: ${PORT}`);
     console.log(`🎯 UNIVERSAL CAPTURE ChatGPT/Claude/Gemini`);
     console.log(`⚖️ LOGICAL SCORING balanced`);
     console.log(`🔍 RELEVANT SOURCES intelligent`);
-    console.log(`📊 Analytics endpoints ajoutés pour tracking`);
-    console.log(`✅ NO MODIFICATIONS NEEDED AFTER DEPLOYMENT`);
+    console.log(`📊 ENHANCED ANALYTICS avec segmentation utilisateur`);
+    console.log(`📈 Dashboard enrichi: /dashboard et /analytics/detailed`);
+    console.log(`✅ TABLE analytics_events créée automatiquement`);
     initDb();
 });
