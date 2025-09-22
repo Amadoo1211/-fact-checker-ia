@@ -6,7 +6,7 @@ const app = express();
 
 // Final configuration
 app.use(cors({ 
-    origin: ['chrome-extension://*', 'https://fact-checker-ia-production.up.railway.app', 'http://localhost:*'],
+    origin: ['chrome-extension://*', 'https://fact-checker-ia-production.up.railway.app'],
     credentials: true
 }));
 app.use(express.json({ limit: '5mb' }));
@@ -34,7 +34,7 @@ const initDb = async () => {
             );
         `);
         
-        // NOUVELLE TABLE ANALYTICS
+        // NOUVELLE TABLE ANALYTICS - AJOUTÉE
         await client.query(`
             CREATE TABLE IF NOT EXISTS analytics_events (
                 id SERIAL PRIMARY KEY,
@@ -48,7 +48,7 @@ const initDb = async () => {
             );
         `);
         
-        // Index pour performance
+        // Index pour performance - AJOUTÉS
         await client.query(`
             CREATE INDEX IF NOT EXISTS idx_analytics_timestamp 
             ON analytics_events(timestamp);
@@ -486,6 +486,53 @@ app.post('/verify', async (req, res) => {
     }
 });
 
+// ANALYTICS ENDPOINT - AJOUTÉ
+app.post('/analytics', async (req, res) => {
+    try {
+        const { event_type, user_id, session_id, event_data } = req.body;
+
+        if (!event_type || !user_id) {
+            return res.status(400).json({ error: 'event_type and user_id required' });
+        }
+
+        console.log(`📊 Analytics: ${event_type} from ${user_id}`);
+
+        const client = await pool.connect();
+        
+        const result = await client.query(`
+            INSERT INTO analytics_events (
+                event_type, 
+                user_id, 
+                session_id, 
+                timestamp, 
+                event_data, 
+                ip_address
+            ) VALUES ($1, $2, $3, NOW(), $4, $5)
+            RETURNING id
+        `, [
+            event_type,
+            user_id,
+            session_id || null,
+            JSON.stringify(event_data || {}),
+            req.ip || req.connection?.remoteAddress || null
+        ]);
+
+        client.release();
+
+        console.log(`✅ Analytics saved with ID: ${result.rows[0].id}`);
+
+        res.json({ 
+            success: true,
+            id: result.rows[0].id,
+            message: 'Event tracked successfully'
+        });
+
+    } catch (error) {
+        console.error('❌ Analytics error:', error);
+        res.status(500).json({ error: 'Failed to save analytics' });
+    }
+});
+
 // FEEDBACK ENDPOINT
 app.post('/feedback', async (req, res) => {
     try {
@@ -518,51 +565,44 @@ app.post('/feedback', async (req, res) => {
     }
 });
 
-// ANALYTICS ENDPOINT - CORRIGÉ POUR VRAIMENT SAUVEGARDER
-app.post('/analytics', async (req, res) => {
+// DASHBOARD ENDPOINT - AJOUTÉ
+app.get('/dashboard', async (req, res) => {
     try {
-        const { event_type, user_id, session_id, event_data } = req.body;
-
-        if (!event_type || !user_id) {
-            return res.status(400).json({ error: 'event_type and user_id required' });
-        }
-
-        console.log(`📊 Analytics received: ${event_type} from ${user_id}`);
-
-        // SAUVEGARDER DANS POSTGRESQL
         const client = await pool.connect();
         
-        const result = await client.query(`
-            INSERT INTO analytics_events (
-                event_type, 
-                user_id, 
-                session_id, 
-                timestamp, 
-                event_data, 
-                ip_address
-            ) VALUES ($1, $2, $3, NOW(), $4, $5)
-            RETURNING id
-        `, [
-            event_type,
-            user_id,
-            session_id || null,
-            JSON.stringify(event_data || {}),
-            req.ip || req.connection?.remoteAddress || null
-        ]);
+        const events = await client.query(`
+            SELECT 
+                event_type,
+                COUNT(*) as count,
+                COUNT(DISTINCT user_id) as unique_users
+            FROM analytics_events 
+            WHERE timestamp > NOW() - INTERVAL '7 days'
+            GROUP BY event_type
+            ORDER BY count DESC
+        `);
+
+        const dailyStats = await client.query(`
+            SELECT 
+                DATE(timestamp) as date,
+                COUNT(DISTINCT user_id) as unique_users,
+                COUNT(*) as total_events
+            FROM analytics_events 
+            WHERE timestamp > NOW() - INTERVAL '7 days'
+            GROUP BY DATE(timestamp)
+            ORDER BY date DESC
+        `);
 
         client.release();
 
-        console.log(`✅ Analytics saved in PostgreSQL with ID: ${result.rows[0].id}`);
-
-        res.json({ 
-            success: true,
-            id: result.rows[0].id,
-            message: 'Event tracked successfully'
+        res.json({
+            events_last_7_days: events.rows,
+            daily_stats: dailyStats.rows,
+            generated_at: new Date().toISOString()
         });
 
     } catch (error) {
-        console.error('❌ Analytics save error:', error);
-        res.status(500).json({ error: 'Failed to save analytics' });
+        console.error('❌ Dashboard error:', error);
+        res.status(500).json({ error: 'Dashboard error' });
     }
 });
 
@@ -598,183 +638,17 @@ app.get('/stats', async (req, res) => {
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
-        version: 'ENGLISH-FINAL-1.0',
-        features: ['universal_capture', 'logical_scoring', 'relevant_sources', 'enhanced_analytics'],
+        version: 'FINAL-WITH-ANALYTICS-1.0',
+        features: ['universal_capture', 'logical_scoring', 'relevant_sources', 'analytics_tracking'],
         timestamp: new Date().toISOString()
     });
-});
-
-// DASHBOARD ENRICHI
-app.get('/dashboard', async (req, res) => {
-    try {
-        const client = await pool.connect();
-        
-        // Stats des 7 derniers jours
-        const events = await client.query(`
-            SELECT 
-                event_type,
-                COUNT(*) as count,
-                COUNT(DISTINCT user_id) as unique_users
-            FROM analytics_events 
-            WHERE timestamp > NOW() - INTERVAL '7 days'
-            GROUP BY event_type
-            ORDER BY count DESC
-        `);
-
-        // Stats quotidiennes
-        const dailyStats = await client.query(`
-            SELECT 
-                DATE(timestamp) as date,
-                COUNT(DISTINCT user_id) as unique_users,
-                COUNT(*) as total_events
-            FROM analytics_events 
-            WHERE timestamp > NOW() - INTERVAL '7 days'
-            GROUP BY DATE(timestamp)
-            ORDER BY date DESC
-        `);
-
-        // Segmentation utilisateur
-        const userSegments = await client.query(`
-            SELECT 
-                (event_data->>'userSegment') as segment,
-                COUNT(DISTINCT user_id) as users
-            FROM analytics_events 
-            WHERE event_type = 'user_performance_metrics'
-            AND timestamp > NOW() - INTERVAL '7 days'
-            AND event_data->>'userSegment' IS NOT NULL
-            GROUP BY (event_data->>'userSegment')
-        `);
-
-        // Plateformes populaires
-        const platforms = await client.query(`
-            SELECT 
-                (event_data->>'platform') as platform,
-                COUNT(*) as count
-            FROM analytics_events 
-            WHERE event_type = 'analysis_completed'
-            AND timestamp > NOW() - INTERVAL '7 days'
-            AND event_data->>'platform' IS NOT NULL
-            GROUP BY (event_data->>'platform')
-            ORDER BY count DESC
-        `);
-
-        client.release();
-
-        res.json({
-            events_last_7_days: events.rows,
-            daily_stats: dailyStats.rows,
-            user_segments: userSegments.rows,
-            popular_platforms: platforms.rows,
-            generated_at: new Date().toISOString()
-        });
-
-    } catch (error) {
-        console.error('❌ Dashboard error:', error);
-        res.status(500).json({ error: 'Dashboard error' });
-    }
-});
-
-// ENDPOINT DÉTAILS ANALYTICS
-app.get('/analytics/detailed', async (req, res) => {
-    try {
-        const client = await pool.connect();
-        
-        // Taux de conversion
-        const conversionRate = await client.query(`
-            SELECT 
-                COUNT(CASE WHEN event_type = 'extension_opened' THEN 1 END) as opens,
-                COUNT(CASE WHEN event_type = 'analysis_started' THEN 1 END) as starts,
-                COUNT(CASE WHEN event_type = 'analysis_completed' THEN 1 END) as completes,
-                COUNT(CASE WHEN event_type = 'feedback_given' THEN 1 END) as feedbacks
-            FROM analytics_events 
-            WHERE timestamp > NOW() - INTERVAL '7 days'
-        `);
-
-        // Moyenne des scores
-        const averageScores = await client.query(`
-            SELECT 
-                AVG((event_data->>'score')::numeric) as avg_confidence_score,
-                AVG((event_data->>'duration')::numeric) as avg_analysis_duration
-            FROM analytics_events 
-            WHERE event_type = 'analysis_completed'
-            AND timestamp > NOW() - INTERVAL '7 days'
-        `);
-
-        client.release();
-
-        const conversion = conversionRate.rows[0];
-        const scores = averageScores.rows[0];
-
-        res.json({
-            conversion_funnel: {
-                opens: parseInt(conversion.opens),
-                starts: parseInt(conversion.starts), 
-                completes: parseInt(conversion.completes),
-                feedbacks: parseInt(conversion.feedbacks),
-                open_to_start_rate: conversion.opens > 0 ? Math.round((conversion.starts / conversion.opens) * 100) : 0,
-                start_to_complete_rate: conversion.starts > 0 ? Math.round((conversion.completes / conversion.starts) * 100) : 0,
-                feedback_rate: conversion.completes > 0 ? Math.round((conversion.feedbacks / conversion.completes) * 100) : 0
-            },
-            performance: {
-                average_confidence_score: parseFloat(scores.avg_confidence_score) || 0,
-                average_analysis_duration_ms: parseInt(scores.avg_analysis_duration) || 0
-            },
-            generated_at: new Date().toISOString()
-        });
-
-    } catch (error) {
-        console.error('❌ Detailed analytics error:', error);
-        res.status(500).json({ error: 'Detailed analytics error' });
-    }
-});
-
-// TEST ENDPOINT FOR ANALYTICS
-app.get('/analytics/test', async (req, res) => {
-    try {
-        const client = await pool.connect();
-        const result = await client.query('SELECT COUNT(*) FROM analytics_events');
-        client.release();
-        
-        res.json({ 
-            success: true,
-            totalEvents: parseInt(result.rows[0].count),
-            message: 'Analytics database connection working'
-        });
-    } catch (error) {
-        res.status(500).json({ 
-            error: 'Database error',
-            message: error.message 
-        });
-    }
-});
-
-// RECENT ANALYTICS ENDPOINT
-app.get('/analytics/recent', async (req, res) => {
-    try {
-        const client = await pool.connect();
-        const result = await client.query(
-            'SELECT * FROM analytics_events ORDER BY created_at DESC LIMIT 20'
-        );
-        client.release();
-        
-        res.json({ 
-            success: true,
-            count: result.rows.length,
-            events: result.rows
-        });
-    } catch (error) {
-        res.status(500).json({ 
-            error: 'Database error',
-            message: error.message 
-        });
-    }
 });
 
 // ROOT ENDPOINT
 app.get('/', (req, res) => {
     res.json({ 
         status: 'online',
-        service: 'VerifyAI Backend',
+        service: 'VerifyAI Backend with Analytics',
         version: '1.0.0',
         endpoints: {
             verify: 'POST /verify',
@@ -782,10 +656,7 @@ app.get('/', (req, res) => {
             feedback: 'POST /feedback',
             stats: 'GET /stats',
             dashboard: 'GET /dashboard',
-            health: 'GET /health',
-            test: 'GET /analytics/test',
-            recent: 'GET /analytics/recent',
-            detailed: 'GET /analytics/detailed'
+            health: 'GET /health'
         }
     });
 });
@@ -793,13 +664,12 @@ app.get('/', (req, res) => {
 // STARTUP
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 VerifyAI Backend ENGLISH FINAL v1.0 - ANALYTICS ENABLED`);
+    console.log(`🚀 VerifyAI Backend FINAL with Analytics v1.0`);
     console.log(`📡 Port: ${PORT}`);
     console.log(`🎯 UNIVERSAL CAPTURE ChatGPT/Claude/Gemini`);
     console.log(`⚖️ LOGICAL SCORING balanced`);
     console.log(`🔍 RELEVANT SOURCES intelligent`);
-    console.log(`📊 ANALYTICS TRACKING ACTIVE - Saving to PostgreSQL`);
-    console.log(`✅ Analytics endpoint: POST /analytics`);
-    console.log(`✅ Dashboard: GET /dashboard`);
+    console.log(`📊 ANALYTICS TRACKING enabled`);
+    console.log(`✅ Extension Ready for Production`);
     initDb();
 });
