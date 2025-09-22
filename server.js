@@ -427,214 +427,7 @@ function calculateFinalScore(contentAnalysis, sources, keywords) {
     };
 }
 
-// ===========================
-// API ENDPOINTS POUR L'EXTENSION CHROME
-// ===========================
-
-// MAIN FACT-CHECK ENDPOINT
-app.post('/api/factcheck', async (req, res) => {
-    console.log('🔍 Fact check request from extension');
-    
-    try {
-        const { text, userId, sessionId } = req.body;
-        
-        if (!text || text.length < 10) {
-            return res.json({
-                verdict: 'UNVERIFIABLE',
-                summary: 'Text too short for analysis',
-                confidenceScore: 0.2,
-                keyPoints: ['Insufficient content provided'],
-                sources: []
-            });
-        }
-        
-        // Log the fact check request
-        if (userId) {
-            try {
-                const client = await pool.connect();
-                await client.query(
-                    `INSERT INTO analytics_events (event_type, user_id, session_id, event_data)
-                     VALUES ($1, $2, $3, $4)`,
-                    ['fact_check_performed', userId, sessionId, JSON.stringify({ textLength: text.length })]
-                );
-                client.release();
-            } catch (err) {
-                console.log('Analytics logging error:', err.message);
-            }
-        }
-        
-        // Analyze content
-        const contentAnalysis = analyzeContentType(text);
-        const keywords = extractMainKeywords(text);
-        
-        // Get sources for verifiable facts
-        let sources = [];
-        if (['HISTORICAL_FACT', 'GEOGRAPHIC_FACT', 'SCIENTIFIC_FACT', 'STATISTICAL_FACT', 'GENERAL_INFO'].includes(contentAnalysis.type)) {
-            sources = await findWebSources(keywords, [], text);
-        }
-        
-        // Calculate score
-        const result = calculateFinalScore(contentAnalysis, sources, keywords);
-        
-        // Determine verdict based on score
-        let verdict;
-        if (result.score >= 0.8) verdict = 'TRUE';
-        else if (result.score >= 0.65) verdict = 'MOSTLY TRUE';
-        else if (result.score >= 0.5) verdict = 'PARTIALLY TRUE';
-        else if (result.score >= 0.35) verdict = 'MISLEADING';
-        else if (result.score >= 0.2) verdict = 'FALSE';
-        else verdict = 'UNVERIFIABLE';
-        
-        // Format response for extension
-        const response = {
-            verdict: verdict,
-            summary: result.explanation,
-            confidenceScore: result.score,
-            keyPoints: keywords.slice(0, 3).map(k => `Key term: ${k}`),
-            sources: sources.slice(0, 5).map(s => ({
-                title: s.title,
-                url: s.url,
-                snippet: s.snippet
-            }))
-        };
-        
-        console.log(`✅ Fact check completed: ${verdict} (${Math.round(result.score * 100)}%)`);
-        res.json(response);
-        
-    } catch (error) {
-        console.error('❌ Fact check error:', error);
-        res.status(500).json({
-            verdict: 'UNVERIFIABLE',
-            summary: 'An error occurred during analysis',
-            confidenceScore: 0.15,
-            keyPoints: ['Server error'],
-            sources: []
-        });
-    }
-});
-
-// ANALYTICS TRACKING ENDPOINT - COMPATIBLE WITH EXTENSION
-app.post('/analytics/track', async (req, res) => {
-    try {
-        const { event, userId, sessionId, timestamp, properties } = req.body;
-        
-        // Map 'event' to 'event_type' for consistency
-        const event_type = event || req.body.event_type;
-        
-        if (!event_type || !userId) {
-            console.log('❌ Missing required fields:', { event_type, userId });
-            return res.status(400).json({ error: 'event and userId required' });
-        }
-        
-        console.log(`📊 Analytics received: ${event_type} from ${userId}`);
-        
-        const client = await pool.connect();
-        
-        await client.query(`
-            INSERT INTO analytics_events (
-                event_type, 
-                user_id, 
-                session_id, 
-                timestamp, 
-                event_data, 
-                ip_address
-            ) VALUES ($1, $2, $3, $4, $5, $6)
-        `, [
-            event_type,
-            userId,
-            sessionId || null,
-            timestamp || new Date(),
-            JSON.stringify(properties || {}),
-            req.ip || req.connection?.remoteAddress || null
-        ]);
-        
-        client.release();
-        
-        res.json({ 
-            success: true,
-            message: 'Event tracked successfully',
-            eventId: Date.now().toString()
-        });
-        
-        console.log(`✅ Analytics saved: ${event_type}`);
-        
-    } catch (error) {
-        console.error('❌ Analytics error:', error);
-        res.status(500).json({ error: 'Failed to track event' });
-    }
-});
-
-// FEEDBACK ENDPOINT - COMPATIBLE WITH EXTENSION
-app.post('/feedback', async (req, res) => {
-    try {
-        // Support both formats (extension and original)
-        const { 
-            text,          // From extension
-            verdict,       // From extension
-            feedback,      // From extension
-            userId,        // From extension
-            sessionId,     // From extension
-            timestamp,     // From extension
-            originalText,  // From original format
-            scoreGiven,    // From original format
-            isUseful,      // From original format
-            comment,       // From original format
-            sourcesFound   // From original format
-        } = req.body;
-        
-        console.log(`💬 Feedback received from ${userId || 'anonymous'}`);
-        
-        const client = await pool.connect();
-        
-        // Handle extension format
-        if (text && verdict && feedback) {
-            await client.query(
-                `INSERT INTO feedback(original_text, score_given, is_useful, comment, sources_found) 
-                 VALUES($1, $2, $3, $4, $5)`,
-                [
-                    sanitizeInput(text).substring(0, 2000),
-                    0.5, // Default score
-                    true, // Default useful
-                    `Verdict: ${verdict}. Feedback: ${sanitizeInput(feedback)}`.substring(0, 500),
-                    JSON.stringify([])
-                ]
-            );
-            
-            // Also log as analytics event
-            if (userId) {
-                await client.query(
-                    `INSERT INTO analytics_events (event_type, user_id, session_id, event_data)
-                     VALUES ($1, $2, $3, $4)`,
-                    ['feedback_submitted', userId, sessionId, JSON.stringify({ verdict, feedbackLength: feedback.length })]
-                );
-            }
-        } 
-        // Handle original format
-        else if (originalText && scoreGiven !== undefined && isUseful !== undefined) {
-            await client.query(
-                'INSERT INTO feedback(original_text, score_given, is_useful, comment, sources_found) VALUES($1,$2,$3,$4,$5)',
-                [
-                    sanitizeInput(originalText).substring(0, 2000), 
-                    scoreGiven, 
-                    isUseful, 
-                    sanitizeInput(comment || '').substring(0, 500), 
-                    JSON.stringify(sourcesFound || [])
-                ]
-            );
-        }
-        
-        client.release();
-        
-        console.log(`✅ Feedback saved successfully`);
-        res.json({ success: true, message: 'Feedback received successfully' });
-        
-    } catch (err) {
-        console.error('❌ Feedback error:', err);
-        res.status(500).json({ error: 'Failed to save feedback' });
-    }
-});
-
-// ORIGINAL VERIFY ENDPOINT (for compatibility)
+// MAIN ENDPOINT
 app.post('/verify', async (req, res) => {
     try {
         const { text, smartQueries, analysisType } = req.body;
@@ -650,16 +443,27 @@ app.post('/verify', async (req, res) => {
             });
         }
         
+        // 1. CONTENT TYPE ANALYSIS
         const contentAnalysis = analyzeContentType(text);
-        const keywords = extractMainKeywords(text);
+        console.log(`📊 Type detected: ${contentAnalysis.type}`);
         
+        // 2. KEYWORD EXTRACTION
+        const keywords = extractMainKeywords(text);
+        console.log(`🏷️ Keywords: ${keywords.slice(0, 3).join(', ')}`);
+        
+        // 3. SOURCE SEARCH (only for verifiable facts)
         let sources = [];
         if (['HISTORICAL_FACT', 'GEOGRAPHIC_FACT', 'SCIENTIFIC_FACT', 'STATISTICAL_FACT', 'GENERAL_INFO'].includes(contentAnalysis.type)) {
+            console.log('🔍 Searching sources...');
             sources = await findWebSources(keywords, smartQueries, text);
+        } else {
+            console.log('⏭️ No source search for this content type');
         }
         
+        // 4. FINAL SCORE CALCULATION
         const result = calculateFinalScore(contentAnalysis, sources, keywords);
         
+        // 5. RESPONSE
         const response = {
             overallConfidence: result.score,
             sources: sources,
@@ -679,6 +483,86 @@ app.post('/verify', async (req, res) => {
             keywords: [],
             sources: []
         });
+    }
+});
+
+// FEEDBACK ENDPOINT
+app.post('/feedback', async (req, res) => {
+    try {
+        const { originalText, scoreGiven, isUseful, comment, sourcesFound } = req.body;
+        
+        if (!originalText || scoreGiven === undefined || isUseful === undefined) {
+            return res.status(400).json({ error: 'Incomplete feedback data' });
+        }
+        
+        const client = await pool.connect();
+        
+        await client.query(
+            'INSERT INTO feedback(original_text, score_given, is_useful, comment, sources_found) VALUES($1,$2,$3,$4,$5)',
+            [
+                sanitizeInput(originalText).substring(0, 2000), 
+                scoreGiven, 
+                isUseful, 
+                sanitizeInput(comment || '').substring(0, 500), 
+                JSON.stringify(sourcesFound || [])
+            ]
+        );
+        
+        client.release();
+        console.log(`📝 Feedback received: ${isUseful ? 'Useful' : 'Not useful'}`);
+        res.json({ success: true });
+        
+    } catch (err) {
+        console.error('❌ Feedback error:', err);
+        res.status(500).json({ error: 'Server error' });
+    }
+});
+
+// ANALYTICS ENDPOINT - CORRIGÉ POUR VRAIMENT SAUVEGARDER
+app.post('/analytics', async (req, res) => {
+    try {
+        const { event_type, user_id, session_id, event_data } = req.body;
+
+        if (!event_type || !user_id) {
+            return res.status(400).json({ error: 'event_type and user_id required' });
+        }
+
+        console.log(`📊 Analytics received: ${event_type} from ${user_id}`);
+
+        // SAUVEGARDER DANS POSTGRESQL
+        const client = await pool.connect();
+        
+        const result = await client.query(`
+            INSERT INTO analytics_events (
+                event_type, 
+                user_id, 
+                session_id, 
+                timestamp, 
+                event_data, 
+                ip_address
+            ) VALUES ($1, $2, $3, NOW(), $4, $5)
+            RETURNING id
+        `, [
+            event_type,
+            user_id,
+            session_id || null,
+            JSON.stringify(event_data || {}),
+            req.ip || req.connection?.remoteAddress || null
+        ]);
+
+        client.release();
+
+        console.log(`✅ Analytics saved in PostgreSQL with ID: ${result.rows[0].id}`);
+
+        res.json({ 
+            success: true,
+            id: result.rows[0].id,
+            message: 'Event tracked successfully'
+        });
+
+    } catch (error) {
+        console.error('❌ Analytics save error:', error);
+        res.status(500).json({ error: 'Failed to save analytics' });
     }
 });
 
@@ -710,11 +594,22 @@ app.get('/stats', async (req, res) => {
     }
 });
 
-// DASHBOARD ENDPOINT
+// HEALTH ENDPOINT
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'ok', 
+        version: 'ENGLISH-FINAL-1.0',
+        features: ['universal_capture', 'logical_scoring', 'relevant_sources', 'enhanced_analytics'],
+        timestamp: new Date().toISOString()
+    });
+});
+
+// DASHBOARD ENRICHI
 app.get('/dashboard', async (req, res) => {
     try {
         const client = await pool.connect();
         
+        // Stats des 7 derniers jours
         const events = await client.query(`
             SELECT 
                 event_type,
@@ -726,6 +621,7 @@ app.get('/dashboard', async (req, res) => {
             ORDER BY count DESC
         `);
 
+        // Stats quotidiennes
         const dailyStats = await client.query(`
             SELECT 
                 DATE(timestamp) as date,
@@ -737,17 +633,98 @@ app.get('/dashboard', async (req, res) => {
             ORDER BY date DESC
         `);
 
+        // Segmentation utilisateur
+        const userSegments = await client.query(`
+            SELECT 
+                (event_data->>'userSegment') as segment,
+                COUNT(DISTINCT user_id) as users
+            FROM analytics_events 
+            WHERE event_type = 'user_performance_metrics'
+            AND timestamp > NOW() - INTERVAL '7 days'
+            AND event_data->>'userSegment' IS NOT NULL
+            GROUP BY (event_data->>'userSegment')
+        `);
+
+        // Plateformes populaires
+        const platforms = await client.query(`
+            SELECT 
+                (event_data->>'platform') as platform,
+                COUNT(*) as count
+            FROM analytics_events 
+            WHERE event_type = 'analysis_completed'
+            AND timestamp > NOW() - INTERVAL '7 days'
+            AND event_data->>'platform' IS NOT NULL
+            GROUP BY (event_data->>'platform')
+            ORDER BY count DESC
+        `);
+
         client.release();
 
         res.json({
             events_last_7_days: events.rows,
             daily_stats: dailyStats.rows,
+            user_segments: userSegments.rows,
+            popular_platforms: platforms.rows,
             generated_at: new Date().toISOString()
         });
 
     } catch (error) {
         console.error('❌ Dashboard error:', error);
         res.status(500).json({ error: 'Dashboard error' });
+    }
+});
+
+// ENDPOINT DÉTAILS ANALYTICS
+app.get('/analytics/detailed', async (req, res) => {
+    try {
+        const client = await pool.connect();
+        
+        // Taux de conversion
+        const conversionRate = await client.query(`
+            SELECT 
+                COUNT(CASE WHEN event_type = 'extension_opened' THEN 1 END) as opens,
+                COUNT(CASE WHEN event_type = 'analysis_started' THEN 1 END) as starts,
+                COUNT(CASE WHEN event_type = 'analysis_completed' THEN 1 END) as completes,
+                COUNT(CASE WHEN event_type = 'feedback_given' THEN 1 END) as feedbacks
+            FROM analytics_events 
+            WHERE timestamp > NOW() - INTERVAL '7 days'
+        `);
+
+        // Moyenne des scores
+        const averageScores = await client.query(`
+            SELECT 
+                AVG((event_data->>'score')::numeric) as avg_confidence_score,
+                AVG((event_data->>'duration')::numeric) as avg_analysis_duration
+            FROM analytics_events 
+            WHERE event_type = 'analysis_completed'
+            AND timestamp > NOW() - INTERVAL '7 days'
+        `);
+
+        client.release();
+
+        const conversion = conversionRate.rows[0];
+        const scores = averageScores.rows[0];
+
+        res.json({
+            conversion_funnel: {
+                opens: parseInt(conversion.opens),
+                starts: parseInt(conversion.starts), 
+                completes: parseInt(conversion.completes),
+                feedbacks: parseInt(conversion.feedbacks),
+                open_to_start_rate: conversion.opens > 0 ? Math.round((conversion.starts / conversion.opens) * 100) : 0,
+                start_to_complete_rate: conversion.starts > 0 ? Math.round((conversion.completes / conversion.starts) * 100) : 0,
+                feedback_rate: conversion.completes > 0 ? Math.round((conversion.feedbacks / conversion.completes) * 100) : 0
+            },
+            performance: {
+                average_confidence_score: parseFloat(scores.avg_confidence_score) || 0,
+                average_analysis_duration_ms: parseInt(scores.avg_analysis_duration) || 0
+            },
+            generated_at: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('❌ Detailed analytics error:', error);
+        res.status(500).json({ error: 'Detailed analytics error' });
     }
 });
 
@@ -793,16 +770,6 @@ app.get('/analytics/recent', async (req, res) => {
     }
 });
 
-// HEALTH ENDPOINT
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'ok', 
-        version: 'ENGLISH-FINAL-1.0',
-        features: ['universal_capture', 'logical_scoring', 'relevant_sources', 'enhanced_analytics'],
-        timestamp: new Date().toISOString()
-    });
-});
-
 // ROOT ENDPOINT
 app.get('/', (req, res) => {
     res.json({ 
@@ -810,20 +777,15 @@ app.get('/', (req, res) => {
         service: 'VerifyAI Backend',
         version: '1.0.0',
         endpoints: {
-            factCheck: 'POST /api/factcheck',
-            analytics: 'POST /analytics/track', 
-            feedback: 'POST /feedback',
             verify: 'POST /verify',
+            analytics: 'POST /analytics',
+            feedback: 'POST /feedback',
             stats: 'GET /stats',
             dashboard: 'GET /dashboard',
             health: 'GET /health',
             test: 'GET /analytics/test',
-            recent: 'GET /analytics/recent'
-        },
-        analytics: {
-            enabled: true,
-            database: 'PostgreSQL',
-            tracking: 'Active'
+            recent: 'GET /analytics/recent',
+            detailed: 'GET /analytics/detailed'
         }
     });
 });
@@ -831,13 +793,13 @@ app.get('/', (req, res) => {
 // STARTUP
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 VerifyAI Backend - READY FOR CHROME EXTENSION`);
+    console.log(`🚀 VerifyAI Backend ENGLISH FINAL v1.0 - ANALYTICS ENABLED`);
     console.log(`📡 Port: ${PORT}`);
-    console.log(`✅ Extension endpoints configured:`);
-    console.log(`   - POST /api/factcheck (fact checking)`);
-    console.log(`   - POST /analytics/track (analytics tracking)`);
-    console.log(`   - POST /feedback (user feedback)`);
-    console.log(`📊 Analytics tracking active`);
-    console.log(`🗄️ Database: PostgreSQL with analytics_events table`);
+    console.log(`🎯 UNIVERSAL CAPTURE ChatGPT/Claude/Gemini`);
+    console.log(`⚖️ LOGICAL SCORING balanced`);
+    console.log(`🔍 RELEVANT SOURCES intelligent`);
+    console.log(`📊 ANALYTICS TRACKING ACTIVE - Saving to PostgreSQL`);
+    console.log(`✅ Analytics endpoint: POST /analytics`);
+    console.log(`✅ Dashboard: GET /dashboard`);
     initDb();
 });
