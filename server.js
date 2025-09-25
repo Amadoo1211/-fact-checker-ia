@@ -17,27 +17,27 @@ const pool = new Pool({
     ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
-// ========== SYSTÈME DE FACT-CHECKING INTELLIGENT ==========
+// ========== SYSTÈME DE FACT-CHECKING AMÉLIORÉ ET FIABLE ==========
 
-class IntelligentFactChecker {
+class ImprovedFactChecker {
     constructor() {
         this.sourceCredibilityRanks = {
-            tier1: { // Sources académiques et officielles
-                domains: ['edu', 'gov', 'who.int', 'nature.com', 'science.org', 'pubmed.ncbi.nlm.nih.gov'],
+            tier1: { 
+                domains: ['edu', 'gov', 'who.int', 'nature.com', 'science.org', 'pubmed.ncbi.nlm.nih.gov', 'insee.fr', 'cia.gov', 'worldbank.org'],
                 multiplier: 1.0,
-                description: 'Sources académiques vérifiées'
+                description: 'Sources académiques et officielles'
             },
-            tier2: { // Médias réputés
-                domains: ['reuters.com', 'bbc.com', 'lemonde.fr', 'nytimes.com', 'theguardian.com', 'lefigaro.fr'],
+            tier2: { 
+                domains: ['reuters.com', 'bbc.com', 'lemonde.fr', 'nytimes.com', 'theguardian.com', 'lefigaro.fr', 'economist.com'],
                 multiplier: 0.85,
                 description: 'Médias avec processus éditorial rigoureux'
             },
-            tier3: { // Encyclopédies
+            tier3: { 
                 domains: ['wikipedia.org', 'britannica.com', 'larousse.fr'],
                 multiplier: 0.75,
                 description: 'Encyclopédies avec vérification communautaire'
             },
-            tier4: { // Sources spécialisées
+            tier4: { 
                 domains: ['scholar.google.com', 'jstor.org', 'researchgate.net'],
                 multiplier: 0.9,
                 description: 'Bases de données scientifiques'
@@ -46,6 +46,19 @@ class IntelligentFactChecker {
                 domains: ['reddit.com', 'quora.com', 'yahoo.answers', 'answers.com'],
                 multiplier: 0.3,
                 description: 'Sources non éditorialisées'
+            }
+        };
+
+        // Contextes pour éviter les fausses contradictions
+        this.contextPatterns = {
+            geographic: {
+                city: /\b(ville|city proper|intra.?muros|centre.?ville|downtown)\b/i,
+                metro: /\b(métropole|metropolitan|agglomération|agglomeration|urban area|greater)\b/i,
+                region: /\b(région|region|area|zone|territoire|territory)\b/i
+            },
+            temporal: {
+                current: /\b(2024|2025|actuellement|currently|now|today)\b/i,
+                historical: /\b(19\d{2}|20[01]\d|historiquement|historically|était|was)\b/i
             }
         };
     }
@@ -66,7 +79,7 @@ class IntelligentFactChecker {
             })));
         }
 
-        // Claims historiques (événements avec dates)
+        // Claims historiques
         const historicalClaims = cleanText.match(/\b(en|in|depuis|from|until)\s+(19|20)\d{2}.*?(fondé|créé|né|mort|established|founded|born|died|independence|indépendance|guerre|war)\b/gi);
         if (historicalClaims) {
             claims.push(...historicalClaims.slice(0, 2).map(claim => ({
@@ -103,161 +116,64 @@ class IntelligentFactChecker {
         return claims;
     }
 
-    // 2. ANALYSE SÉMANTIQUE DES SOURCES
-    async analyzeSourceRelevance(originalText, sources) {
-        const analyzedSources = [];
-        
-        console.log(`📚 Analyse de ${sources.length} sources...`);
-        
-        for (const source of sources.slice(0, 5)) {
-            try {
-                // Calcul de la crédibilité
-                const credibility = this.getSourceCredibilityTier(source.url);
-                
-                // Analyse sémantique simplifiée (mots-clés communs)
-                const semanticMatch = this.calculateSemanticSimilarity(originalText, source.snippet || '');
-                
-                // Détection de contradiction numérique
-                const contradiction = this.detectNumericContradiction(originalText, source.snippet || '');
-                
-                // Calcul de support réel
-                const actuallySupports = semanticMatch.confirms && !contradiction.detected && semanticMatch.score > 0.2;
-                
-                analyzedSources.push({
-                    ...source,
-                    semanticRelevance: semanticMatch.score,
-                    confirmsContent: semanticMatch.confirms,
-                    contradicts: contradiction.detected,
-                    contradictionDetails: contradiction.details,
-                    credibilityTier: credibility.tier,
-                    credibilityMultiplier: credibility.multiplier,
-                    actuallySupports: actuallySupports
-                });
-                
-            } catch (error) {
-                console.error(`Erreur analyse source ${source.url}:`, error.message);
-                
-                // Fallback: gardons la source avec des valeurs par défaut
-                const credibility = this.getSourceCredibilityTier(source.url);
-                analyzedSources.push({
-                    ...source,
-                    semanticRelevance: 0.3,
-                    confirmsContent: false,
-                    contradicts: false,
-                    credibilityTier: credibility.tier,
-                    credibilityMultiplier: credibility.multiplier,
-                    actuallySupports: false
-                });
-            }
-        }
-        
-        console.log(`✅ Sources analysées: ${analyzedSources.length}`);
-        return analyzedSources;
-    }
-
-    // 3. CALCUL DU SCORE INTELLIGENT
-    calculateIntelligentScore(originalText, analyzedSources, claims) {
-        let totalScore = 0;
-        let confidence = 0;
-        const reasoning = [];
-
-        console.log(`🎯 Calcul du score intelligent...`);
-
-        // 1. Score de base selon le type de contenu
-        const contentType = this.analyzeContentType(originalText, claims);
-        totalScore += contentType.baseScore;
-        reasoning.push(contentType.reasoning);
-        confidence += 0.2;
-
-        // 2. Évaluation de la qualité des sources
-        const sourceEval = this.evaluateSourceQuality(analyzedSources);
-        totalScore += sourceEval.impact;
-        reasoning.push(sourceEval.reasoning);
-        confidence += sourceEval.confidence;
-
-        // 3. Évaluation du consensus
-        const consensus = this.evaluateConsensus(analyzedSources);
-        totalScore += consensus.bonus;
-        reasoning.push(consensus.reasoning);
-        confidence += consensus.confidence;
-
-        // 4. Pénalité pour contradictions
-        const contradictions = this.evaluateContradictions(analyzedSources);
-        totalScore -= contradictions.penalty;
-        if (contradictions.penalty > 0) {
-            reasoning.push(contradictions.reasoning);
-        }
-
-        // Score final normalisé
-        const finalScore = Math.max(0.05, Math.min(0.95, totalScore));
-        
-        console.log(`📊 Score final: ${Math.round(finalScore * 100)}%`);
-        
-        return {
-            score: finalScore,
-            confidence: Math.min(1.0, confidence),
-            reasoning: reasoning.join(' '),
-            details: {
-                claimsFound: claims.length,
-                sourcesAnalyzed: analyzedSources.length,
-                supportingSources: analyzedSources.filter(s => s.actuallySupports).length,
-                contradictingSources: analyzedSources.filter(s => s.contradicts).length,
-                contentType: contentType.type
-            }
-        };
-    }
-
-    // 4. ANALYSE DU TYPE DE CONTENU
+    // 2. ANALYSE DU TYPE DE CONTENU - VERSION AMÉLIORÉE
     analyzeContentType(text, claims) {
         const lower = text.toLowerCase();
         
         // Opinion subjective
         const opinionPatterns = [
-            /\b(je pense|je crois|à mon avis|personnellement)\b/i,
-            /\b(i think|i believe|in my opinion|personally)\b/i,
-            /\b(meilleur|pire|préfère|favorite|best|worst|better|worse)\b/i
+            /\b(je pense|je crois|à mon avis|personnellement|subjectivement)\b/i,
+            /\b(i think|i believe|in my opinion|personally|subjectively)\b/i,
+            /\b(meilleur|pire|préfère|favorite|best|worst|better than|worse than)\b/i
         ];
         
         if (opinionPatterns.some(pattern => pattern.test(text))) {
             return {
                 type: 'OPINION',
-                baseScore: 0.35,
-                reasoning: '**Opinion subjective** (35%) - Point de vue personnel.'
+                baseScore: 0.40,
+                reasoning: '**Opinion subjective** (40%) - Point de vue personnel nécessitant d\'autres perspectives.'
             };
         }
 
-        // Question
+        // Question directe
         if (text.length < 300 && (/^(what|how|why|when|where|qui|quoi|comment|pourquoi|quand|où)/i.test(text.trim()) || text.includes('?'))) {
             return {
                 type: 'QUESTION',
-                baseScore: 0.25,
-                reasoning: '**Question utilisateur** (25%) - Demande d\'information.'
+                baseScore: 0.30,
+                reasoning: '**Question utilisateur** (30%) - Demande d\'information directe.'
             };
         }
 
-        // Contenu avec claims vérifiables
+        // Faits avec claims vérifiables
         if (claims.length > 0) {
             const hasScientific = claims.some(c => c.type === 'SCIENTIFIC');
             const hasQuantitative = claims.some(c => c.type === 'QUANTITATIVE');
             const hasHistorical = claims.some(c => c.type === 'HISTORICAL');
+            const hasGeographic = claims.some(c => c.type === 'GEOGRAPHIC');
             
             if (hasScientific) {
                 return {
                     type: 'SCIENTIFIC_FACT',
-                    baseScore: 0.65,
-                    reasoning: '**Fait scientifique** (65%) - Contient des informations scientifiques vérifiables.'
+                    baseScore: 0.75,
+                    reasoning: '**Fait scientifique** (75%) - Information scientifique établie et vérifiable.'
+                };
+            } else if (hasGeographic) {
+                return {
+                    type: 'GEOGRAPHIC_FACT',
+                    baseScore: 0.70,
+                    reasoning: '**Fait géographique** (70%) - Données géographiques officielles vérifiables.'
                 };
             } else if (hasQuantitative) {
                 return {
                     type: 'STATISTICAL_FACT',
-                    baseScore: 0.60,
-                    reasoning: '**Données quantitatives** (60%) - Contient des statistiques vérifiables.'
+                    baseScore: 0.65,
+                    reasoning: '**Données quantitatives** (65%) - Statistiques mesurables et vérifiables.'
                 };
             } else if (hasHistorical) {
                 return {
                     type: 'HISTORICAL_FACT',
-                    baseScore: 0.58,
-                    reasoning: '**Fait historique** (58%) - Contient des informations historiques vérifiables.'
+                    baseScore: 0.68,
+                    reasoning: '**Fait historique** (68%) - Information historique documentée.'
                 };
             }
         }
@@ -265,18 +181,128 @@ class IntelligentFactChecker {
         // Information générale
         return {
             type: 'GENERAL_INFO',
-            baseScore: 0.45,
-            reasoning: '**Information générale** (45%) - Contenu informatif standard.'
+            baseScore: 0.50,
+            reasoning: '**Information générale** (50%) - Contenu informatif standard.'
         };
     }
 
-    // 5. ÉVALUATION DE LA QUALITÉ DES SOURCES
+    // 3. EXTRACTION DE CONTEXTE DÉTAILLÉ
+    extractDetailedContext(text) {
+        return {
+            geographic: {
+                hasCity: this.contextPatterns.geographic.city.test(text),
+                hasMetro: this.contextPatterns.geographic.metro.test(text),
+                hasRegion: this.contextPatterns.geographic.region.test(text)
+            },
+            temporal: {
+                isCurrent: this.contextPatterns.temporal.current.test(text),
+                isHistorical: this.contextPatterns.temporal.historical.test(text)
+            },
+            measurement: {
+                hasTotal: /\b(total|ensemble|including|avec|with)\b/i.test(text),
+                hasPartial: /\b(seulement|only|just|environ|approximately|about)\b/i.test(text)
+            }
+        };
+    }
+
+    // 4. VÉRIFICATION DE CONTEXTES COMPLÉMENTAIRES
+    areComplementaryContexts(context1, context2) {
+        // Ville vs Métropole = complémentaires
+        if ((context1.geographic.hasCity && context2.geographic.hasMetro) ||
+            (context1.geographic.hasMetro && context2.geographic.hasCity)) {
+            return true;
+        }
+
+        // Données historiques vs actuelles = complémentaires
+        if ((context1.temporal.isCurrent && context2.temporal.isHistorical) ||
+            (context1.temporal.isHistorical && context2.temporal.isCurrent)) {
+            return true;
+        }
+
+        // Total vs partiel = complémentaires
+        if ((context1.measurement.hasTotal && context2.measurement.hasPartial) ||
+            (context1.measurement.hasPartial && context2.measurement.hasTotal)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    // 5. EXTRACTION DE NOMBRES AVEC CONTEXTE
+    extractNumbersWithContext(text) {
+        const numberMatches = text.match(/\b\d+([,\.]\d+)?\b/g) || [];
+        return numberMatches.map(match => ({
+            value: parseFloat(match.replace(',', '.')),
+            context: this.extractDetailedContext(text)
+        }));
+    }
+
+    // 6. DÉTECTION DE CONTRADICTIONS INTELLIGENTE
+    detectIntelligentContradiction(text1, text2) {
+        const context1 = this.extractDetailedContext(text1);
+        const context2 = this.extractDetailedContext(text2);
+        
+        // Si contextes complémentaires, pas de contradiction
+        if (this.areComplementaryContexts(context1, context2)) {
+            return { 
+                detected: false, 
+                details: { 
+                    reason: 'Contextes complémentaires',
+                    context1: context1,
+                    context2: context2
+                }
+            };
+        }
+
+        const nums1 = this.extractNumbersWithContext(text1);
+        const nums2 = this.extractNumbersWithContext(text2);
+
+        if (nums1.length === 0 || nums2.length === 0) {
+            return { detected: false, details: null };
+        }
+
+        // Comparaison intelligente
+        for (const num1 of nums1) {
+            for (const num2 of nums2) {
+                if (num1.value > 0 && Math.abs(num1.value - num2.value) / num1.value > 0.5) {
+                    if (this.isTrueContradiction(num1, num2, context1, context2)) {
+                        return {
+                            detected: true,
+                            details: { 
+                                original: num1.value, 
+                                source: num2.value, 
+                                difference: Math.abs(num1.value - num2.value) / num1.value,
+                                reason: 'Contradiction numérique significative'
+                            }
+                        };
+                    }
+                }
+            }
+        }
+
+        return { detected: false, details: null };
+    }
+
+    // 7. VÉRIFICATION DE VRAIE CONTRADICTION
+    isTrueContradiction(num1, num2, context1, context2) {
+        if (JSON.stringify(context1) === JSON.stringify(context2)) {
+            return true;
+        }
+        
+        if (this.areComplementaryContexts(context1, context2)) {
+            return false;
+        }
+        
+        return Math.abs(num1.value - num2.value) / num1.value > 3.0;
+    }
+
+    // 8. ÉVALUATION DE LA QUALITÉ DES SOURCES
     evaluateSourceQuality(sources) {
         if (sources.length === 0) {
             return {
-                impact: -0.15,
+                impact: -0.10,
                 confidence: 0,
-                reasoning: 'Aucune source de vérification trouvée (-15%).'
+                reasoning: 'Aucune source de vérification trouvée (-10%).'
             };
         }
 
@@ -287,84 +313,183 @@ class IntelligentFactChecker {
 
         // Bonus pour sources de support
         if (supportingHigh > 0) {
-            qualityScore += supportingHigh * 0.12; // 12% par source fiable qui confirme
+            qualityScore += supportingHigh * 0.15;
         } else if (supportingAny > 0) {
-            qualityScore += supportingAny * 0.06; // 6% par source quelconque qui confirme
+            qualityScore += supportingAny * 0.08;
         }
 
-        // Pénalité pour sources contradictoires fiables
+        // Pénalité pour vraies contradictions seulement
         if (contradictingHigh > 0) {
-            qualityScore -= contradictingHigh * 0.1;
+            qualityScore -= contradictingHigh * 0.08;
         }
 
-        // Bonus progressif pour multiple sources
+        // Bonus progressif pour sources multiples
         if (sources.length >= 3) {
-            qualityScore += 0.03;
+            qualityScore += 0.05;
         }
 
-        let reasoning = `Sources analysées: ${supportingAny} confirment, ${contradictingHigh} contredisent.`;
+        // Bonus spécial pour sources très fiables
+        const tier1Sources = sources.filter(s => s.credibilityMultiplier === 1.0).length;
+        if (tier1Sources > 0) {
+            qualityScore += tier1Sources * 0.08;
+        }
+
+        let reasoning = `Sources analysées: ${supportingAny} confirment`;
+        if (contradictingHigh > 0) {
+            reasoning += `, ${contradictingHigh} contredisent vraiment`;
+        }
         if (supportingHigh > 0) {
-            reasoning += ` ${supportingHigh} sources très fiables confirment (+${supportingHigh * 12}%).`;
+            reasoning += `. ${supportingHigh} sources très fiables confirment (+${supportingHigh * 15}%).`;
         }
 
         return {
-            impact: Math.max(-0.2, Math.min(0.25, qualityScore)),
-            confidence: Math.min(0.3, sources.length * 0.08),
+            impact: Math.max(-0.15, Math.min(0.30, qualityScore)),
+            confidence: Math.min(0.4, sources.length * 0.1),
             reasoning
         };
     }
 
-    // 6. ÉVALUATION DU CONSENSUS
+    // 9. ÉVALUATION DU CONSENSUS
     evaluateConsensus(sources) {
         if (sources.length < 2) {
-            return {
-                bonus: 0,
-                confidence: 0,
-                reasoning: ''
-            };
+            return { bonus: 0, confidence: 0, reasoning: '' };
         }
 
         const supporting = sources.filter(s => s.actuallySupports).length;
         const contradicting = sources.filter(s => s.contradicts).length;
         const total = sources.length;
 
-        const consensusRatio = supporting / total;
+        const supportRatio = supporting / total;
+        const contradictRatio = contradicting / total;
         
         let bonus = 0;
         let reasoning = '';
 
-        if (consensusRatio >= 0.75 && supporting >= 2) {
-            bonus = 0.1;
-            reasoning = `Fort consensus: ${supporting}/${total} sources confirment (+10%).`;
-        } else if (consensusRatio >= 0.5 && supporting >= 2) {
-            bonus = 0.05;
-            reasoning = `Consensus modéré: ${supporting}/${total} sources confirment (+5%).`;
-        } else if (contradicting > supporting) {
-            bonus = -0.08;
-            reasoning = `Consensus négatif: plus de contradictions que de confirmations (-8%).`;
+        if (supportRatio >= 0.8 && supporting >= 2) {
+            bonus = 0.12;
+            reasoning = `Consensus très fort: ${supporting}/${total} sources confirment (+12%).`;
+        } else if (supportRatio >= 0.6 && supporting >= 2) {
+            bonus = 0.08;
+            reasoning = `Bon consensus: ${supporting}/${total} sources confirment (+8%).`;
+        } else if (supportRatio >= 0.4 && supporting >= 1) {
+            bonus = 0.04;
+            reasoning = `Consensus modéré: ${supporting}/${total} sources confirment (+4%).`;
+        } else if (contradictRatio > 0.5) {
+            bonus = -0.06;
+            reasoning = `Contradictions dominantes: ${contradicting}/${total} sources contredisent (-6%).`;
+        } else {
+            reasoning = `Pas de consensus clair: sources partagées.`;
         }
 
         return {
-            bonus: Math.max(-0.15, Math.min(0.15, bonus)),
-            confidence: Math.min(0.2, total * 0.05),
+            bonus: Math.max(-0.10, Math.min(0.15, bonus)),
+            confidence: Math.min(0.25, total * 0.06),
             reasoning
         };
     }
 
-    // 7. ÉVALUATION DES CONTRADICTIONS
-    evaluateContradictions(sources) {
-        const contradicting = sources.filter(s => s.contradicts);
+    // 10. COHÉRENCE CONTEXTUELLE
+    evaluateContextualCoherence(originalText, sources) {
+        if (sources.length === 0) return { bonus: 0, reasoning: '' };
+
+        let coherenceScore = 0;
         
-        if (contradicting.length === 0) {
-            return { penalty: 0, reasoning: '' };
+        // Bonus pour diversité de sources
+        const uniqueDomains = new Set(sources.map(s => {
+            try {
+                return new URL(s.url).hostname;
+            } catch {
+                return s.url;
+            }
+        })).size;
+        
+        if (uniqueDomains >= 3) {
+            coherenceScore += 0.03;
         }
 
-        const highCredibilityContradictions = contradicting.filter(s => s.credibilityMultiplier > 0.8).length;
-        const penalty = highCredibilityContradictions * 0.12 + (contradicting.length - highCredibilityContradictions) * 0.05;
+        // Bonus pour mix de types de sources
+        const hasTier1 = sources.some(s => s.credibilityTier === 'tier1');
+        const hasTier2 = sources.some(s => s.credibilityTier === 'tier2');
+        const hasTier3 = sources.some(s => s.credibilityTier === 'tier3');
+        
+        if ((hasTier1 && hasTier2) || (hasTier1 && hasTier3) || (hasTier2 && hasTier3)) {
+            coherenceScore += 0.04;
+        }
+
+        // Bonus pour sources récentes
+        const hasRecentSources = sources.some(s => 
+            s.snippet && /202[3-5]|recent|latest|current/i.test(s.snippet)
+        );
+        
+        if (hasRecentSources && /population|data|statistics|facts/i.test(originalText)) {
+            coherenceScore += 0.03;
+        }
+
+        let reasoning = '';
+        if (coherenceScore > 0) {
+            reasoning = `Cohérence contextuelle: sources diversifiées (+${Math.round(coherenceScore * 100)}%).`;
+        }
 
         return {
-            penalty: Math.min(0.3, penalty),
-            reasoning: `${contradicting.length} sources contradictoires détectées (-${Math.round(penalty * 100)}%).`
+            bonus: coherenceScore,
+            reasoning: reasoning
+        };
+    }
+
+    // 11. CALCUL FINAL ÉQUILIBRÉ
+    calculateBalancedScore(originalText, analyzedSources, claims) {
+        let totalScore = 0;
+        let confidence = 0;
+        const reasoning = [];
+
+        console.log(`🎯 Calcul du score équilibré...`);
+
+        // 1. Score de base
+        const contentType = this.analyzeContentType(originalText, claims);
+        totalScore += contentType.baseScore;
+        reasoning.push(contentType.reasoning);
+        confidence += 0.3;
+
+        // 2. Qualité des sources
+        const sourceEval = this.evaluateSourceQuality(analyzedSources);
+        totalScore += sourceEval.impact;
+        reasoning.push(sourceEval.reasoning);
+        confidence += sourceEval.confidence;
+
+        // 3. Consensus
+        const consensus = this.evaluateConsensus(analyzedSources);
+        totalScore += consensus.bonus;
+        if (consensus.reasoning) {
+            reasoning.push(consensus.reasoning);
+        }
+        confidence += consensus.confidence;
+
+        // 4. Cohérence contextuelle
+        const contextBonus = this.evaluateContextualCoherence(originalText, analyzedSources);
+        totalScore += contextBonus.bonus;
+        if (contextBonus.reasoning) {
+            reasoning.push(contextBonus.reasoning);
+        }
+
+        const finalScore = Math.max(0.15, Math.min(0.92, totalScore));
+        
+        console.log(`📊 Score équilibré: ${Math.round(finalScore * 100)}%`);
+        
+        return {
+            score: finalScore,
+            confidence: Math.min(1.0, confidence),
+            reasoning: reasoning.join(' '),
+            details: {
+                baseScore: contentType.baseScore,
+                sourceImpact: sourceEval.impact,
+                consensusBonus: consensus.bonus,
+                contextBonus: contextBonus.bonus,
+                claimsFound: claims.length,
+                sourcesAnalyzed: analyzedSources.length,
+                supportingSources: analyzedSources.filter(s => s.actuallySupports).length,
+                contradictingSources: analyzedSources.filter(s => s.contradicts).length,
+                contentType: contentType.type
+            }
         };
     }
 
@@ -373,7 +498,6 @@ class IntelligentFactChecker {
     calculateSemanticSimilarity(text1, text2) {
         if (!text1 || !text2) return { score: 0, confirms: false };
         
-        // Extraction des mots-clés importants (> 4 lettres, pas de stop words)
         const stopWords = new Set(['the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'le', 'la', 'les', 'un', 'une', 'des', 'du', 'de', 'et', 'ou', 'mais', 'dans', 'sur', 'pour', 'avec', 'par']);
         
         const extractKeywords = (text) => {
@@ -393,37 +517,8 @@ class IntelligentFactChecker {
         
         return {
             score: similarity,
-            confirms: similarity > 0.15 // Seuil ajusté
+            confirms: similarity > 0.15
         };
-    }
-
-    detectNumericContradiction(text1, text2) {
-        const extractNumbers = (text) => {
-            return (text.match(/\b\d+([,\.]\d+)?\b/g) || [])
-                .map(num => parseFloat(num.replace(',', '.')))
-                .filter(num => !isNaN(num));
-        };
-
-        const nums1 = extractNumbers(text1);
-        const nums2 = extractNumbers(text2);
-
-        if (nums1.length === 0 || nums2.length === 0) {
-            return { detected: false, details: null };
-        }
-
-        // Vérifie les contradictions significatives (différence > 25%)
-        for (const num1 of nums1) {
-            for (const num2 of nums2) {
-                if (num1 > 0 && Math.abs(num1 - num2) / num1 > 0.25) {
-                    return {
-                        detected: true,
-                        details: { original: num1, source: num2, difference: Math.abs(num1 - num2) / num1 }
-                    };
-                }
-            }
-        }
-
-        return { detected: false, details: null };
     }
 
     getSourceCredibilityTier(url) {
@@ -438,6 +533,49 @@ class IntelligentFactChecker {
         }
         return { tier: 'unknown', multiplier: 0.5 };
     }
+}
+
+// ========== FONCTION D'ANALYSE DES SOURCES AMÉLIORÉE ==========
+
+async function analyzeSourcesWithImprovedLogic(factChecker, originalText, sources) {
+    const analyzedSources = [];
+    
+    for (const source of sources.slice(0, 5)) {
+        try {
+            const credibility = factChecker.getSourceCredibilityTier(source.url);
+            const semanticMatch = factChecker.calculateSemanticSimilarity(originalText, source.snippet || '');
+            const contradiction = factChecker.detectIntelligentContradiction(originalText, source.snippet || '');
+            
+            const actuallySupports = semanticMatch.confirms && !contradiction.detected && semanticMatch.score > 0.15;
+            
+            analyzedSources.push({
+                ...source,
+                semanticRelevance: semanticMatch.score,
+                confirmsContent: semanticMatch.confirms,
+                contradicts: contradiction.detected,
+                contradictionDetails: contradiction.details,
+                credibilityTier: credibility.tier,
+                credibilityMultiplier: credibility.multiplier,
+                actuallySupports: actuallySupports
+            });
+            
+        } catch (error) {
+            console.error(`Erreur analyse source ${source.url}:`, error.message);
+            
+            const credibility = factChecker.getSourceCredibilityTier(source.url);
+            analyzedSources.push({
+                ...source,
+                semanticRelevance: 0.3,
+                confirmsContent: false,
+                contradicts: false,
+                credibilityTier: credibility.tier,
+                credibilityMultiplier: credibility.multiplier,
+                actuallySupports: false
+            });
+        }
+    }
+    
+    return analyzedSources;
 }
 
 // ========== FONCTIONS UTILITAIRES ==========
@@ -609,25 +747,25 @@ function calculateRelevance(item, originalText) {
 
 // ========== ENDPOINTS API ==========
 
-// Endpoint principal avec système intelligent
+// Endpoint principal avec système amélioré
 app.post('/verify', async (req, res) => {
     try {
         const { text, smartQueries, analysisType } = req.body;
         
-        console.log(`\n🔍 === ANALYSE INTELLIGENTE ===`);
+        console.log(`\n🔍 === ANALYSE ÉQUILIBRÉE ===`);
         console.log(`📝 Texte: "${text.substring(0, 80)}..."`);
         
         if (!text || text.length < 10) {
             return res.json({ 
-                overallConfidence: 0.20, 
-                scoringExplanation: "**Texte insuffisant** (20%) - Contenu trop court pour analyse.", 
+                overallConfidence: 0.25,
+                scoringExplanation: "**Texte insuffisant** (25%) - Contenu trop court pour analyse.", 
                 keywords: [],
                 sources: [],
-                methodology: "Analyse intelligente avec vérification croisée"
+                methodology: "Analyse équilibrée avec détection contextuelle"
             });
         }
         
-        const factChecker = new IntelligentFactChecker();
+        const factChecker = new ImprovedFactChecker();
         
         // 1. Extraction des claims vérifiables
         const claims = factChecker.extractVerifiableClaims(text);
@@ -638,11 +776,11 @@ app.post('/verify', async (req, res) => {
         // 3. Recherche de sources
         const sources = await findWebSources(keywords, smartQueries, text);
         
-        // 4. Analyse sémantique des sources
-        const analyzedSources = await factChecker.analyzeSourceRelevance(text, sources);
+        // 4. Analyse sémantique améliorée
+        const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, text, sources);
         
-        // 5. Calcul du score intelligent
-        const result = factChecker.calculateIntelligentScore(text, analyzedSources, claims);
+        // 5. Calcul du score équilibré
+        const result = factChecker.calculateBalancedScore(text, analyzedSources, claims);
         
         const response = {
             overallConfidence: result.score,
@@ -652,20 +790,20 @@ app.post('/verify', async (req, res) => {
             keywords: keywords,
             claimsAnalyzed: claims,
             details: result.details,
-            methodology: "Analyse intelligente avec vérification croisée des sources"
+            methodology: "Analyse équilibrée avec détection contextuelle intelligente"
         };
         
-        console.log(`✅ Score final: ${Math.round(result.score * 100)}% (confiance: ${Math.round(result.confidence * 100)}%)`);
+        console.log(`✅ Score équilibré: ${Math.round(result.score * 100)}% (confiance: ${Math.round(result.confidence * 100)}%)`);
         console.log(`📊 ${analyzedSources.length} sources | ${claims.length} claims | ${analyzedSources.filter(s => s.actuallySupports).length} confirment`);
         console.log(`===============================\n`);
         
         res.json(response);
         
     } catch (error) {
-        console.error('❌ Erreur analyse intelligente:', error);
+        console.error('❌ Erreur analyse équilibrée:', error);
         res.status(500).json({ 
-            overallConfidence: 0.15,
-            scoringExplanation: "**Erreur système** (15%) - Impossible de terminer l'analyse.",
+            overallConfidence: 0.20,
+            scoringExplanation: "**Erreur système** (20%) - Impossible de terminer l'analyse.",
             keywords: [],
             sources: [],
             error: process.env.NODE_ENV === 'development' ? error.message : undefined
@@ -673,7 +811,7 @@ app.post('/verify', async (req, res) => {
     }
 });
 
-// Autres endpoints (feedback, stats, health)
+// Endpoint feedback
 app.post('/feedback', async (req, res) => {
     try {
         const { originalText, scoreGiven, isUseful, comment, sourcesFound } = req.body;
@@ -694,11 +832,12 @@ app.post('/feedback', async (req, res) => {
     }
 });
 
+// Endpoint health
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
-        version: 'INTELLIGENT-FACTCHECKER-2.0',
-        features: ['intelligent_scoring', 'semantic_analysis', 'source_verification', 'claim_extraction'],
+        version: 'BALANCED-FACTCHECKER-2.1',
+        features: ['balanced_scoring', 'contextual_analysis', 'intelligent_contradictions', 'source_verification'],
         timestamp: new Date().toISOString(),
         api_configured: !!(process.env.GOOGLE_API_KEY && process.env.SEARCH_ENGINE_ID)
     });
@@ -729,12 +868,12 @@ const initDb = async () => {
 // Startup
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`\n🚀 === VERIFYAI INTELLIGENT SERVER ===`);
+    console.log(`\n🚀 === VERIFYAI BALANCED SERVER ===`);
     console.log(`📡 Port: ${PORT}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`🔑 Google API configured: ${!!process.env.GOOGLE_API_KEY}`);
     console.log(`💾 Database configured: ${!!process.env.DATABASE_URL}`);
-    console.log(`🧠 Features: Intelligent scoring, Semantic analysis, Source verification`);
+    console.log(`⚖️  Features: Balanced scoring, Contextual analysis, Smart contradictions`);
     console.log(`=====================================\n`);
     initDb();
 });
