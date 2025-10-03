@@ -592,6 +592,11 @@ function sanitizeInput(text) {
         .trim();
 }
 
+function validateEmail(email) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+}
+
 function extractMainKeywords(text) {
     const cleaned = sanitizeInput(text).substring(0, 1000);
     const keywords = [];
@@ -811,20 +816,251 @@ app.post('/verify', async (req, res) => {
     }
 });
 
-// Endpoint feedback
-app.post('/feedback', async (req, res) => {
+// ========== NOUVEAUX ENDPOINTS EMAIL ==========
+
+// Endpoint pour capturer l'email d'un utilisateur
+app.post('/subscribe', async (req, res) => {
     try {
-        const { originalText, scoreGiven, isUseful, comment, sourcesFound } = req.body;
+        const { email, name, source } = req.body;
+        
+        // Validation de l'email
+        if (!email || !validateEmail(email)) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Email invalide' 
+            });
+        }
+        
+        const sanitizedEmail = sanitizeInput(email).toLowerCase().trim();
+        const sanitizedName = name ? sanitizeInput(name).substring(0, 100) : null;
+        const subscriptionSource = source || 'extension';
         
         const client = await pool.connect();
-        await client.query(
-            'INSERT INTO feedback(original_text, score_given, is_useful, comment, sources_found) VALUES($1,$2,$3,$4,$5)',
-            [sanitizeInput(originalText).substring(0, 2000), scoreGiven, isUseful, sanitizeInput(comment || '').substring(0, 500), JSON.stringify(sourcesFound || [])]
-        );
-        client.release();
         
-        console.log(`📝 Feedback: ${isUseful ? 'Utile' : 'Pas utile'} - Score: ${scoreGiven}`);
-        res.json({ success: true });
+        try {
+            // Vérifier si l'email existe déjà
+            const existingUser = await client.query(
+                'SELECT id, subscribed FROM email_subscribers WHERE email = $1',
+                [sanitizedEmail]
+            );
+            
+            if (existingUser.rows.length > 0) {
+                // Réactiver l'abonnement si désabonné
+                if (!existingUser.rows[0].subscribed) {
+                    await client.query(
+                        'UPDATE email_subscribers SET subscribed = true, updated_at = NOW() WHERE email = $1',
+                        [sanitizedEmail]
+                    );
+                    console.log(`📧 Réabonnement: ${sanitizedEmail}`);
+                    return res.json({ 
+                        success: true, 
+                        message: 'Réabonnement réussi',
+                        alreadySubscribed: false
+                    });
+                }
+                
+                console.log(`📧 Déjà abonné: ${sanitizedEmail}`);
+                return res.json({ 
+                    success: true, 
+                    message: 'Déjà abonné',
+                    alreadySubscribed: true
+                });
+            }
+            
+            // Nouvel abonnement
+            await client.query(
+                'INSERT INTO email_subscribers(email, name, source) VALUES($1, $2, $3)',
+                [sanitizedEmail, sanitizedName, subscriptionSource]
+            );
+            
+            console.log(`📧 Nouvel abonné: ${sanitizedEmail} (${subscriptionSource})`);
+            
+            res.json({ 
+                success: true, 
+                message: 'Abonnement réussi',
+                alreadySubscribed: false
+            });
+            
+        } finally {
+            client.release();
+        }
+        
+    } catch (err) {
+        console.error('❌ Erreur abonnement email:', err);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Erreur serveur lors de l\'abonnement' 
+        });
+    }
+});
+
+// Endpoint pour se désabonner
+app.post('/unsubscribe', async (req, res) => {
+    try {
+        const { email } = req.body;
+        
+        if (!email || !validateEmail(email)) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Email invalide' 
+            });
+        }
+        
+        const sanitizedEmail = sanitizeInput(email).toLowerCase().trim();
+        
+        const client = await pool.connect();
+        
+        try {
+            const result = await client.query(
+                'UPDATE email_subscribers SET subscribed = false, updated_at = NOW() WHERE email = $1',
+                [sanitizedEmail]
+            );
+            
+            if (result.rowCount === 0) {
+                return res.status(404).json({ 
+                    success: false, 
+                    error: 'Email non trouvé' 
+                });
+            }
+            
+            console.log(`📧 Désabonnement: ${sanitizedEmail}`);
+            
+            res.json({ 
+                success: true, 
+                message: 'Désabonnement réussi' 
+            });
+            
+        } finally {
+            client.release();
+        }
+        
+    } catch (err) {
+        console.error('❌ Erreur désabonnement:', err);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Erreur serveur lors du désabonnement' 
+        });
+    }
+});
+
+// Endpoint pour obtenir des statistiques (admin seulement)
+app.get('/subscribers/stats', async (req, res) => {
+    try {
+        // Simple authentification par token (à améliorer en production)
+        const adminToken = req.headers['x-admin-token'];
+        
+        if (adminToken !== process.env.ADMIN_TOKEN) {
+            return res.status(403).json({ error: 'Non autorisé' });
+        }
+        
+        const client = await pool.connect();
+        
+        try {
+            const totalResult = await client.query(
+                'SELECT COUNT(*) as total FROM email_subscribers WHERE subscribed = true'
+            );
+            
+            const sourceResult = await client.query(
+                'SELECT source, COUNT(*) as count FROM email_subscribers WHERE subscribed = true GROUP BY source'
+            );
+            
+            const recentResult = await client.query(
+                'SELECT COUNT(*) as recent FROM email_subscribers WHERE subscribed = true AND created_at > NOW() - INTERVAL \'7 days\''
+            );
+            
+            res.json({
+                total: parseInt(totalResult.rows[0].total),
+                bySources: sourceResult.rows,
+                lastWeek: parseInt(recentResult.rows[0].recent)
+            });
+            
+        } finally {
+            client.release();
+        }
+        
+    } catch (err) {
+        console.error('❌ Erreur stats:', err);
+        res.status(500).json({ error: 'Erreur serveur' });
+    }
+});
+
+// Endpoint pour exporter les emails (admin seulement)
+app.get('/subscribers/export', async (req, res) => {
+    try {
+        const adminToken = req.headers['x-admin-token'];
+        
+        if (adminToken !== process.env.ADMIN_TOKEN) {
+            return res.status(403).json({ error: 'Non autorisé' });
+        }
+        
+        const client = await pool.connect();
+        
+        try {
+            const result = await client.query(
+                'SELECT email, name, source, created_at FROM email_subscribers WHERE subscribed = true ORDER BY created_at DESC'
+            );
+            
+            res.json({
+                count: result.rows.length,
+                subscribers: result.rows
+            });
+            
+        } finally {
+            client.release();
+        }
+        
+    } catch (err) {
+        console.error('❌ Erreur export:', err);
+        res.status(500).json({ error: 'Erreur serveur' });
+    }
+});
+
+// ========== ENDPOINT FEEDBACK (existant amélioré) ==========
+
+app.post('/feedback', async (req, res) => {
+    try {
+        const { originalText, scoreGiven, isUseful, comment, sourcesFound, userEmail } = req.body;
+        
+        const client = await pool.connect();
+        
+        try {
+            // Sauvegarder le feedback
+            await client.query(
+                'INSERT INTO feedback(original_text, score_given, is_useful, comment, sources_found, user_email) VALUES($1,$2,$3,$4,$5,$6)',
+                [
+                    sanitizeInput(originalText).substring(0, 2000), 
+                    scoreGiven, 
+                    isUseful, 
+                    sanitizeInput(comment || '').substring(0, 500), 
+                    JSON.stringify(sourcesFound || []),
+                    userEmail ? sanitizeInput(userEmail).toLowerCase().trim() : null
+                ]
+            );
+            
+            // Si l'utilisateur a fourni un email et qu'il n'est pas déjà abonné, l'ajouter
+            if (userEmail && validateEmail(userEmail)) {
+                const sanitizedEmail = sanitizeInput(userEmail).toLowerCase().trim();
+                
+                const existingUser = await client.query(
+                    'SELECT id FROM email_subscribers WHERE email = $1',
+                    [sanitizedEmail]
+                );
+                
+                if (existingUser.rows.length === 0) {
+                    await client.query(
+                        'INSERT INTO email_subscribers(email, source) VALUES($1, $2) ON CONFLICT DO NOTHING',
+                        [sanitizedEmail, 'feedback']
+                    );
+                    console.log(`📧 Nouvel abonné via feedback: ${sanitizedEmail}`);
+                }
+            }
+            
+            console.log(`📝 Feedback: ${isUseful ? 'Utile' : 'Pas utile'} - Score: ${scoreGiven}`);
+            res.json({ success: true });
+            
+        } finally {
+            client.release();
+        }
         
     } catch (err) {
         console.error('❌ Erreur feedback:', err);
@@ -836,8 +1072,15 @@ app.post('/feedback', async (req, res) => {
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
-        version: 'BALANCED-FACTCHECKER-2.1',
-        features: ['balanced_scoring', 'contextual_analysis', 'intelligent_contradictions', 'source_verification'],
+        version: 'BALANCED-FACTCHECKER-2.2-EMAIL',
+        features: [
+            'balanced_scoring', 
+            'contextual_analysis', 
+            'intelligent_contradictions', 
+            'source_verification',
+            'email_capture',
+            'subscriber_management'
+        ],
         timestamp: new Date().toISOString(),
         api_configured: !!(process.env.GOOGLE_API_KEY && process.env.SEARCH_ENGINE_ID)
     });
@@ -847,6 +1090,8 @@ app.get('/health', (req, res) => {
 const initDb = async () => {
     try {
         const client = await pool.connect();
+        
+        // Table feedback (existante améliorée)
         await client.query(`
             CREATE TABLE IF NOT EXISTS feedback (
                 id SERIAL PRIMARY KEY,
@@ -855,11 +1100,32 @@ const initDb = async () => {
                 is_useful BOOLEAN,
                 comment TEXT,
                 sources_found JSONB,
+                user_email VARCHAR(255),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
+        
+        // Nouvelle table pour les abonnés email
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS email_subscribers (
+                id SERIAL PRIMARY KEY,
+                email VARCHAR(255) UNIQUE NOT NULL,
+                name VARCHAR(100),
+                source VARCHAR(50) DEFAULT 'extension',
+                subscribed BOOLEAN DEFAULT true,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        
+        // Index pour les performances
+        await client.query(`
+            CREATE INDEX IF NOT EXISTS idx_email_subscribers_email ON email_subscribers(email);
+            CREATE INDEX IF NOT EXISTS idx_email_subscribers_subscribed ON email_subscribers(subscribed);
+        `);
+        
         client.release();
-        console.log('✅ Database ready');
+        console.log('✅ Database ready (feedback + email_subscribers)');
     } catch (err) {
         console.error('❌ Database error:', err.message);
     }
@@ -868,12 +1134,13 @@ const initDb = async () => {
 // Startup
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`\n🚀 === VERIFYAI BALANCED SERVER ===`);
+    console.log(`\n🚀 === VERIFYAI BALANCED SERVER + EMAIL ===`);
     console.log(`📡 Port: ${PORT}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`🔑 Google API configured: ${!!process.env.GOOGLE_API_KEY}`);
     console.log(`💾 Database configured: ${!!process.env.DATABASE_URL}`);
-    console.log(`⚖️  Features: Balanced scoring, Contextual analysis, Smart contradictions`);
-    console.log(`=====================================\n`);
+    console.log(`📧 Email capture: ENABLED`);
+    console.log(`⚖️  Features: Balanced scoring, Email management, Subscriber tracking`);
+    console.log(`============================================\n`);
     initDb();
 });
