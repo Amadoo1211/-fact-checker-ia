@@ -4,20 +4,16 @@ const cors = require('cors');
 const { Pool } = require('pg');
 const app = express();
 
-// Configuration CORS
 app.use(cors({ 
     origin: ['chrome-extension://*', 'https://fact-checker-ia-production.up.railway.app', 'http://localhost:*', 'https://localhost:*'],
     credentials: true
 }));
 app.use(express.json({ limit: '5mb' }));
 
-// Database
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
-
-// ========== SYSTÈME DE FACT-CHECKING AMÉLIORÉ ET FIABLE ==========
 
 class ImprovedFactChecker {
     constructor() {
@@ -49,7 +45,6 @@ class ImprovedFactChecker {
             }
         };
 
-        // Contextes pour éviter les fausses contradictions
         this.contextPatterns = {
             geographic: {
                 city: /\b(ville|city proper|intra.?muros|centre.?ville|downtown|municipality)\b/i,
@@ -63,12 +58,10 @@ class ImprovedFactChecker {
         };
     }
 
-    // 1. EXTRACTION DE CLAIMS VÉRIFIABLES
     extractVerifiableClaims(text) {
         const claims = [];
         const cleanText = sanitizeInput(text);
         
-        // Claims quantitatifs (renforcés)
         const numberClaims = cleanText.match(/\b\d+([,\.]\d+)?\s*(millions?|milliards?|billions?|%|pour\s*cent|kilomètres?|km|mètres?|habitants?|personnes?|années?|ans|dollars?|\$|euros?|€)\b/gi);
         if (numberClaims) {
             claims.push(...numberClaims.slice(0, 3).map(claim => ({
@@ -79,7 +72,6 @@ class ImprovedFactChecker {
             })));
         }
 
-        // Claims historiques (améliorés)
         const historicalClaims = cleanText.match(/\b(en|in|depuis|from|until|de|du)\s+(19|20)\d{2}.*?(fondé|créé|né|mort|established|founded|born|died|independence|indépendance|guerre|war|treaty|traité)\b/gi);
         if (historicalClaims) {
             claims.push(...historicalClaims.slice(0, 2).map(claim => ({
@@ -90,7 +82,6 @@ class ImprovedFactChecker {
             })));
         }
 
-        // Claims géographiques (enrichis)
         const geoClaims = cleanText.match(/\b(capitale|capital|population|superficie|area|situé|located|se trouve|is located|habitants)\s+(de|of|dans|in)\s+[A-Z][a-zA-ZÀ-ÿ\s]+\b/gi);
         if (geoClaims) {
             claims.push(...geoClaims.slice(0, 2).map(claim => ({
@@ -101,7 +92,6 @@ class ImprovedFactChecker {
             })));
         }
 
-        // Claims scientifiques (élargis)
         const sciClaims = cleanText.match(/\b(vitesse.*lumière|point.*ébullition|formule.*chimique|speed.*light|boiling.*point|chemical.*formula|299.*792.*458|température|temperature|masse|mass|densité|density|gravity|gravité)\b/gi);
         if (sciClaims) {
             claims.push(...sciClaims.slice(0, 2).map(claim => ({
@@ -112,15 +102,13 @@ class ImprovedFactChecker {
             })));
         }
 
-        console.log(`🔍 Claims extraits: ${claims.length} (avg confidence: ${claims.reduce((sum, c) => sum + c.confidence, 0) / Math.max(claims.length, 1)})`);
+        console.log(`🔍 Claims extraits: ${claims.length}`);
         return claims;
     }
 
-    // 2. ANALYSE DU TYPE DE CONTENU - SCORES OPTIMISÉS
     analyzeContentType(text, claims) {
         const lower = text.toLowerCase();
         
-        // Opinion subjective (AUGMENTÉE: 40% → 55%)
         const opinionPatterns = [
             /\b(je pense|je crois|à mon avis|personnellement|subjectivement|selon moi)\b/i,
             /\b(i think|i believe|in my opinion|personally|subjectively|i feel)\b/i,
@@ -135,7 +123,6 @@ class ImprovedFactChecker {
             };
         }
 
-        // Question directe (AUGMENTÉE: 30% → 45%)
         if (text.length < 300 && (/^(what|how|why|when|where|which|who|can you|could you|please|qu|quoi|comment|pourquoi|quand|où)/i.test(text.trim()) || text.includes('?'))) {
             return {
                 type: 'QUESTION',
@@ -144,7 +131,6 @@ class ImprovedFactChecker {
             };
         }
 
-        // Faits avec claims vérifiables (TOUS AUGMENTÉS)
         if (claims.length > 0) {
             const hasScientific = claims.some(c => c.type === 'SCIENTIFIC');
             const hasQuantitative = claims.some(c => c.type === 'QUANTITATIVE');
@@ -178,7 +164,6 @@ class ImprovedFactChecker {
             }
         }
 
-        // Information générale (AUGMENTÉE: 50% → 58%)
         return {
             type: 'GENERAL_INFO',
             baseScore: 0.58,
@@ -186,7 +171,6 @@ class ImprovedFactChecker {
         };
     }
 
-    // 3. EXTRACTION DE CONTEXTE DÉTAILLÉ
     extractDetailedContext(text) {
         return {
             geographic: {
@@ -205,27 +189,22 @@ class ImprovedFactChecker {
         };
     }
 
-    // 4. VÉRIFICATION DE CONTEXTES COMPLÉMENTAIRES (améliorée)
     areComplementaryContexts(context1, context2) {
-        // Ville vs Métropole = complémentaires
         if ((context1.geographic.hasCity && context2.geographic.hasMetro) ||
             (context1.geographic.hasMetro && context2.geographic.hasCity)) {
             return true;
         }
 
-        // Ville vs Région = complémentaires
         if ((context1.geographic.hasCity && context2.geographic.hasRegion) ||
             (context1.geographic.hasRegion && context2.geographic.hasCity)) {
             return true;
         }
 
-        // Données historiques vs actuelles = complémentaires
         if ((context1.temporal.isCurrent && context2.temporal.isHistorical) ||
             (context1.temporal.isHistorical && context2.temporal.isCurrent)) {
             return true;
         }
 
-        // Total vs partiel = complémentaires
         if ((context1.measurement.hasTotal && context2.measurement.hasPartial) ||
             (context1.measurement.hasPartial && context2.measurement.hasTotal)) {
             return true;
@@ -234,7 +213,6 @@ class ImprovedFactChecker {
         return false;
     }
 
-    // 5. EXTRACTION DE NOMBRES AVEC CONTEXTE
     extractNumbersWithContext(text) {
         const numberMatches = text.match(/\b\d+([,\.]\d+)?\b/g) || [];
         return numberMatches.map(match => ({
@@ -243,12 +221,10 @@ class ImprovedFactChecker {
         }));
     }
 
-    // 6. DÉTECTION DE CONTRADICTIONS INTELLIGENTE (seuil assoupli)
     detectIntelligentContradiction(text1, text2) {
         const context1 = this.extractDetailedContext(text1);
         const context2 = this.extractDetailedContext(text2);
         
-        // Si contextes complémentaires, pas de contradiction
         if (this.areComplementaryContexts(context1, context2)) {
             return { 
                 detected: false, 
@@ -267,7 +243,6 @@ class ImprovedFactChecker {
             return { detected: false, details: null };
         }
 
-        // SEUIL ASSOUPLI: 50% → 150%
         for (const num1 of nums1) {
             for (const num2 of nums2) {
                 if (num1.value > 0 && Math.abs(num1.value - num2.value) / num1.value > 1.5) {
@@ -289,23 +264,18 @@ class ImprovedFactChecker {
         return { detected: false, details: null };
     }
 
-    // 7. VÉRIFICATION DE VRAIE CONTRADICTION (renforcée)
     isTrueContradiction(num1, num2, context1, context2) {
-        // Même contexte exact = vraie contradiction si différence > 150%
         if (JSON.stringify(context1) === JSON.stringify(context2)) {
             return Math.abs(num1.value - num2.value) / num1.value > 1.5;
         }
         
-        // Contextes complémentaires = jamais contradiction
         if (this.areComplementaryContexts(context1, context2)) {
             return false;
         }
         
-        // Contextes différents = contradiction seulement si TRÈS grande différence (>400%)
         return Math.abs(num1.value - num2.value) / num1.value > 4.0;
     }
 
-    // 8. ÉVALUATION DE LA QUALITÉ DES SOURCES (impact renforcé)
     evaluateSourceQuality(sources) {
         if (sources.length === 0) {
             return {
@@ -320,19 +290,16 @@ class ImprovedFactChecker {
         let supportingAny = sources.filter(s => s.actuallySupports).length;
         let contradictingHigh = sources.filter(s => s.contradicts && s.credibilityMultiplier >= 0.85).length;
 
-        // BONUS RENFORCÉS
         if (supportingHigh > 0) {
             qualityScore += supportingHigh * 0.20;
         } else if (supportingAny > 0) {
             qualityScore += supportingAny * 0.12;
         }
 
-        // PÉNALITÉ RENFORCÉE
         if (contradictingHigh > 0) {
             qualityScore -= contradictingHigh * 0.15;
         }
 
-        // BONUS PROGRESSIF AMÉLIORÉ
         if (sources.length >= 3) {
             qualityScore += 0.06;
         }
@@ -340,7 +307,6 @@ class ImprovedFactChecker {
             qualityScore += 0.04;
         }
 
-        // BONUS TIER1 RENFORCÉ
         const tier1Sources = sources.filter(s => s.credibilityMultiplier === 1.0).length;
         if (tier1Sources > 0) {
             qualityScore += tier1Sources * 0.10;
@@ -361,7 +327,6 @@ class ImprovedFactChecker {
         };
     }
 
-    // 9. ÉVALUATION DU CONSENSUS (bonus renforcés)
     evaluateConsensus(sources) {
         if (sources.length < 2) {
             return { bonus: 0, confidence: 0, reasoning: '' };
@@ -377,7 +342,6 @@ class ImprovedFactChecker {
         let bonus = 0;
         let reasoning = '';
 
-        // BONUS RENFORCÉS
         if (supportRatio >= 0.8 && supporting >= 2) {
             bonus = 0.18;
             reasoning = `Consensus très fort: ${supporting}/${total} sources confirment (+18%).`;
@@ -401,13 +365,11 @@ class ImprovedFactChecker {
         };
     }
 
-    // 10. COHÉRENCE CONTEXTUELLE (améliorée)
     evaluateContextualCoherence(originalText, sources) {
         if (sources.length === 0) return { bonus: 0, reasoning: '' };
 
         let coherenceScore = 0;
         
-        // BONUS DIVERSITÉ AMÉLIORÉ
         const uniqueDomains = new Set(sources.map(s => {
             try {
                 return new URL(s.url).hostname;
@@ -423,7 +385,6 @@ class ImprovedFactChecker {
             coherenceScore += 0.03;
         }
 
-        // BONUS MIX TIERS RENFORCÉ
         const hasTier1 = sources.some(s => s.credibilityTier === 'tier1');
         const hasTier2 = sources.some(s => s.credibilityTier === 'tier2');
         const hasTier3 = sources.some(s => s.credibilityTier === 'tier3');
@@ -437,7 +398,6 @@ class ImprovedFactChecker {
             coherenceScore += 0.04;
         }
 
-        // BONUS SOURCES RÉCENTES AUGMENTÉ
         const hasRecentSources = sources.some(s => 
             s.snippet && /202[3-5]|recent|latest|current|récent|actuel/i.test(s.snippet)
         );
@@ -457,7 +417,6 @@ class ImprovedFactChecker {
         };
     }
 
-    // 11. CALCUL FINAL OPTIMISÉ
     calculateBalancedScore(originalText, analyzedSources, claims) {
         let totalScore = 0;
         let confidence = 0;
@@ -465,19 +424,16 @@ class ImprovedFactChecker {
 
         console.log(`🎯 Calcul du score optimisé...`);
 
-        // 1. Score de base (CONFIANCE AUGMENTÉE)
         const contentType = this.analyzeContentType(originalText, claims);
         totalScore += contentType.baseScore;
         reasoning.push(contentType.reasoning);
         confidence += 0.35;
 
-        // 2. Qualité des sources (inchangé)
         const sourceEval = this.evaluateSourceQuality(analyzedSources);
         totalScore += sourceEval.impact;
         reasoning.push(sourceEval.reasoning);
         confidence += sourceEval.confidence;
 
-        // 3. Consensus (inchangé)
         const consensus = this.evaluateConsensus(analyzedSources);
         totalScore += consensus.bonus;
         if (consensus.reasoning) {
@@ -485,17 +441,15 @@ class ImprovedFactChecker {
         }
         confidence += consensus.confidence;
 
-        // 4. Cohérence contextuelle (inchangé)
         const contextBonus = this.evaluateContextualCoherence(originalText, analyzedSources);
         totalScore += contextBonus.bonus;
         if (contextBonus.reasoning) {
             reasoning.push(contextBonus.reasoning);
         }
 
-        // RANGE AJUSTÉ: 15-92% → 20-95%
         const finalScore = Math.max(0.20, Math.min(0.95, totalScore));
         
-        console.log(`📊 Score optimisé: ${Math.round(finalScore * 100)}% (confiance: ${Math.round(confidence * 100)}%)`);
+        console.log(`📊 Score optimisé: ${Math.round(finalScore * 100)}%`);
         
         return {
             score: finalScore,
@@ -514,8 +468,6 @@ class ImprovedFactChecker {
             }
         };
     }
-
-    // MÉTHODES UTILITAIRES
 
     calculateSemanticSimilarity(text1, text2) {
         if (!text1 || !text2) return { score: 0, confirms: false };
@@ -537,7 +489,6 @@ class ImprovedFactChecker {
         
         const similarity = union.size > 0 ? intersection.size / union.size : 0;
         
-        // SEUIL RENFORCÉ: 15% → 30% + minimum 2 mots communs
         return {
             score: similarity,
             confirms: similarity > 0.30 && intersection.size >= 2
@@ -558,8 +509,6 @@ class ImprovedFactChecker {
     }
 }
 
-// ========== FONCTION D'ANALYSE DES SOURCES AMÉLIORÉE ==========
-
 async function analyzeSourcesWithImprovedLogic(factChecker, originalText, sources) {
     const analyzedSources = [];
     
@@ -569,7 +518,6 @@ async function analyzeSourcesWithImprovedLogic(factChecker, originalText, source
             const semanticMatch = factChecker.calculateSemanticSimilarity(originalText, source.snippet || '');
             const contradiction = factChecker.detectIntelligentContradiction(originalText, source.snippet || '');
             
-            // SEUIL AUGMENTÉ: 0.15 → 0.30
             const actuallySupports = semanticMatch.confirms && !contradiction.detected && semanticMatch.score > 0.30;
             
             analyzedSources.push({
@@ -602,8 +550,6 @@ async function analyzeSourcesWithImprovedLogic(factChecker, originalText, source
     return analyzedSources;
 }
 
-// ========== FONCTIONS UTILITAIRES ==========
-
 function sanitizeInput(text) {
     if (!text || typeof text !== 'string') return '';
     
@@ -626,19 +572,15 @@ function extractMainKeywords(text) {
     const keywords = [];
     
     try {
-        // Entités nommées
         const namedEntities = cleaned.match(/\b[A-Z][a-zA-ZÀ-ÿ]+(?:\s+[A-Z][a-zA-ZÀ-ÿ]+){0,2}\b/g) || [];
         keywords.push(...namedEntities.slice(0, 4));
         
-        // Dates importantes
         const dates = cleaned.match(/\b(19|20)\d{2}\b/g) || [];
         keywords.push(...dates.slice(0, 2));
         
-        // Nombres avec unités
         const numbersWithUnits = cleaned.match(/\b\d+([,\.]\d+)?\s*(?:million|milliard|%|km|habitants|meters)\b/gi) || [];
         keywords.push(...numbersWithUnits.slice(0, 2));
         
-        // Mots significatifs longs
         const significantWords = cleaned.match(/\b[a-zA-ZÀ-ÿ]{5,15}\b/g) || [];
         keywords.push(...significantWords.slice(0, 3));
         
@@ -676,7 +618,6 @@ async function findWebSources(keywords, smartQueries, originalText) {
     
     let allSources = [];
     
-    // Recherche avec queries intelligentes
     if (smartQueries && smartQueries.length > 0) {
         for (const query of smartQueries.slice(0, 2)) {
             try {
@@ -702,7 +643,6 @@ async function findWebSources(keywords, smartQueries, originalText) {
         }
     }
     
-    // Recherche fallback avec keywords
     if (allSources.length < 2 && keywords.length > 0) {
         try {
             const fallbackQuery = keywords.slice(0, 3).join(' ');
@@ -726,7 +666,6 @@ async function findWebSources(keywords, smartQueries, originalText) {
         }
     }
     
-    // Déduplication et tri
     const uniqueSources = [];
     const seenUrls = new Set();
     
@@ -751,7 +690,6 @@ function calculateRelevance(item, originalText) {
     
     let score = 0.3;
     
-    // Mots communs
     const originalWords = original.split(/\s+/).filter(w => w.length > 3).slice(0, 8);
     let commonWords = 0;
     
@@ -763,20 +701,15 @@ function calculateRelevance(item, originalText) {
     
     score += (commonWords / Math.max(originalWords.length, 1)) * 0.4;
     
-    // Bonus sources fiables
     if (url.includes('wikipedia')) score += 0.25;
     else if (url.includes('.edu') || url.includes('.gov')) score += 0.2;
     else if (url.includes('britannica') || url.includes('nature.com')) score += 0.15;
     
-    // Pénalité sources douteuses
     if (url.includes('reddit') || url.includes('forum')) score -= 0.15;
     
     return Math.max(0.1, Math.min(1, score));
 }
 
-// ========== ENDPOINTS API ==========
-
-// Endpoint principal avec système amélioré
 app.post('/verify', async (req, res) => {
     try {
         const { text, smartQueries, analysisType } = req.body;
@@ -795,20 +728,10 @@ app.post('/verify', async (req, res) => {
         }
         
         const factChecker = new ImprovedFactChecker();
-        
-        // 1. Extraction des claims vérifiables
         const claims = factChecker.extractVerifiableClaims(text);
-        
-        // 2. Extraction des mots-clés
         const keywords = extractMainKeywords(text);
-        
-        // 3. Recherche de sources
         const sources = await findWebSources(keywords, smartQueries, text);
-        
-        // 4. Analyse sémantique améliorée
         const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, text, sources);
-        
-        // 5. Calcul du score équilibré
         const result = factChecker.calculateBalancedScore(text, analyzedSources, claims);
         
         const response = {
@@ -822,14 +745,13 @@ app.post('/verify', async (req, res) => {
             methodology: "Analyse optimisée V2.0 - scoring fiable et précis"
         };
         
-        console.log(`✅ Score optimisé: ${Math.round(result.score * 100)}% (confiance: ${Math.round(result.confidence * 100)}%)`);
+        console.log(`✅ Score optimisé: ${Math.round(result.score * 100)}%`);
         console.log(`📊 ${analyzedSources.length} sources | ${claims.length} claims | ${analyzedSources.filter(s => s.actuallySupports).length} confirment`);
-        console.log(`===============================\n`);
         
         res.json(response);
         
     } catch (error) {
-        console.error('❌ Erreur analyse équilibrée:', error);
+        console.error('❌ Erreur analyse:', error);
         res.status(500).json({ 
             overallConfidence: 0.20,
             scoringExplanation: "**Erreur système** (20%) - Impossible de terminer l'analyse.",
@@ -840,17 +762,12 @@ app.post('/verify', async (req, res) => {
     }
 });
 
-// ========== ENDPOINTS EMAIL ==========
-
 app.post('/subscribe', async (req, res) => {
     try {
         const { email, name, source } = req.body;
         
         if (!email || !validateEmail(email)) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Email invalide' 
-            });
+            return res.status(400).json({ success: false, error: 'Email invalide' });
         }
         
         const sanitizedEmail = sanitizeInput(email).toLowerCase().trim();
@@ -872,19 +789,11 @@ app.post('/subscribe', async (req, res) => {
                         [sanitizedEmail]
                     );
                     console.log(`📧 Réabonnement: ${sanitizedEmail}`);
-                    return res.json({ 
-                        success: true, 
-                        message: 'Réabonnement réussi',
-                        alreadySubscribed: false
-                    });
+                    return res.json({ success: true, message: 'Réabonnement réussi', alreadySubscribed: false });
                 }
                 
                 console.log(`📧 Déjà abonné: ${sanitizedEmail}`);
-                return res.json({ 
-                    success: true, 
-                    message: 'Déjà abonné',
-                    alreadySubscribed: true
-                });
+                return res.json({ success: true, message: 'Déjà abonné', alreadySubscribed: true });
             }
             
             await client.query(
@@ -893,12 +802,7 @@ app.post('/subscribe', async (req, res) => {
             );
             
             console.log(`📧 Nouvel abonné: ${sanitizedEmail} (${subscriptionSource})`);
-            
-            res.json({ 
-                success: true, 
-                message: 'Abonnement réussi',
-                alreadySubscribed: false
-            });
+            res.json({ success: true, message: 'Abonnement réussi', alreadySubscribed: false });
             
         } finally {
             client.release();
@@ -906,10 +810,7 @@ app.post('/subscribe', async (req, res) => {
         
     } catch (err) {
         console.error('❌ Erreur abonnement:', err);
-        res.status(500).json({ 
-            success: false, 
-            error: 'Erreur serveur' 
-        });
+        res.status(500).json({ success: false, error: 'Erreur serveur' });
     }
 });
 
@@ -918,14 +819,10 @@ app.post('/unsubscribe', async (req, res) => {
         const { email } = req.body;
         
         if (!email || !validateEmail(email)) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Email invalide' 
-            });
+            return res.status(400).json({ success: false, error: 'Email invalide' });
         }
         
         const sanitizedEmail = sanitizeInput(email).toLowerCase().trim();
-        
         const client = await pool.connect();
         
         try {
@@ -935,18 +832,11 @@ app.post('/unsubscribe', async (req, res) => {
             );
             
             if (result.rowCount === 0) {
-                return res.status(404).json({ 
-                    success: false, 
-                    error: 'Email non trouvé' 
-                });
+                return res.status(404).json({ success: false, error: 'Email non trouvé' });
             }
             
             console.log(`📧 Désabonnement: ${sanitizedEmail}`);
-            
-            res.json({ 
-                success: true, 
-                message: 'Désabonnement réussi' 
-            });
+            res.json({ success: true, message: 'Désabonnement réussi' });
             
         } finally {
             client.release();
@@ -954,10 +844,7 @@ app.post('/unsubscribe', async (req, res) => {
         
     } catch (err) {
         console.error('❌ Erreur désabonnement:', err);
-        res.status(500).json({ 
-            success: false, 
-            error: 'Erreur serveur' 
-        });
+        res.status(500).json({ success: false, error: 'Erreur serveur' });
     }
 });
 
@@ -1015,10 +902,7 @@ app.get('/subscribers/export', async (req, res) => {
                 'SELECT email, name, source, created_at FROM email_subscribers WHERE subscribed = true ORDER BY created_at DESC'
             );
             
-            res.json({
-                count: result.rows.length,
-                subscribers: result.rows
-            });
+            res.json({ count: result.rows.length, subscribers: result.rows });
             
         } finally {
             client.release();
@@ -1033,7 +917,6 @@ app.get('/subscribers/export', async (req, res) => {
 app.post('/feedback', async (req, res) => {
     try {
         const { originalText, scoreGiven, isUseful, comment, sourcesFound, userEmail } = req.body;
-        
         const client = await pool.connect();
         
         try {
@@ -1079,10 +962,95 @@ app.post('/feedback', async (req, res) => {
     }
 });
 
+app.post('/analytics/track', async (req, res) => {
+    try {
+        const { userId, eventType, eventData } = req.body;
+        
+        if (!userId || !eventType) {
+            return res.status(400).json({ error: 'userId et eventType requis' });
+        }
+        
+        const client = await pool.connect();
+        
+        try {
+            await client.query(
+                'INSERT INTO analytics_events(user_id, event_type, event_data) VALUES($1, $2, $3)',
+                [userId, eventType, JSON.stringify(eventData || {})]
+            );
+            
+            res.json({ success: true });
+        } finally {
+            client.release();
+        }
+        
+    } catch (err) {
+        console.error('❌ Erreur analytics:', err);
+        res.status(500).json({ error: 'Erreur serveur' });
+    }
+});
+
+app.get('/analytics/stats', async (req, res) => {
+    try {
+        const client = await pool.connect();
+        
+        try {
+            const stats = await client.query(`
+                SELECT 
+                    COUNT(DISTINCT user_id) as total_users,
+                    COUNT(*) FILTER (WHERE event_type = 'verification_completed') as total_verifications,
+                    AVG((event_data->>'score')::float) FILTER (WHERE event_type = 'verification_completed' AND event_data->>'score' IS NOT NULL) as avg_score
+                FROM analytics_events
+            `);
+            
+            const emails = await client.query(
+                'SELECT COUNT(*) as total FROM email_subscribers WHERE subscribed = true'
+            );
+            
+            const daily = await client.query(`
+                SELECT 
+                    DATE(created_at) as date, 
+                    COUNT(*) as count,
+                    COUNT(DISTINCT user_id) as unique_users
+                FROM analytics_events
+                WHERE created_at >= NOW() - INTERVAL '7 days'
+                GROUP BY DATE(created_at)
+                ORDER BY date DESC
+            `);
+            
+            const topEvents = await client.query(`
+                SELECT event_type, COUNT(*) as count
+                FROM analytics_events
+                GROUP BY event_type
+                ORDER BY count DESC
+                LIMIT 10
+            `);
+            
+            res.json({
+                success: true,
+                stats: {
+                    totalUsers: parseInt(stats.rows[0].total_users) || 0,
+                    totalVerifications: parseInt(stats.rows[0].total_verifications) || 0,
+                    avgScore: parseFloat(stats.rows[0].avg_score) || 0,
+                    totalEmails: parseInt(emails.rows[0].total) || 0
+                },
+                dailyActivity: daily.rows,
+                topEvents: topEvents.rows
+            });
+            
+        } finally {
+            client.release();
+        }
+        
+    } catch (err) {
+        console.error('❌ Erreur stats:', err);
+        res.status(500).json({ error: 'Erreur serveur' });
+    }
+});
+
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
-        version: 'OPTIMIZED-FACTCHECKER-V2.0',
+        version: 'OPTIMIZED-FACTCHECKER-V2.0-ANALYTICS',
         features: [
             'optimized_scoring', 
             'reliable_algorithm',
@@ -1090,7 +1058,8 @@ app.get('/health', (req, res) => {
             'intelligent_contradictions', 
             'source_verification',
             'email_capture',
-            'subscriber_management'
+            'subscriber_management',
+            'analytics_tracking'
         ],
         timestamp: new Date().toISOString(),
         api_configured: !!(process.env.GOOGLE_API_KEY && process.env.SEARCH_ENGINE_ID)
@@ -1127,12 +1096,25 @@ const initDb = async () => {
         `);
         
         await client.query(`
+            CREATE TABLE IF NOT EXISTS analytics_events (
+                id SERIAL PRIMARY KEY,
+                user_id VARCHAR(255) NOT NULL,
+                event_type VARCHAR(100) NOT NULL,
+                event_data JSONB,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+        `);
+        
+        await client.query(`
             CREATE INDEX IF NOT EXISTS idx_email_subscribers_email ON email_subscribers(email);
             CREATE INDEX IF NOT EXISTS idx_email_subscribers_subscribed ON email_subscribers(subscribed);
+            CREATE INDEX IF NOT EXISTS idx_analytics_user_id ON analytics_events(user_id);
+            CREATE INDEX IF NOT EXISTS idx_analytics_event_type ON analytics_events(event_type);
+            CREATE INDEX IF NOT EXISTS idx_analytics_created_at ON analytics_events(created_at);
         `);
         
         client.release();
-        console.log('✅ Database ready');
+        console.log('✅ Database ready (feedback + email_subscribers + analytics_events)');
     } catch (err) {
         console.error('❌ Database error:', err.message);
     }
@@ -1140,12 +1122,12 @@ const initDb = async () => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`\n🚀 === VERIFYAI OPTIMIZED SERVER V2.0 ===`);
+    console.log(`\n🚀 === VERIFYAI OPTIMIZED SERVER V2.0 + ANALYTICS ===`);
     console.log(`📡 Port: ${PORT}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`🔑 Google API: ${!!process.env.GOOGLE_API_KEY ? 'Configured' : 'Missing'}`);
     console.log(`💾 Database: ${!!process.env.DATABASE_URL ? 'Connected' : 'Missing'}`);
-    console.log(`⚡ Features: Optimized scoring V2.0, Email management`);
+    console.log(`⚡ Features: Scoring V2.0, Email, Analytics`);
     console.log(`============================================\n`);
     initDb();
 });
