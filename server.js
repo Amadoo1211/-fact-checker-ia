@@ -4,6 +4,55 @@ const cors = require('cors');
 const { Pool } = require('pg');
 const app = express();
 
+// ============================================
+// RATE LIMITING - PROTECTION SPAM
+// ============================================
+const requestCounts = new Map();
+
+function rateLimiter(maxRequests, windowMs) {
+    return (req, res, next) => {
+        const ip = req.ip || req.connection.remoteAddress || 'unknown';
+        const now = Date.now();
+        
+        if (!requestCounts.has(ip)) {
+            requestCounts.set(ip, []);
+        }
+        
+        const requests = requestCounts.get(ip);
+        const recentRequests = requests.filter(time => now - time < windowMs);
+        
+        if (recentRequests.length >= maxRequests) {
+            console.log(`⚠️ Rate limit dépassé pour IP: ${ip}`);
+            return res.status(429).json({ 
+                error: 'Too many requests. Please wait before trying again.',
+                retryAfter: Math.ceil(windowMs / 1000)
+            });
+        }
+        
+        recentRequests.push(now);
+        requestCounts.set(ip, recentRequests);
+        next();
+    };
+}
+
+// Cleanup automatique toutes les 10 minutes
+setInterval(() => {
+    const now = Date.now();
+    let cleaned = 0;
+    for (const [ip, requests] of requestCounts.entries()) {
+        const recent = requests.filter(time => now - time < 600000);
+        if (recent.length === 0) {
+            requestCounts.delete(ip);
+            cleaned++;
+        } else {
+            requestCounts.set(ip, recent);
+        }
+    }
+    if (cleaned > 0) {
+        console.log(`🧹 ${cleaned} IPs nettoyées du rate limiter`);
+    }
+}, 600000);
+
 app.use(cors({ 
     origin: ['chrome-extension://*', 'https://fact-checker-ia-production.up.railway.app', 'http://localhost:*', 'https://localhost:*'],
     credentials: true
@@ -16,12 +65,12 @@ const pool = new Pool({
 });
 
 // ============================================
-// SCORING ENGINE V3 - STRICT ET RÉALISTE
+// SCORING ENGINE V3 - STRICT + TIERS CORRIGÉS
 // ============================================
 
 class ReliableScoringEngine {
     constructor() {
-        // Hiérarchie stricte de crédibilité des sources
+        // CORRECTION CRITIQUE: Tiers inversés corrigés
         this.sourceCredibilityRanks = {
             tier1: { 
                 domains: ['edu', 'gov', 'who.int', 'nature.com', 'science.org', 'pubmed.ncbi.nlm.nih.gov', 'insee.fr', 'cia.gov', 'worldbank.org', 'nih.gov', 'cdc.gov'],
@@ -34,14 +83,14 @@ class ReliableScoringEngine {
                 description: 'Médias avec processus éditorial rigoureux'
             },
             tier3: { 
+                domains: ['scholar.google.com', 'jstor.org', 'researchgate.net', 'arxiv.org'],
+                multiplier: 0.90,
+                description: 'Bases de données scientifiques'
+            },
+            tier4: { 
                 domains: ['wikipedia.org', 'britannica.com', 'larousse.fr'],
                 multiplier: 0.75,
                 description: 'Encyclopédies avec vérification communautaire'
-            },
-            tier4: { 
-                domains: ['scholar.google.com', 'jstor.org', 'researchgate.net', 'arxiv.org'],
-                multiplier: 0.9,
-                description: 'Bases de données scientifiques'
             },
             unreliable: {
                 domains: ['reddit.com', 'quora.com', 'yahoo.answers', 'answers.com', 'facebook.com', 'twitter.com'],
@@ -248,7 +297,6 @@ class ReliableScoringEngine {
             return { detected: false, details: null };
         }
 
-        // V3 STRICT: Détection contradiction à 50% au lieu de 150%
         for (const num1 of nums1) {
             for (const num2 of nums2) {
                 if (num1.value > 0 && Math.abs(num1.value - num2.value) / num1.value > 0.5) {
@@ -296,22 +344,21 @@ class ReliableScoringEngine {
         let supportingAny = sources.filter(s => s.actuallySupports).length;
         let contradictingHigh = sources.filter(s => s.contradicts && s.credibilityMultiplier >= 0.70).length;
 
-        // V3: Bonus réduits et plus stricts
         if (supportingHigh > 0) {
-            qualityScore += supportingHigh * 0.15;  // Réduit de 0.20 à 0.15
+            qualityScore += supportingHigh * 0.15;
         } else if (supportingAny > 0) {
-            qualityScore += supportingAny * 0.08;  // Réduit de 0.12 à 0.08
+            qualityScore += supportingAny * 0.08;
         }
 
         if (contradictingHigh > 0) {
-            qualityScore -= contradictingHigh * 0.15;  // Identique
+            qualityScore -= contradictingHigh * 0.15;
         }
 
         if (sources.length >= 3) {
-            qualityScore += 0.04;  // Réduit de 0.06
+            qualityScore += 0.04;
         }
         if (sources.length >= 5) {
-            qualityScore += 0.03;  // Réduit de 0.04
+            qualityScore += 0.03;
         }
 
         const tier1Sources = sources.filter(s => s.credibilityMultiplier === 1.0).length;
@@ -349,18 +396,17 @@ class ReliableScoringEngine {
         let bonus = 0;
         let reasoning = '';
 
-        // V3: Bonus consensus réduits
         if (supportRatio >= 0.8 && supporting >= 2) {
-            bonus = 0.12;  // Réduit de 0.18
+            bonus = 0.12;
             reasoning = `Consensus très fort: ${supporting}/${total} sources confirment (+12%).`;
         } else if (supportRatio >= 0.6 && supporting >= 2) {
-            bonus = 0.08;  // Réduit de 0.12
+            bonus = 0.08;
             reasoning = `Bon consensus: ${supporting}/${total} sources confirment (+8%).`;
         } else if (supportRatio >= 0.4 && supporting >= 1) {
-            bonus = 0.04;  // Réduit de 0.06
+            bonus = 0.04;
             reasoning = `Consensus modéré: ${supporting}/${total} sources confirment (+4%).`;
         } else if (contradictRatio > 0.5) {
-            bonus = -0.12;  // Augmenté de -0.10
+            bonus = -0.12;
             reasoning = `Contradictions dominantes: ${contradicting}/${total} sources contredisent (-12%).`;
         } else {
             reasoning = `Pas de consensus clair: sources partagées.`;
@@ -387,10 +433,10 @@ class ReliableScoringEngine {
         })).size;
         
         if (uniqueDomains >= 3) {
-            coherenceScore += 0.03;  // Réduit de 0.05
+            coherenceScore += 0.03;
         }
         if (uniqueDomains >= 5) {
-            coherenceScore += 0.02;  // Réduit de 0.03
+            coherenceScore += 0.02;
         }
 
         const hasTier1 = sources.some(s => s.credibilityTier === 'tier1');
@@ -401,9 +447,9 @@ class ReliableScoringEngine {
         const tierCount = [hasTier1, hasTier2, hasTier3, hasTier4].filter(Boolean).length;
         
         if (tierCount >= 3) {
-            coherenceScore += 0.04;  // Réduit de 0.06
+            coherenceScore += 0.04;
         } else if (tierCount >= 2) {
-            coherenceScore += 0.02;  // Réduit de 0.04
+            coherenceScore += 0.02;
         }
 
         const hasRecentSources = sources.some(s => 
@@ -411,7 +457,7 @@ class ReliableScoringEngine {
         );
         
         if (hasRecentSources && /population|data|statistics|facts|données|statistiques/i.test(originalText)) {
-            coherenceScore += 0.03;  // Réduit de 0.04
+            coherenceScore += 0.03;
         }
 
         let reasoning = '';
@@ -455,7 +501,6 @@ class ReliableScoringEngine {
             reasoning.push(contextBonus.reasoning);
         }
 
-        // V3: Limites strictes 15-90%
         const finalScore = Math.max(0.15, Math.min(0.90, totalScore));
         
         console.log(`📊 Score V3: ${Math.round(finalScore * 100)}%`);
@@ -498,7 +543,6 @@ class ReliableScoringEngine {
         
         const similarity = union.size > 0 ? intersection.size / union.size : 0;
         
-        // V3 STRICT: Seuil à 50% au lieu de 30%
         return {
             score: similarity,
             confirms: similarity > 0.50 && intersection.size >= 3
@@ -528,7 +572,6 @@ async function analyzeSourcesWithImprovedLogic(factChecker, originalText, source
             const semanticMatch = factChecker.calculateSemanticSimilarity(originalText, source.snippet || '');
             const contradiction = factChecker.detectIntelligentContradiction(originalText, source.snippet || '');
             
-            // V3 STRICT: seuil 50% au lieu de 30%
             const actuallySupports = semanticMatch.confirms && !contradiction.detected && semanticMatch.score > 0.50;
             
             analyzedSources.push({
@@ -722,10 +765,10 @@ function calculateRelevance(item, originalText) {
 }
 
 // ============================================
-// ENDPOINTS
+// ENDPOINTS - RATE LIMITED
 // ============================================
 
-app.post('/verify', async (req, res) => {
+app.post('/verify', rateLimiter(10, 60000), async (req, res) => {
     try {
         const { text, smartQueries, analysisType } = req.body;
         
@@ -777,7 +820,7 @@ app.post('/verify', async (req, res) => {
     }
 });
 
-app.post('/subscribe', async (req, res) => {
+app.post('/subscribe', rateLimiter(5, 60000), async (req, res) => {
     try {
         const { email, name, source } = req.body;
         
@@ -1065,9 +1108,11 @@ app.get('/analytics/stats', async (req, res) => {
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
-        version: 'V3-STRICT-SCORING',
+        version: 'V3-STRICT-FIXED',
         features: [
             'strict_scoring_v3', 
+            'tiers_corrected',
+            'rate_limiting',
             'similarity_50_percent',
             'contradiction_detection',
             'email_capture',
@@ -1135,13 +1180,14 @@ const initDb = async () => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`\n🚀 === VERIFYAI V3 STRICT SCORING ===`);
+    console.log(`\n🚀 === VERIFYAI V3 STRICT + FIXED ===`);
     console.log(`📡 Port: ${PORT}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`🔑 Google API: ${!!process.env.GOOGLE_API_KEY ? 'Configured' : 'Missing'}`);
     console.log(`💾 Database: ${!!process.env.DATABASE_URL ? 'Connected' : 'Missing'}`);
     console.log(`⚡ Scoring V3: Base 30% | Similarité 50% | Contradictions strictes`);
-    console.log(`📊 Features: Email capture, Analytics, Strict source validation`);
+    console.log(`🔒 Rate Limiting: 10 req/min per IP sur /verify`);
+    console.log(`🎯 Tiers Sources: tier3(90%) > tier4(75%) - CORRIGÉ`);
     console.log(`============================================\n`);
     initDb();
 });
