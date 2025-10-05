@@ -4,9 +4,6 @@ const cors = require('cors');
 const { Pool } = require('pg');
 const app = express();
 
-// ============================================
-// RATE LIMITING - PROTECTION SPAM
-// ============================================
 const requestCounts = new Map();
 
 function rateLimiter(maxRequests, windowMs) {
@@ -35,7 +32,6 @@ function rateLimiter(maxRequests, windowMs) {
     };
 }
 
-// Cleanup automatique toutes les 10 minutes
 setInterval(() => {
     const now = Date.now();
     let cleaned = 0;
@@ -64,13 +60,8 @@ const pool = new Pool({
     ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
-// ============================================
-// SCORING ENGINE V3 - STRICT + TIERS CORRIGÉS
-// ============================================
-
 class ReliableScoringEngine {
     constructor() {
-        // CORRECTION CRITIQUE: Tiers inversés corrigés
         this.sourceCredibilityRanks = {
             tier1: { 
                 domains: ['edu', 'gov', 'who.int', 'nature.com', 'science.org', 'pubmed.ncbi.nlm.nih.gov', 'insee.fr', 'cia.gov', 'worldbank.org', 'nih.gov', 'cdc.gov'],
@@ -116,6 +107,17 @@ class ReliableScoringEngine {
         const claims = [];
         const cleanText = sanitizeInput(text);
         
+        // AMÉLIORATION: Détection scientifique plus large
+        const sciClaims = cleanText.match(/\b(vitesse.*lumière|point.*ébullition|formule.*chimique|speed.*light|boiling.*point|chemical.*formula|299.*792.*458|température|temperature|masse|mass|densité|density|gravity|gravité|constante|constant|loi.*physique|physics.*law|einstein|relativity|relativité)\b/gi);
+        if (sciClaims) {
+            claims.push(...sciClaims.slice(0, 3).map(claim => ({
+                type: 'SCIENTIFIC',
+                text: claim.trim(),
+                verifiable: true,
+                confidence: 0.96
+            })));
+        }
+        
         const numberClaims = cleanText.match(/\b\d+([,\.]\d+)?\s*(millions?|milliards?|billions?|%|pour\s*cent|kilomètres?|km|mètres?|habitants?|personnes?|années?|ans|dollars?|\$|euros?|€)\b/gi);
         if (numberClaims) {
             claims.push(...numberClaims.slice(0, 3).map(claim => ({
@@ -146,23 +148,48 @@ class ReliableScoringEngine {
             })));
         }
 
-        const sciClaims = cleanText.match(/\b(vitesse.*lumière|point.*ébullition|formule.*chimique|speed.*light|boiling.*point|chemical.*formula|299.*792.*458|température|temperature|masse|mass|densité|density|gravity|gravité)\b/gi);
-        if (sciClaims) {
-            claims.push(...sciClaims.slice(0, 2).map(claim => ({
-                type: 'SCIENTIFIC',
-                text: claim.trim(),
-                verifiable: true,
-                confidence: 0.94
-            })));
-        }
-
-        console.log(`🔍 Claims extraits: ${claims.length}`);
+        console.log(`🔍 Claims extraits: ${claims.length} (${claims.map(c => c.type).join(', ')})`);
         return claims;
     }
 
     analyzeContentType(text, claims) {
         const lower = text.toLowerCase();
         
+        // PRIORITÉ: Détection faits scientifiques AVANT opinion
+        if (claims.length > 0) {
+            const hasScientific = claims.some(c => c.type === 'SCIENTIFIC');
+            const hasQuantitative = claims.some(c => c.type === 'QUANTITATIVE');
+            const hasHistorical = claims.some(c => c.type === 'HISTORICAL');
+            const hasGeographic = claims.some(c => c.type === 'GEOGRAPHIC');
+            
+            if (hasScientific) {
+                return {
+                    type: 'SCIENTIFIC_FACT',
+                    baseScore: 0.60, // AUGMENTÉ de 0.50 à 0.60
+                    reasoning: '**Fait scientifique** (60% base) - Information scientifique vérifiable.'
+                };
+            } else if (hasGeographic) {
+                return {
+                    type: 'GEOGRAPHIC_FACT',
+                    baseScore: 0.55, // AUGMENTÉ de 0.50 à 0.55
+                    reasoning: '**Fait géographique** (55% base) - Données géographiques vérifiables.'
+                };
+            } else if (hasQuantitative) {
+                return {
+                    type: 'STATISTICAL_FACT',
+                    baseScore: 0.50, // AUGMENTÉ de 0.40 à 0.50
+                    reasoning: '**Données quantitatives** (50% base) - Statistiques mesurables.'
+                };
+            } else if (hasHistorical) {
+                return {
+                    type: 'HISTORICAL_FACT',
+                    baseScore: 0.50, // AUGMENTÉ de 0.40 à 0.50
+                    reasoning: '**Fait historique** (50% base) - Information historique documentée.'
+                };
+            }
+        }
+        
+        // Opinions détectées APRÈS
         const opinionPatterns = [
             /\b(je pense|je crois|à mon avis|personnellement|subjectivement|selon moi)\b/i,
             /\b(i think|i believe|in my opinion|personally|subjectively|i feel)\b/i,
@@ -185,43 +212,10 @@ class ReliableScoringEngine {
             };
         }
 
-        if (claims.length > 0) {
-            const hasScientific = claims.some(c => c.type === 'SCIENTIFIC');
-            const hasQuantitative = claims.some(c => c.type === 'QUANTITATIVE');
-            const hasHistorical = claims.some(c => c.type === 'HISTORICAL');
-            const hasGeographic = claims.some(c => c.type === 'GEOGRAPHIC');
-            
-            if (hasScientific) {
-                return {
-                    type: 'SCIENTIFIC_FACT',
-                    baseScore: 0.50,
-                    reasoning: '**Fait scientifique** (50% base) - Information scientifique vérifiable.'
-                };
-            } else if (hasGeographic) {
-                return {
-                    type: 'GEOGRAPHIC_FACT',
-                    baseScore: 0.50,
-                    reasoning: '**Fait géographique** (50% base) - Données géographiques vérifiables.'
-                };
-            } else if (hasQuantitative) {
-                return {
-                    type: 'STATISTICAL_FACT',
-                    baseScore: 0.40,
-                    reasoning: '**Données quantitatives** (40% base) - Statistiques mesurables.'
-                };
-            } else if (hasHistorical) {
-                return {
-                    type: 'HISTORICAL_FACT',
-                    baseScore: 0.40,
-                    reasoning: '**Fait historique** (40% base) - Information historique documentée.'
-                };
-            }
-        }
-
         return {
             type: 'GENERAL_INFO',
-            baseScore: 0.30,
-            reasoning: '**Information générale** (30%) - Contenu informatif standard.'
+            baseScore: 0.40, // AUGMENTÉ de 0.30 à 0.40
+            reasoning: '**Information générale** (40%) - Contenu informatif standard.'
         };
     }
 
@@ -476,7 +470,7 @@ class ReliableScoringEngine {
         let confidence = 0;
         const reasoning = [];
 
-        console.log(`🎯 Calcul du score V3 STRICT...`);
+        console.log(`🎯 Calcul du score V3 OPTIMISÉ...`);
 
         const contentType = this.analyzeContentType(originalText, claims);
         totalScore += contentType.baseScore;
@@ -503,7 +497,7 @@ class ReliableScoringEngine {
 
         const finalScore = Math.max(0.15, Math.min(0.90, totalScore));
         
-        console.log(`📊 Score V3: ${Math.round(finalScore * 100)}%`);
+        console.log(`📊 Score V3: ${Math.round(finalScore * 100)}% (type: ${contentType.type})`);
         
         return {
             score: finalScore,
@@ -764,15 +758,11 @@ function calculateRelevance(item, originalText) {
     return Math.max(0.1, Math.min(1, score));
 }
 
-// ============================================
-// ENDPOINTS - RATE LIMITED
-// ============================================
-
 app.post('/verify', rateLimiter(10, 60000), async (req, res) => {
     try {
         const { text, smartQueries, analysisType } = req.body;
         
-        console.log(`\n🔍 === ANALYSE V3 STRICT ===`);
+        console.log(`\n🔍 === ANALYSE V3 OPTIMISÉ ===`);
         console.log(`📝 Texte: "${text.substring(0, 80)}..."`);
         
         if (!text || text.length < 10) {
@@ -781,7 +771,7 @@ app.post('/verify', rateLimiter(10, 60000), async (req, res) => {
                 scoringExplanation: "**Texte insuffisant** (20%) - Contenu trop court pour analyse.", 
                 keywords: [],
                 sources: [],
-                methodology: "Scoring V3 - Strict et réaliste"
+                methodology: "Scoring V3 - Optimisé"
             });
         }
         
@@ -800,7 +790,7 @@ app.post('/verify', rateLimiter(10, 60000), async (req, res) => {
             keywords: keywords,
             claimsAnalyzed: claims,
             details: result.details,
-            methodology: "Scoring V3 - Strict et réaliste"
+            methodology: "Scoring V3 - Optimisé"
         };
         
         console.log(`✅ Score V3: ${Math.round(result.score * 100)}%`);
@@ -872,106 +862,6 @@ app.post('/subscribe', rateLimiter(5, 60000), async (req, res) => {
     }
 });
 
-app.post('/unsubscribe', async (req, res) => {
-    try {
-        const { email } = req.body;
-        
-        if (!email || !validateEmail(email)) {
-            return res.status(400).json({ success: false, error: 'Email invalide' });
-        }
-        
-        const sanitizedEmail = sanitizeInput(email).toLowerCase().trim();
-        const client = await pool.connect();
-        
-        try {
-            const result = await client.query(
-                'UPDATE email_subscribers SET subscribed = false, updated_at = NOW() WHERE email = $1',
-                [sanitizedEmail]
-            );
-            
-            if (result.rowCount === 0) {
-                return res.status(404).json({ success: false, error: 'Email non trouvé' });
-            }
-            
-            console.log(`📧 Désabonnement: ${sanitizedEmail}`);
-            res.json({ success: true, message: 'Désabonnement réussi' });
-            
-        } finally {
-            client.release();
-        }
-        
-    } catch (err) {
-        console.error('❌ Erreur désabonnement:', err);
-        res.status(500).json({ success: false, error: 'Erreur serveur' });
-    }
-});
-
-app.get('/subscribers/stats', async (req, res) => {
-    try {
-        const adminToken = req.headers['x-admin-token'];
-        
-        if (adminToken !== process.env.ADMIN_TOKEN) {
-            return res.status(403).json({ error: 'Non autorisé' });
-        }
-        
-        const client = await pool.connect();
-        
-        try {
-            const totalResult = await client.query(
-                'SELECT COUNT(*) as total FROM email_subscribers WHERE subscribed = true'
-            );
-            
-            const sourceResult = await client.query(
-                'SELECT source, COUNT(*) as count FROM email_subscribers WHERE subscribed = true GROUP BY source'
-            );
-            
-            const recentResult = await client.query(
-                'SELECT COUNT(*) as recent FROM email_subscribers WHERE subscribed = true AND created_at > NOW() - INTERVAL \'7 days\''
-            );
-            
-            res.json({
-                total: parseInt(totalResult.rows[0].total),
-                bySources: sourceResult.rows,
-                lastWeek: parseInt(recentResult.rows[0].recent)
-            });
-            
-        } finally {
-            client.release();
-        }
-        
-    } catch (err) {
-        console.error('❌ Erreur stats:', err);
-        res.status(500).json({ error: 'Erreur serveur' });
-    }
-});
-
-app.get('/subscribers/export', async (req, res) => {
-    try {
-        const adminToken = req.headers['x-admin-token'];
-        
-        if (adminToken !== process.env.ADMIN_TOKEN) {
-            return res.status(403).json({ error: 'Non autorisé' });
-        }
-        
-        const client = await pool.connect();
-        
-        try {
-            const result = await client.query(
-                'SELECT email, name, source, created_at FROM email_subscribers WHERE subscribed = true ORDER BY created_at DESC'
-            );
-            
-            res.json({ count: result.rows.length, subscribers: result.rows });
-            
-        } finally {
-            client.release();
-        }
-        
-    } catch (err) {
-        console.error('❌ Erreur export:', err);
-        res.status(500).json({ error: 'Erreur serveur' });
-    }
-});
-
 app.post('/feedback', async (req, res) => {
     try {
         const { originalText, scoreGiven, isUseful, comment, sourcesFound, userEmail } = req.body;
@@ -990,23 +880,6 @@ app.post('/feedback', async (req, res) => {
                 ]
             );
             
-            if (userEmail && validateEmail(userEmail)) {
-                const sanitizedEmail = sanitizeInput(userEmail).toLowerCase().trim();
-                
-                const existingUser = await client.query(
-                    'SELECT id FROM email_subscribers WHERE email = $1',
-                    [sanitizedEmail]
-                );
-                
-                if (existingUser.rows.length === 0) {
-                    await client.query(
-                        'INSERT INTO email_subscribers(email, source) VALUES($1, $2) ON CONFLICT DO NOTHING',
-                        [sanitizedEmail, 'feedback']
-                    );
-                    console.log(`📧 Nouvel abonné via feedback: ${sanitizedEmail}`);
-                }
-            }
-            
             console.log(`📝 Feedback: ${isUseful ? 'Utile' : 'Pas utile'} - Score: ${scoreGiven}`);
             res.json({ success: true });
             
@@ -1020,103 +893,15 @@ app.post('/feedback', async (req, res) => {
     }
 });
 
-app.post('/analytics/track', async (req, res) => {
-    try {
-        const { userId, eventType, eventData } = req.body;
-        
-        if (!userId || !eventType) {
-            return res.status(400).json({ error: 'userId et eventType requis' });
-        }
-        
-        const client = await pool.connect();
-        
-        try {
-            await client.query(
-                'INSERT INTO analytics_events(user_id, event_type, event_data) VALUES($1, $2, $3)',
-                [userId, eventType, JSON.stringify(eventData || {})]
-            );
-            
-            res.json({ success: true });
-        } finally {
-            client.release();
-        }
-        
-    } catch (err) {
-        console.error('❌ Erreur analytics:', err);
-        res.status(500).json({ error: 'Erreur serveur' });
-    }
-});
-
-app.get('/analytics/stats', async (req, res) => {
-    try {
-        const client = await pool.connect();
-        
-        try {
-            const stats = await client.query(`
-                SELECT 
-                    COUNT(DISTINCT user_id) as total_users,
-                    COUNT(*) FILTER (WHERE event_type = 'verification_completed') as total_verifications,
-                    AVG((event_data->>'score')::float) FILTER (WHERE event_type = 'verification_completed' AND event_data->>'score' IS NOT NULL) as avg_score
-                FROM analytics_events
-            `);
-            
-            const emails = await client.query(
-                'SELECT COUNT(*) as total FROM email_subscribers WHERE subscribed = true'
-            );
-            
-            const daily = await client.query(`
-                SELECT 
-                    DATE(created_at) as date, 
-                    COUNT(*) as count,
-                    COUNT(DISTINCT user_id) as unique_users
-                FROM analytics_events
-                WHERE created_at >= NOW() - INTERVAL '7 days'
-                GROUP BY DATE(created_at)
-                ORDER BY date DESC
-            `);
-            
-            const topEvents = await client.query(`
-                SELECT event_type, COUNT(*) as count
-                FROM analytics_events
-                GROUP BY event_type
-                ORDER BY count DESC
-                LIMIT 10
-            `);
-            
-            res.json({
-                success: true,
-                stats: {
-                    totalUsers: parseInt(stats.rows[0].total_users) || 0,
-                    totalVerifications: parseInt(stats.rows[0].total_verifications) || 0,
-                    avgScore: parseFloat(stats.rows[0].avg_score) || 0,
-                    totalEmails: parseInt(emails.rows[0].total) || 0
-                },
-                dailyActivity: daily.rows,
-                topEvents: topEvents.rows
-            });
-            
-        } finally {
-            client.release();
-        }
-        
-    } catch (err) {
-        console.error('❌ Erreur stats:', err);
-        res.status(500).json({ error: 'Erreur serveur' });
-    }
-});
-
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
-        version: 'V3-STRICT-FIXED',
+        version: 'V3-OPTIMIZED',
         features: [
-            'strict_scoring_v3', 
-            'tiers_corrected',
+            'scoring_v3_optimized', 
+            'scientific_facts_60_percent',
             'rate_limiting',
-            'similarity_50_percent',
-            'contradiction_detection',
             'email_capture',
-            'subscriber_management',
             'analytics_tracking'
         ],
         timestamp: new Date().toISOString(),
@@ -1153,26 +938,8 @@ const initDb = async () => {
             );
         `);
         
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS analytics_events (
-                id SERIAL PRIMARY KEY,
-                user_id VARCHAR(255) NOT NULL,
-                event_type VARCHAR(100) NOT NULL,
-                event_data JSONB,
-                created_at TIMESTAMP DEFAULT NOW()
-            );
-        `);
-        
-        await client.query(`
-            CREATE INDEX IF NOT EXISTS idx_email_subscribers_email ON email_subscribers(email);
-            CREATE INDEX IF NOT EXISTS idx_email_subscribers_subscribed ON email_subscribers(subscribed);
-            CREATE INDEX IF NOT EXISTS idx_analytics_user_id ON analytics_events(user_id);
-            CREATE INDEX IF NOT EXISTS idx_analytics_event_type ON analytics_events(event_type);
-            CREATE INDEX IF NOT EXISTS idx_analytics_created_at ON analytics_events(created_at);
-        `);
-        
         client.release();
-        console.log('✅ Database ready (feedback + email_subscribers + analytics_events)');
+        console.log('✅ Database ready');
     } catch (err) {
         console.error('❌ Database error:', err.message);
     }
@@ -1180,14 +947,10 @@ const initDb = async () => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`\n🚀 === VERIFYAI V3 STRICT + FIXED ===`);
+    console.log(`\n🚀 === VERIFYAI V3 OPTIMISÉ ===`);
     console.log(`📡 Port: ${PORT}`);
-    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`🔑 Google API: ${!!process.env.GOOGLE_API_KEY ? 'Configured' : 'Missing'}`);
-    console.log(`💾 Database: ${!!process.env.DATABASE_URL ? 'Connected' : 'Missing'}`);
-    console.log(`⚡ Scoring V3: Base 30% | Similarité 50% | Contradictions strictes`);
-    console.log(`🔒 Rate Limiting: 10 req/min per IP sur /verify`);
-    console.log(`🎯 Tiers Sources: tier3(90%) > tier4(75%) - CORRIGÉ`);
+    console.log(`⚡ Scoring: Scientifique 60% | Géo 55% | Stats 50%`);
+    console.log(`🔒 Rate Limiting: 10 req/min`);
     console.log(`============================================\n`);
     initDb();
 });
