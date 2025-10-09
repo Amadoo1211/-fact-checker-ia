@@ -17,7 +17,218 @@ const pool = new Pool({
     ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
-// ========== SYSTÈME DE FACT-CHECKING AMÉLIORÉ ET FIABLE ==========
+// ========== 4 AGENTS IA SPÉCIALISÉS (OpenAI GPT-4o-mini) ==========
+
+class AIAgentsService {
+    constructor() {
+        this.apiKey = process.env.OPENAI_API_KEY;
+        this.model = 'gpt-4o-mini';
+    }
+
+    async callOpenAI(systemPrompt, userPrompt, maxTokens = 300) {
+        if (!this.apiKey) {
+            console.warn('⚠️ OpenAI API key manquante - Agent désactivé');
+            return null;
+        }
+
+        try {
+            const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${this.apiKey}`
+                },
+                body: JSON.stringify({
+                    model: this.model,
+                    messages: [
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: userPrompt }
+                    ],
+                    max_tokens: maxTokens,
+                    temperature: 0.3
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`OpenAI API error: ${response.status}`);
+            }
+
+            const data = await response.json();
+            return data.choices[0].message.content;
+
+        } catch (error) {
+            console.error('❌ Erreur appel OpenAI:', error.message);
+            return null;
+        }
+    }
+
+    // 🧠 AGENT 1: Fact-Checker
+    async factChecker(text, sources) {
+        const systemPrompt = `You are an expert fact-checker. Your role is to verify claims by cross-referencing information with reliable sources. Analyze the text and sources provided, then give:
+1. A confidence score (0-100%)
+2. Key facts verified or contradicted
+3. Main concerns if any
+Be concise and precise. Format: JSON with keys: score, verified_facts, concerns`;
+
+        const sourcesText = sources.slice(0, 3).map(s => 
+            `Source: ${s.title}\n${s.snippet}`
+        ).join('\n\n');
+
+        const userPrompt = `Text to verify:\n"${text.substring(0, 800)}"\n\nSources found:\n${sourcesText}\n\nAnalyze and respond in JSON format.`;
+
+        const result = await this.callOpenAI(systemPrompt, userPrompt, 400);
+        
+        if (!result) {
+            return {
+                score: 50,
+                verified_facts: ['Agent unavailable'],
+                concerns: ['OpenAI API not configured'],
+                status: 'unavailable'
+            };
+        }
+
+        try {
+            // Extraire JSON de la réponse
+            const jsonMatch = result.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                return JSON.parse(jsonMatch[0]);
+            }
+            return { score: 50, verified_facts: [result.substring(0, 100)], concerns: [] };
+        } catch (e) {
+            return { score: 50, verified_facts: [result.substring(0, 100)], concerns: [] };
+        }
+    }
+
+    // 🧾 AGENT 2: Source Analyst
+    async sourceAnalyst(text, sources) {
+        const systemPrompt = `You are a source credibility analyst. Evaluate the quality and reliability of sources. For each source, assess:
+1. Credibility level (high/medium/low)
+2. Potential biases
+3. Overall source quality score (0-100%)
+Format: JSON with keys: overall_score, credible_sources, concerns`;
+
+        const sourcesText = sources.map(s => 
+            `URL: ${s.url}\nTitle: ${s.title}\nSnippet: ${s.snippet}`
+        ).join('\n\n---\n\n');
+
+        const userPrompt = `Analyze these sources for the claim:\n"${text.substring(0, 500)}"\n\nSources:\n${sourcesText}\n\nRespond in JSON format.`;
+
+        const result = await this.callOpenAI(systemPrompt, userPrompt, 400);
+        
+        if (!result) {
+            return {
+                overall_score: 50,
+                credible_sources: sources.length,
+                concerns: ['Agent unavailable'],
+                status: 'unavailable'
+            };
+        }
+
+        try {
+            const jsonMatch = result.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                return JSON.parse(jsonMatch[0]);
+            }
+            return { overall_score: 50, credible_sources: sources.length, concerns: [] };
+        } catch (e) {
+            return { overall_score: 50, credible_sources: sources.length, concerns: [] };
+        }
+    }
+
+    // 🕵️ AGENT 3: Context Guardian
+    async contextGuardian(text, sources) {
+        const systemPrompt = `You are a context analysis expert. Detect if information is taken out of context or if important context is missing. Check for:
+1. Missing temporal context (dates, timeframes)
+2. Missing geographic context
+3. Partial information presented as complete
+4. Misleading omissions
+Format: JSON with keys: context_score, missing_context, manipulation_detected`;
+
+        const sourcesText = sources.slice(0, 3).map(s => s.snippet).join('\n');
+
+        const userPrompt = `Analyze this text for context issues:\n"${text.substring(0, 800)}"\n\nRelevant sources:\n${sourcesText}\n\nRespond in JSON format.`;
+
+        const result = await this.callOpenAI(systemPrompt, userPrompt, 400);
+        
+        if (!result) {
+            return {
+                context_score: 50,
+                missing_context: ['Agent unavailable'],
+                manipulation_detected: false,
+                status: 'unavailable'
+            };
+        }
+
+        try {
+            const jsonMatch = result.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                return JSON.parse(jsonMatch[0]);
+            }
+            return { context_score: 50, missing_context: [], manipulation_detected: false };
+        } catch (e) {
+            return { context_score: 50, missing_context: [], manipulation_detected: false };
+        }
+    }
+
+    // 🔄 AGENT 4: Freshness Detector
+    async freshnessDetector(text, sources) {
+        const systemPrompt = `You are a data freshness analyst. Evaluate if the information is current and up-to-date. Check:
+1. If data contains recent dates
+2. If information might be outdated
+3. If sources are recent
+Format: JSON with keys: freshness_score, data_age, outdated_concerns`;
+
+        const sourcesText = sources.slice(0, 3).map(s => 
+            `${s.title}\n${s.snippet}`
+        ).join('\n\n');
+
+        const userPrompt = `Evaluate data freshness:\n"${text.substring(0, 800)}"\n\nSources:\n${sourcesText}\n\nRespond in JSON format with freshness assessment.`;
+
+        const result = await this.callOpenAI(systemPrompt, userPrompt, 300);
+        
+        if (!result) {
+            return {
+                freshness_score: 50,
+                data_age: 'unknown',
+                outdated_concerns: ['Agent unavailable'],
+                status: 'unavailable'
+            };
+        }
+
+        try {
+            const jsonMatch = result.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                return JSON.parse(jsonMatch[0]);
+            }
+            return { freshness_score: 50, data_age: 'unknown', outdated_concerns: [] };
+        } catch (e) {
+            return { freshness_score: 50, data_age: 'unknown', outdated_concerns: [] };
+        }
+    }
+
+    // Lancer les 4 agents en parallèle
+    async runAllAgents(text, sources) {
+        console.log('🤖 Lancement des 4 agents IA...');
+
+        const [factCheck, sourceAnalysis, contextAnalysis, freshnessAnalysis] = await Promise.all([
+            this.factChecker(text, sources),
+            this.sourceAnalyst(text, sources),
+            this.contextGuardian(text, sources),
+            this.freshnessDetector(text, sources)
+        ]);
+
+        console.log('✅ Agents IA terminés');
+
+        return {
+            fact_checker: factCheck,
+            source_analyst: sourceAnalysis,
+            context_guardian: contextAnalysis,
+            freshness_detector: freshnessAnalysis
+        };
+    }
+}
+
+// ========== SYSTÈME DE FACT-CHECKING DE BASE ==========
 
 class ImprovedFactChecker {
     constructor() {
@@ -693,14 +904,42 @@ function calculateRelevance(item, originalText) {
     return Math.max(0.1, Math.min(1, score));
 }
 
+// ========== VÉRIFIER SI UTILISATEUR EST PRO/BUSINESS ==========
+async function checkUserPlan(email) {
+    if (!email) return { isPro: false, plan: 'free' };
+    
+    try {
+        const client = await pool.connect();
+        const result = await client.query(
+            'SELECT plan_type FROM subscriptions WHERE user_email = $1 AND status = $2',
+            [email, 'active']
+        );
+        client.release();
+        
+        if (result.rows.length === 0) {
+            return { isPro: false, plan: 'free' };
+        }
+        
+        const plan = result.rows[0].plan_type.toLowerCase();
+        const isPro = ['professional', 'pro', 'business'].includes(plan);
+        
+        return { isPro, plan };
+        
+    } catch (error) {
+        console.error('Erreur vérification plan:', error);
+        return { isPro: false, plan: 'free' };
+    }
+}
+
 // ========== ENDPOINTS API ==========
 
 app.post('/verify', async (req, res) => {
     try {
-        const { text, smartQueries, analysisType } = req.body;
+        const { text, smartQueries, analysisType, userEmail } = req.body;
         
-        console.log(`\n🔍 === ANALYSE ÉQUILIBRÉE ===`);
+        console.log(`\n🔍 === ANALYSE AVEC AGENTS IA ===`);
         console.log(`📝 Texte: "${text.substring(0, 80)}..."`);
+        console.log(`👤 User: ${userEmail || 'anonymous'}`);
         
         if (!text || text.length < 10) {
             return res.json({ 
@@ -712,12 +951,23 @@ app.post('/verify', async (req, res) => {
             });
         }
         
+        // Vérifier le plan utilisateur
+        const userPlanInfo = await checkUserPlan(userEmail);
+        console.log(`📊 Plan: ${userPlanInfo.plan} (Pro: ${userPlanInfo.isPro})`);
+        
         const factChecker = new ImprovedFactChecker();
         const claims = factChecker.extractVerifiableClaims(text);
         const keywords = extractMainKeywords(text);
         const sources = await findWebSources(keywords, smartQueries, text);
         const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, text, sources);
         const result = factChecker.calculateBalancedScore(text, analyzedSources, claims);
+        
+        // ✅ LANCER LES 4 AGENTS IA SI PRO/BUSINESS
+        let aiAgentsResults = null;
+        if (userPlanInfo.isPro && sources.length > 0) {
+            const aiAgents = new AIAgentsService();
+            aiAgentsResults = await aiAgents.runAllAgents(text, sources);
+        }
         
         const response = {
             overallConfidence: result.score,
@@ -727,11 +977,17 @@ app.post('/verify', async (req, res) => {
             keywords: keywords,
             claimsAnalyzed: claims,
             details: result.details,
-            methodology: "Analyse équilibrée avec détection contextuelle intelligente"
+            methodology: "Analyse équilibrée avec détection contextuelle intelligente",
+            // ✅ AJOUT: Résultats des agents IA (null si FREE)
+            aiAgents: aiAgentsResults,
+            userPlan: userPlanInfo.plan
         };
         
         console.log(`✅ Score équilibré: ${Math.round(result.score * 100)}%`);
         console.log(`📊 ${analyzedSources.length} sources | ${claims.length} claims`);
+        if (aiAgentsResults) {
+            console.log(`🤖 Agents IA exécutés avec succès`);
+        }
         
         res.json(response);
         
@@ -741,12 +997,13 @@ app.post('/verify', async (req, res) => {
             overallConfidence: 0.20,
             scoringExplanation: "**Erreur système** (20%) - Impossible de terminer l'analyse.",
             keywords: [],
-            sources: []
+            sources: [],
+            aiAgents: null
         });
     }
 });
 
-// ========== ENDPOINT SUBSCRIPTION EMAIL (UTILISE VOTRE TABLE EXISTANTE) ==========
+// ========== ENDPOINT SUBSCRIPTION EMAIL ==========
 
 app.post('/subscribe', async (req, res) => {
     try {
@@ -757,7 +1014,6 @@ app.post('/subscribe', async (req, res) => {
         console.log(`   Nom: ${name || 'Non fourni'}`);
         console.log(`   Source: ${source || 'unknown'}`);
         
-        // Validation email
         if (!email || typeof email !== 'string') {
             return res.status(400).json({ 
                 success: false, 
@@ -773,7 +1029,6 @@ app.post('/subscribe', async (req, res) => {
             });
         }
         
-        // Sanitize inputs
         const sanitizedEmail = email.toLowerCase().trim().substring(0, 255);
         const sanitizedName = name ? name.trim().substring(0, 100) : null;
         const sanitizedSource = source ? source.substring(0, 50) : 'unknown';
@@ -781,17 +1036,12 @@ app.post('/subscribe', async (req, res) => {
         const client = await pool.connect();
         
         try {
-            // ✅ ADAPTATION: Utilisez le nom exact de VOTRE table email
-            // Remplacez 'emails' par le nom réel de votre table si différent
-            
-            // Vérifier si l'email existe déjà
             const existingUser = await client.query(
                 'SELECT * FROM emails WHERE email = $1',
                 [sanitizedEmail]
             );
             
             if (existingUser.rows.length > 0) {
-                // Email existe déjà
                 console.log(`✅ Email déjà existant: ${sanitizedEmail}`);
                 
                 return res.json({ 
@@ -801,8 +1051,6 @@ app.post('/subscribe', async (req, res) => {
                 });
             }
             
-            // Nouvel email - insertion dans VOTRE table
-            // ✅ Adaptez les colonnes selon votre structure de table
             await client.query(
                 'INSERT INTO emails (email, name, source, created_at) VALUES ($1, $2, $3, NOW())',
                 [sanitizedEmail, sanitizedName, sanitizedSource]
@@ -823,7 +1071,6 @@ app.post('/subscribe', async (req, res) => {
     } catch (error) {
         console.error('❌ Erreur subscription:', error);
         
-        // Si erreur de colonne, essayer une insertion plus simple
         if (error.message.includes('column')) {
             try {
                 const client = await pool.connect();
@@ -846,8 +1093,6 @@ app.post('/subscribe', async (req, res) => {
         });
     }
 });
-
-// ========== ENDPOINT POUR VÉRIFIER STATUT EMAIL ==========
 
 app.get('/check-email', async (req, res) => {
     try {
@@ -922,7 +1167,7 @@ app.post('/admin/activate-subscription', async (req, res) => {
             return res.status(403).json({ error: 'Non autorisé' });
         }
         
-        const limits = { starter: 500, professional: 2000, business: 10000 };
+        const limits = { starter: 200, professional: 800, pro: 800, business: 4000 };
         const client = await pool.connect();
         
         await client.query(`
@@ -940,8 +1185,6 @@ app.post('/admin/activate-subscription', async (req, res) => {
         res.status(500).json({ error: 'Erreur serveur' });
     }
 });
-
-// ========== ENDPOINT FEEDBACK ==========
 
 app.post('/feedback', async (req, res) => {
     try {
@@ -963,15 +1206,14 @@ app.post('/feedback', async (req, res) => {
     }
 });
 
-// ========== HEALTH CHECK ==========
-
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
-        version: 'BALANCED-FACTCHECKER-2.3-EMAIL-INTEGRATED',
-        features: ['balanced_scoring', 'contextual_analysis', 'subscriptions', 'stripe_payments', 'email_capture'],
+        version: 'VERIFYAI-3.0-AI-AGENTS',
+        features: ['balanced_scoring', 'contextual_analysis', 'subscriptions', 'stripe_payments', 'email_capture', 'ai_agents_pro'],
         timestamp: new Date().toISOString(),
-        api_configured: !!(process.env.GOOGLE_API_KEY && process.env.SEARCH_ENGINE_ID)
+        api_configured: !!(process.env.GOOGLE_API_KEY && process.env.SEARCH_ENGINE_ID),
+        openai_configured: !!process.env.OPENAI_API_KEY
     });
 });
 
@@ -981,7 +1223,6 @@ const initDb = async () => {
     try {
         const client = await pool.connect();
         
-        // Table feedback
         await client.query(`
             CREATE TABLE IF NOT EXISTS feedback (
                 id SERIAL PRIMARY KEY,
@@ -994,8 +1235,6 @@ const initDb = async () => {
             );
         `);
         
-        // ✅ Table emails (SI elle n'existe pas déjà)
-        // Cette commande ne fera rien si votre table existe déjà
         await client.query(`
             CREATE TABLE IF NOT EXISTS emails (
                 id SERIAL PRIMARY KEY,
@@ -1011,7 +1250,6 @@ const initDb = async () => {
         
         console.log('✅ Table emails vérifiée/créée');
         
-        // Table subscriptions
         await client.query(`
             CREATE TABLE IF NOT EXISTS subscriptions (
                 id SERIAL PRIMARY KEY,
@@ -1020,7 +1258,7 @@ const initDb = async () => {
                 plan_type VARCHAR(50),
                 status VARCHAR(50) DEFAULT 'active',
                 verification_count INT DEFAULT 0,
-                verification_limit INT DEFAULT 500,
+                verification_limit INT DEFAULT 200,
                 created_at TIMESTAMP DEFAULT NOW(),
                 updated_at TIMESTAMP DEFAULT NOW()
             );
@@ -1040,14 +1278,15 @@ const initDb = async () => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`\n🚀 === VERIFYAI + EMAIL CAPTURE + STRIPE ===`);
+    console.log(`\n🚀 === VERIFYAI 3.0 + 4 AGENTS IA ===`);
     console.log(`📡 Port: ${PORT}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`🔑 Google API: ${!!process.env.GOOGLE_API_KEY ? '✓' : '✗'}`);
+    console.log(`🤖 OpenAI API: ${!!process.env.OPENAI_API_KEY ? '✓' : '✗'}`);
     console.log(`💾 Database: ${!!process.env.DATABASE_URL ? '✓' : '✗'}`);
-    console.log(`📧 Email Capture: ✓ (Table: emails)`);
-    console.log(`💳 Stripe Ready: Payment Links Integration`);
-    console.log(`⚖️  Features: Balanced scoring, Email capture, Subscriptions`);
+    console.log(`📧 Email Capture: ✓`);
+    console.log(`💳 Stripe: ✓`);
+    console.log(`🎯 Features: 4 AI Agents (Pro/Business only)`);
     console.log(`==========================================\n`);
     initDb();
 });
