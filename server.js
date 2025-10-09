@@ -6,7 +6,7 @@ const app = express();
 
 // Configuration CORS
 app.use(cors({ 
-    origin: ['chrome-extension://*', 'https://fact-checker-ia-production.up.railway.app', 'http://localhost:*', 'https://localhost:*'],
+    origin:'*',
     credentials: true
 }));
 app.use(express.json({ limit: '5mb' }));
