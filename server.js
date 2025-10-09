@@ -746,9 +746,141 @@ app.post('/verify', async (req, res) => {
     }
 });
 
-// ========== ENDPOINTS ABONNEMENTS ==========
+// ========== ENDPOINT SUBSCRIPTION EMAIL (UTILISE VOTRE TABLE EXISTANTE) ==========
 
-// Vérifier statut abonnement
+app.post('/subscribe', async (req, res) => {
+    try {
+        const { email, name, source } = req.body;
+        
+        console.log(`📧 Nouvelle inscription email:`);
+        console.log(`   Email: ${email}`);
+        console.log(`   Nom: ${name || 'Non fourni'}`);
+        console.log(`   Source: ${source || 'unknown'}`);
+        
+        // Validation email
+        if (!email || typeof email !== 'string') {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Email invalide' 
+            });
+        }
+        
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Format email invalide' 
+            });
+        }
+        
+        // Sanitize inputs
+        const sanitizedEmail = email.toLowerCase().trim().substring(0, 255);
+        const sanitizedName = name ? name.trim().substring(0, 100) : null;
+        const sanitizedSource = source ? source.substring(0, 50) : 'unknown';
+        
+        const client = await pool.connect();
+        
+        try {
+            // ✅ ADAPTATION: Utilisez le nom exact de VOTRE table email
+            // Remplacez 'emails' par le nom réel de votre table si différent
+            
+            // Vérifier si l'email existe déjà
+            const existingUser = await client.query(
+                'SELECT * FROM emails WHERE email = $1',
+                [sanitizedEmail]
+            );
+            
+            if (existingUser.rows.length > 0) {
+                // Email existe déjà
+                console.log(`✅ Email déjà existant: ${sanitizedEmail}`);
+                
+                return res.json({ 
+                    success: true, 
+                    message: 'Email already subscribed',
+                    alreadySubscribed: true
+                });
+            }
+            
+            // Nouvel email - insertion dans VOTRE table
+            // ✅ Adaptez les colonnes selon votre structure de table
+            await client.query(
+                'INSERT INTO emails (email, name, source, created_at) VALUES ($1, $2, $3, NOW())',
+                [sanitizedEmail, sanitizedName, sanitizedSource]
+            );
+            
+            console.log(`✅ Nouvel abonné enregistré: ${sanitizedEmail} (source: ${sanitizedSource})`);
+            
+            res.json({ 
+                success: true, 
+                message: 'Successfully subscribed',
+                alreadySubscribed: false
+            });
+            
+        } finally {
+            client.release();
+        }
+        
+    } catch (error) {
+        console.error('❌ Erreur subscription:', error);
+        
+        // Si erreur de colonne, essayer une insertion plus simple
+        if (error.message.includes('column')) {
+            try {
+                const client = await pool.connect();
+                await client.query(
+                    'INSERT INTO emails (email) VALUES ($1)',
+                    [email.toLowerCase().trim()]
+                );
+                client.release();
+                
+                console.log(`✅ Email enregistré (mode simple): ${email}`);
+                return res.json({ success: true, message: 'Subscribed' });
+            } catch (err2) {
+                console.error('❌ Erreur insertion simple:', err2);
+            }
+        }
+        
+        res.status(500).json({ 
+            success: false, 
+            error: 'Erreur serveur lors de l\'inscription' 
+        });
+    }
+});
+
+// ========== ENDPOINT POUR VÉRIFIER STATUT EMAIL ==========
+
+app.get('/check-email', async (req, res) => {
+    try {
+        const { email } = req.query;
+        
+        if (!email) {
+            return res.json({ subscribed: false });
+        }
+        
+        const client = await pool.connect();
+        const result = await client.query(
+            'SELECT email, created_at FROM emails WHERE email = $1',
+            [email.toLowerCase().trim()]
+        );
+        client.release();
+        
+        if (result.rows.length > 0) {
+            res.json({ 
+                subscribed: true,
+                subscribedAt: result.rows[0].created_at
+            });
+        } else {
+            res.json({ subscribed: false });
+        }
+        
+    } catch (error) {
+        console.error('❌ Erreur check email:', error);
+        res.status(500).json({ error: 'Erreur serveur' });
+    }
+});
+
+// ========== ENDPOINTS ABONNEMENTS STRIPE ==========
+
 app.get('/subscription/status', async (req, res) => {
     try {
         const { email } = req.query;
@@ -781,7 +913,6 @@ app.get('/subscription/status', async (req, res) => {
     }
 });
 
-// Activer abonnement manuellement (admin)
 app.post('/admin/activate-subscription', async (req, res) => {
     try {
         const { email, plan } = req.body;
@@ -810,7 +941,7 @@ app.post('/admin/activate-subscription', async (req, res) => {
     }
 });
 
-// ========== ENDPOINTS EXISTANTS ==========
+// ========== ENDPOINT FEEDBACK ==========
 
 app.post('/feedback', async (req, res) => {
     try {
@@ -832,11 +963,13 @@ app.post('/feedback', async (req, res) => {
     }
 });
 
+// ========== HEALTH CHECK ==========
+
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
-        version: 'BALANCED-FACTCHECKER-2.2-STRIPE',
-        features: ['balanced_scoring', 'contextual_analysis', 'subscriptions', 'stripe_payments'],
+        version: 'BALANCED-FACTCHECKER-2.3-EMAIL-INTEGRATED',
+        features: ['balanced_scoring', 'contextual_analysis', 'subscriptions', 'stripe_payments', 'email_capture'],
         timestamp: new Date().toISOString(),
         api_configured: !!(process.env.GOOGLE_API_KEY && process.env.SEARCH_ENGINE_ID)
     });
@@ -861,7 +994,24 @@ const initDb = async () => {
             );
         `);
         
-        // Table subscriptions (NOUVEAU)
+        // ✅ Table emails (SI elle n'existe pas déjà)
+        // Cette commande ne fera rien si votre table existe déjà
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS emails (
+                id SERIAL PRIMARY KEY,
+                email VARCHAR(255) UNIQUE NOT NULL,
+                name VARCHAR(100),
+                source VARCHAR(50),
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_emails_email ON emails(email);
+            CREATE INDEX IF NOT EXISTS idx_emails_created ON emails(created_at);
+        `);
+        
+        console.log('✅ Table emails vérifiée/créée');
+        
+        // Table subscriptions
         await client.query(`
             CREATE TABLE IF NOT EXISTS subscriptions (
                 id SERIAL PRIMARY KEY,
@@ -880,7 +1030,7 @@ const initDb = async () => {
         `);
         
         client.release();
-        console.log('✅ Database ready (feedback + subscriptions)');
+        console.log('✅ Database ready (feedback + emails + subscriptions)');
     } catch (err) {
         console.error('❌ Database error:', err.message);
     }
@@ -890,13 +1040,14 @@ const initDb = async () => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`\n🚀 === VERIFYAI + STRIPE SUBSCRIPTIONS ===`);
+    console.log(`\n🚀 === VERIFYAI + EMAIL CAPTURE + STRIPE ===`);
     console.log(`📡 Port: ${PORT}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`🔑 Google API: ${!!process.env.GOOGLE_API_KEY ? '✓' : '✗'}`);
     console.log(`💾 Database: ${!!process.env.DATABASE_URL ? '✓' : '✗'}`);
+    console.log(`📧 Email Capture: ✓ (Table: emails)`);
     console.log(`💳 Stripe Ready: Payment Links Integration`);
-    console.log(`⚖️  Features: Balanced scoring, Subscriptions, Manual activation`);
+    console.log(`⚖️  Features: Balanced scoring, Email capture, Subscriptions`);
     console.log(`==========================================\n`);
     initDb();
 });
