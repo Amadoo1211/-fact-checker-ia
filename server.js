@@ -1,33 +1,28 @@
 const fetch = require('node-fetch');
 const express = require('express');
 const cors = require('cors');
-const bcrypt = require('bcrypt'); // ✅ AJOUT AUTH
+const bcrypt = require('bcrypt');
 const { Pool } = require('pg');
 const app = express();
 
-// Configuration CORS
 app.use(cors({ 
     origin:'*',
     credentials: true
 }));
 app.use(express.json({ limit: '5mb' }));
-
-// ✅ AJOUT: Route webhook Stripe (raw body)
 app.use('/stripe/webhook', express.raw({ type: 'application/json' }));
 
-// Database
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
-// ✅ AJOUT: Email admin et Stripe config
 const ADMIN_EMAIL = 'nory.benali89@gmail.com';
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const stripe = STRIPE_SECRET_KEY ? require('stripe')(STRIPE_SECRET_KEY) : null;
 
-// ========== 4 AGENTS IA SPÉCIALISÉS (OpenAI GPT-4o-mini) - INCHANGÉ ==========
+// ========== 4 AGENTS IA AMÉLIORÉS AVEC DÉTAILS PRÉCIS ==========
 
 class AIAgentsService {
     constructor() {
@@ -35,7 +30,7 @@ class AIAgentsService {
         this.model = 'gpt-4o-mini';
     }
 
-    async callOpenAI(systemPrompt, userPrompt, maxTokens = 300) {
+    async callOpenAI(systemPrompt, userPrompt, maxTokens = 500) {
         if (!this.apiKey) {
             console.warn('⚠️ OpenAI API key manquante - Agent désactivé');
             return null;
@@ -72,151 +67,281 @@ class AIAgentsService {
         }
     }
 
-    // 🧠 AGENT 1: Fact-Checker
     async factChecker(text, sources) {
-        const systemPrompt = `You are an expert fact-checker. Your role is to verify claims by cross-referencing information with reliable sources. Analyze the text and sources provided, then give:
-1. A confidence score (0-100%)
-2. Key facts verified or contradicted
-3. Main concerns if any
-Be concise and precise. Format: JSON with keys: score, verified_facts, concerns`;
+        const systemPrompt = `You are an expert fact-checker. Analyze the text and identify:
+1. VERIFIED claims (with proof from sources)
+2. UNVERIFIED/FALSE claims (with explanation why)
+3. Overall confidence score (0-100)
+
+Return ONLY valid JSON:
+{
+  "score": 75,
+  "verified_claims": [
+    {"claim": "exact quote", "status": "verified", "source": "source name", "confidence": 95}
+  ],
+  "unverified_claims": [
+    {"claim": "exact quote", "status": "false", "reason": "why it's false or unverified"}
+  ],
+  "summary": "brief overall assessment"
+}`;
 
         const sourcesText = sources.slice(0, 3).map(s => 
-            `Source: ${s.title}\n${s.snippet}`
-        ).join('\n\n');
+            `Source: ${s.title}\nURL: ${s.url}\n${s.snippet}`
+        ).join('\n\n---\n\n');
 
-        const userPrompt = `Text to verify:\n"${text.substring(0, 800)}"\n\nSources found:\n${sourcesText}\n\nAnalyze and respond in JSON format.`;
+        const userPrompt = `Analyze this text and extract specific claims:
 
-        const result = await this.callOpenAI(systemPrompt, userPrompt, 400);
+TEXT TO VERIFY:
+"${text.substring(0, 1200)}"
+
+SOURCES AVAILABLE:
+${sourcesText}
+
+Identify specific factual claims (statistics, dates, names, events) and verify each one against the sources. Return JSON only.`;
+
+        const result = await this.callOpenAI(systemPrompt, userPrompt, 600);
         
         if (!result) {
             return {
                 score: 50,
-                verified_facts: ['Agent unavailable'],
-                concerns: ['OpenAI API not configured'],
-                status: 'unavailable'
+                verified_claims: [],
+                unverified_claims: [{ claim: "Analysis unavailable", status: "unavailable", reason: "OpenAI API not configured" }],
+                summary: "Agent unavailable"
             };
         }
 
         try {
             const jsonMatch = result.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
-                return JSON.parse(jsonMatch[0]);
+                const parsed = JSON.parse(jsonMatch[0]);
+                if (!parsed.verified_claims) parsed.verified_claims = [];
+                if (!parsed.unverified_claims) parsed.unverified_claims = [];
+                if (!parsed.score) parsed.score = 50;
+                return parsed;
             }
-            return { score: 50, verified_facts: [result.substring(0, 100)], concerns: [] };
+            return { 
+                score: 50, 
+                verified_claims: [], 
+                unverified_claims: [{ claim: result.substring(0, 150), status: "error", reason: "Could not parse response" }],
+                summary: "Parsing error"
+            };
         } catch (e) {
-            return { score: 50, verified_facts: [result.substring(0, 100)], concerns: [] };
+            console.error('Parse error fact_checker:', e);
+            return { 
+                score: 50, 
+                verified_claims: [], 
+                unverified_claims: [{ claim: "Parse error", status: "error", reason: e.message }],
+                summary: "Error"
+            };
         }
     }
 
-    // 🧾 AGENT 2: Source Analyst
     async sourceAnalyst(text, sources) {
-        const systemPrompt = `You are a source credibility analyst. Evaluate the quality and reliability of sources. For each source, assess:
-1. Credibility level (high/medium/low)
-2. Potential biases
-3. Overall source quality score (0-100%)
-Format: JSON with keys: overall_score, credible_sources, concerns`;
+        const systemPrompt = `You are a source credibility analyst. For each source provided, determine:
+1. If it's a REAL source (exists and is credible)
+2. If it's a FAKE/INVENTED source (doesn't exist or is unreliable)
+3. Overall source quality score (0-100)
+
+Return ONLY valid JSON:
+{
+  "score": 80,
+  "real_sources": [
+    {"citation": "source name", "status": "verified", "url": "url", "credibility": "high/medium/low"}
+  ],
+  "fake_sources": [
+    {"citation": "source name", "status": "not_found", "reason": "why it's fake"}
+  ],
+  "summary": "brief assessment"
+}`;
 
         const sourcesText = sources.map(s => 
-            `URL: ${s.url}\nTitle: ${s.title}\nSnippet: ${s.snippet}`
+            `Title: ${s.title}\nURL: ${s.url}\nSnippet: ${s.snippet}`
         ).join('\n\n---\n\n');
 
-        const userPrompt = `Analyze these sources for the claim:\n"${text.substring(0, 500)}"\n\nSources:\n${sourcesText}\n\nRespond in JSON format.`;
+        const userPrompt = `Analyze these sources and determine if they are real and credible:
 
-        const result = await this.callOpenAI(systemPrompt, userPrompt, 400);
+TEXT CONTEXT:
+"${text.substring(0, 600)}"
+
+SOURCES TO ANALYZE:
+${sourcesText}
+
+Check if sources actually exist, are credible, and support the claims. Return JSON only.`;
+
+        const result = await this.callOpenAI(systemPrompt, userPrompt, 600);
         
         if (!result) {
             return {
-                overall_score: 50,
-                credible_sources: sources.length,
-                concerns: ['Agent unavailable'],
-                status: 'unavailable'
+                score: 50,
+                real_sources: sources.map(s => ({ citation: s.title, status: "unknown", url: s.url, credibility: "unknown" })),
+                fake_sources: [],
+                summary: "Agent unavailable"
             };
         }
 
         try {
             const jsonMatch = result.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
-                return JSON.parse(jsonMatch[0]);
+                const parsed = JSON.parse(jsonMatch[0]);
+                if (!parsed.real_sources) parsed.real_sources = [];
+                if (!parsed.fake_sources) parsed.fake_sources = [];
+                if (!parsed.score) parsed.score = 50;
+                return parsed;
             }
-            return { overall_score: 50, credible_sources: sources.length, concerns: [] };
+            return { 
+                score: 50, 
+                real_sources: [], 
+                fake_sources: [{ citation: "Parse error", status: "error", reason: "Could not parse response" }],
+                summary: "Error"
+            };
         } catch (e) {
-            return { overall_score: 50, credible_sources: sources.length, concerns: [] };
+            console.error('Parse error source_analyst:', e);
+            return { 
+                score: 50, 
+                real_sources: [], 
+                fake_sources: [{ citation: "Error", status: "error", reason: e.message }],
+                summary: "Error"
+            };
         }
     }
 
-    // 🕵️ AGENT 3: Context Guardian
     async contextGuardian(text, sources) {
-        const systemPrompt = `You are a context analysis expert. Detect if information is taken out of context or if important context is missing. Check for:
+        const systemPrompt = `You are a context analysis expert. Identify what important information is MISSING or OMITTED from the text:
 1. Missing temporal context (dates, timeframes)
 2. Missing geographic context
-3. Partial information presented as complete
-4. Misleading omissions
-Format: JSON with keys: context_score, missing_context, manipulation_detected`;
+3. Missing important facts
+4. Context manipulation score (0-100, where 0 = complete, 100 = heavily manipulated)
+
+Return ONLY valid JSON:
+{
+  "context_score": 25,
+  "omissions": [
+    {"type": "temporal/geographic/fact", "description": "what's missing", "importance": "critical/important/minor"}
+  ],
+  "manipulation_detected": true/false,
+  "summary": "brief assessment"
+}`;
 
         const sourcesText = sources.slice(0, 3).map(s => s.snippet).join('\n');
 
-        const userPrompt = `Analyze this text for context issues:\n"${text.substring(0, 800)}"\n\nRelevant sources:\n${sourcesText}\n\nRespond in JSON format.`;
+        const userPrompt = `Analyze what's MISSING from this text:
 
-        const result = await this.callOpenAI(systemPrompt, userPrompt, 400);
+TEXT:
+"${text.substring(0, 1200)}"
+
+SOURCES FOR CONTEXT:
+${sourcesText}
+
+What important information is omitted? What context is missing? Return JSON only.`;
+
+        const result = await this.callOpenAI(systemPrompt, userPrompt, 500);
         
         if (!result) {
             return {
                 context_score: 50,
-                missing_context: ['Agent unavailable'],
+                omissions: [{ type: "unknown", description: "Analysis unavailable", importance: "unknown" }],
                 manipulation_detected: false,
-                status: 'unavailable'
+                summary: "Agent unavailable"
             };
         }
 
         try {
             const jsonMatch = result.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
-                return JSON.parse(jsonMatch[0]);
+                const parsed = JSON.parse(jsonMatch[0]);
+                if (!parsed.omissions) parsed.omissions = [];
+                if (!parsed.context_score) parsed.context_score = 50;
+                if (parsed.manipulation_detected === undefined) parsed.manipulation_detected = false;
+                return parsed;
             }
-            return { context_score: 50, missing_context: [], manipulation_detected: false };
+            return { 
+                context_score: 50, 
+                omissions: [{ type: "error", description: "Parse error", importance: "unknown" }], 
+                manipulation_detected: false,
+                summary: "Error"
+            };
         } catch (e) {
-            return { context_score: 50, missing_context: [], manipulation_detected: false };
+            console.error('Parse error context_guardian:', e);
+            return { 
+                context_score: 50, 
+                omissions: [{ type: "error", description: e.message, importance: "unknown" }], 
+                manipulation_detected: false,
+                summary: "Error"
+            };
         }
     }
 
-    // 🔄 AGENT 4: Freshness Detector
     async freshnessDetector(text, sources) {
-        const systemPrompt = `You are a data freshness analyst. Evaluate if the information is current and up-to-date. Check:
-1. If data contains recent dates
-2. If information might be outdated
-3. If sources are recent
-Format: JSON with keys: freshness_score, data_age, outdated_concerns`;
+        const systemPrompt = `You are a data freshness analyst. Identify:
+1. Recent data (< 6 months old)
+2. Outdated data (> 18 months old)
+3. Freshness score (0-100, where 100 = very recent)
+
+Return ONLY valid JSON:
+{
+  "freshness_score": 75,
+  "recent_data": [
+    {"data_point": "what data", "age": "how old", "relevance": "why it matters"}
+  ],
+  "outdated_data": [
+    {"data_point": "what data", "age": "how old", "concern": "why it's a problem"}
+  ],
+  "summary": "brief assessment"
+}`;
 
         const sourcesText = sources.slice(0, 3).map(s => 
             `${s.title}\n${s.snippet}`
         ).join('\n\n');
 
-        const userPrompt = `Evaluate data freshness:\n"${text.substring(0, 800)}"\n\nSources:\n${sourcesText}\n\nRespond in JSON format with freshness assessment.`;
+        const userPrompt = `Evaluate data freshness:
 
-        const result = await this.callOpenAI(systemPrompt, userPrompt, 300);
+TEXT:
+"${text.substring(0, 1200)}"
+
+SOURCES:
+${sourcesText}
+
+Identify recent vs outdated information. Return JSON only.`;
+
+        const result = await this.callOpenAI(systemPrompt, userPrompt, 500);
         
         if (!result) {
             return {
                 freshness_score: 50,
-                data_age: 'unknown',
-                outdated_concerns: ['Agent unavailable'],
-                status: 'unavailable'
+                recent_data: [],
+                outdated_data: [{ data_point: "Unknown", age: "unknown", concern: "Analysis unavailable" }],
+                summary: "Agent unavailable"
             };
         }
 
         try {
             const jsonMatch = result.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
-                return JSON.parse(jsonMatch[0]);
+                const parsed = JSON.parse(jsonMatch[0]);
+                if (!parsed.recent_data) parsed.recent_data = [];
+                if (!parsed.outdated_data) parsed.outdated_data = [];
+                if (!parsed.freshness_score) parsed.freshness_score = 50;
+                return parsed;
             }
-            return { freshness_score: 50, data_age: 'unknown', outdated_concerns: [] };
+            return { 
+                freshness_score: 50, 
+                recent_data: [], 
+                outdated_data: [{ data_point: "Parse error", age: "unknown", concern: "Could not parse" }],
+                summary: "Error"
+            };
         } catch (e) {
-            return { freshness_score: 50, data_age: 'unknown', outdated_concerns: [] };
+            console.error('Parse error freshness_detector:', e);
+            return { 
+                freshness_score: 50, 
+                recent_data: [], 
+                outdated_data: [{ data_point: "Error", age: "unknown", concern: e.message }],
+                summary: "Error"
+            };
         }
     }
 
     async runAllAgents(text, sources) {
-        console.log('🤖 Lancement des 4 agents IA...');
+        console.log('🤖 Lancement des 4 agents IA avec détails précis...');
 
         const [factCheck, sourceAnalysis, contextAnalysis, freshnessAnalysis] = await Promise.all([
             this.factChecker(text, sources),
@@ -225,7 +350,11 @@ Format: JSON with keys: freshness_score, data_age, outdated_concerns`;
             this.freshnessDetector(text, sources)
         ]);
 
-        console.log('✅ Agents IA terminés');
+        console.log('✅ Agents IA terminés avec détails:');
+        console.log(`   📊 Fact Checker: ${factCheck.verified_claims?.length || 0} vérifiées, ${factCheck.unverified_claims?.length || 0} non vérifiées`);
+        console.log(`   📚 Source Analyst: ${sourceAnalysis.real_sources?.length || 0} réelles, ${sourceAnalysis.fake_sources?.length || 0} fake`);
+        console.log(`   🎯 Context Guardian: ${contextAnalysis.omissions?.length || 0} omissions`);
+        console.log(`   🔄 Freshness: ${freshnessAnalysis.recent_data?.length || 0} récentes, ${freshnessAnalysis.outdated_data?.length || 0} obsolètes`);
 
         return {
             fact_checker: factCheck,
@@ -912,8 +1041,6 @@ function calculateRelevance(item, originalText) {
     return Math.max(0.1, Math.min(1, score));
 }
 
-// ✅ AJOUT: FONCTIONS AUTH & USER MANAGEMENT
-
 async function getUserByEmail(email) {
     const client = await pool.connect();
     try {
@@ -937,16 +1064,13 @@ async function checkMonthlyLimit(userId) {
         const now = new Date();
         const lastReset = user.last_reset_date ? new Date(user.last_reset_date) : null;
         
-        // Reset mensuel si nouveau mois
         if (!lastReset || lastReset.getMonth() !== now.getMonth() || lastReset.getFullYear() !== now.getFullYear()) {
             await client.query('UPDATE users SET monthly_checks_used = 0, last_reset_date = $1 WHERE id = $2', [now, userId]);
             user.monthly_checks_used = 0;
         }
         
-        // ADMIN = illimité
         if (user.role === 'admin') return { allowed: true, remaining: 999, plan: user.plan };
         
-        // FREE = 3/jour
         if (user.plan === 'free') {
             const dailyLimit = 3;
             const today = now.toISOString().split('T')[0];
@@ -963,19 +1087,16 @@ async function checkMonthlyLimit(userId) {
             return { allowed: true, remaining: dailyLimit - user.daily_checks_used, plan: 'free' };
         }
         
-        // STARTER = 200/mois
         if (user.plan === 'starter') {
             if (user.monthly_checks_used >= 200) return { allowed: false, remaining: 0, plan: 'starter' };
             return { allowed: true, remaining: 200 - user.monthly_checks_used, plan: 'starter' };
         }
         
-        // PRO = 800/mois
         if (user.plan === 'pro') {
             if (user.monthly_checks_used >= 800) return { allowed: false, remaining: 0, plan: 'pro' };
             return { allowed: true, remaining: 800 - user.monthly_checks_used, plan: 'pro' };
         }
         
-        // BUSINESS = 4000/mois
         if (user.plan === 'business') {
             if (user.monthly_checks_used >= 4000) return { allowed: false, remaining: 0, plan: 'business' };
             return { allowed: true, remaining: 4000 - user.monthly_checks_used, plan: 'business' };
@@ -999,8 +1120,6 @@ async function incrementCheckCount(userId, plan) {
         client.release();
     }
 }
-
-// ✅ AJOUT: ROUTES AUTH
 
 app.post('/auth/signup', async (req, res) => {
     try {
@@ -1052,8 +1171,6 @@ app.post('/auth/login', async (req, res) => {
     }
 });
 
-// ========== ENDPOINTS API - MODIFIÉ POUR AUTH ==========
-
 app.post('/verify', async (req, res) => {
     try {
         const { text, smartQueries, analysisType, userEmail } = req.body;
@@ -1072,7 +1189,6 @@ app.post('/verify', async (req, res) => {
             });
         }
         
-        // ✅ AJOUT: Vérifier limites utilisateur
         let userPlan = 'free';
         let userId = null;
         
@@ -1105,15 +1221,13 @@ app.post('/verify', async (req, res) => {
         const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, text, sources);
         const result = factChecker.calculateBalancedScore(text, analyzedSources, claims);
         
-        // ✅ AJOUT: Incrémenter compteur
         if (userId) await incrementCheckCount(userId, userPlan);
         
-        // ✅ MODIFIÉ: Agents IA UNIQUEMENT pour PRO et BUSINESS
         let aiAgentsResults = null;
         if ((userPlan === 'pro' || userPlan === 'business') && sources.length > 0) {
             const aiAgents = new AIAgentsService();
             aiAgentsResults = await aiAgents.runAllAgents(text, sources);
-            console.log('🤖 Agents IA activés');
+            console.log('🤖 Agents IA activés avec détails précis');
         }
         
         const response = {
@@ -1132,7 +1246,7 @@ app.post('/verify', async (req, res) => {
         console.log(`✅ Score équilibré: ${Math.round(result.score * 100)}%`);
         console.log(`📊 ${analyzedSources.length} sources | ${claims.length} claims`);
         if (aiAgentsResults) {
-            console.log(`🤖 Agents IA exécutés avec succès`);
+            console.log(`🤖 Agents IA avec détails précis exécutés`);
         }
         
         res.json(response);
@@ -1148,8 +1262,6 @@ app.post('/verify', async (req, res) => {
         });
     }
 });
-
-// ========== ENDPOINTS INCHANGÉS ==========
 
 app.post('/subscribe', async (req, res) => {
     try {
@@ -1350,8 +1462,6 @@ app.post('/feedback', async (req, res) => {
     }
 });
 
-// ✅ AJOUT: STRIPE WEBHOOK
-
 app.post('/stripe/webhook', async (req, res) => {
     if (!stripe || !STRIPE_WEBHOOK_SECRET) {
         console.warn('⚠️ Stripe non configuré');
@@ -1383,7 +1493,6 @@ app.post('/stripe/webhook', async (req, res) => {
 
             console.log(`💳 Paiement: ${customerEmail} - ${amountPaid}€`);
 
-            // Détecter le plan selon le montant
             let planType = 'starter';
             if (amountPaid >= 119) planType = 'business';
             else if (amountPaid >= 39) planType = 'pro';
@@ -1429,8 +1538,6 @@ app.post('/stripe/webhook', async (req, res) => {
         res.status(500).json({ error: 'Webhook failed' });
     }
 });
-
-// ✅ AJOUT: ROUTES ADMIN
 
 app.get('/admin/users', async (req, res) => {
     try {
@@ -1501,9 +1608,9 @@ app.delete('/admin/delete-user', async (req, res) => {
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
-        version: 'VERIFYAI-4.0-AUTH-4PLANS',
+        version: 'VERIFYAI-4.1-DETAILED-AI-AGENTS',
         plans: ['FREE (3/day)', 'STARTER (200/month)', 'PRO (800/month + AI)', 'BUSINESS (4000/month + AI)'],
-        features: ['balanced_scoring', 'contextual_analysis', 'auth', 'stripe_webhook', 'ai_agents_pro_business', 'admin_panel'],
+        features: ['balanced_scoring', 'contextual_analysis', 'auth', 'stripe_webhook', 'detailed_ai_agents_pro_business', 'admin_panel'],
         timestamp: new Date().toISOString(),
         api_configured: !!(process.env.GOOGLE_API_KEY && process.env.SEARCH_ENGINE_ID),
         openai_configured: !!process.env.OPENAI_API_KEY,
@@ -1511,13 +1618,10 @@ app.get('/health', (req, res) => {
     });
 });
 
-// ========== DATABASE INITIALIZATION - MODIFIÉ ==========
-
 const initDb = async () => {
     try {
         const client = await pool.connect();
         
-        // ✅ AJOUT: Table users
         await client.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -1541,7 +1645,6 @@ const initDb = async () => {
         
         console.log('✅ Table users créée');
         
-        // ✅ AJOUT: Créer le compte ADMIN
         const adminExists = await client.query('SELECT id FROM users WHERE email = $1', [ADMIN_EMAIL]);
         
         if (adminExists.rows.length === 0) {
@@ -1607,11 +1710,9 @@ const initDb = async () => {
     }
 };
 
-// ========== STARTUP ==========
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`\n🚀 === VERIFYAI 4.0 - AUTH + 4 PLANS ===`);
+    console.log(`\n🚀 === VERIFYAI 4.1 - AGENTS IA DÉTAILLÉS ===`);
     console.log(`📡 Port: ${PORT}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`🔑 Google API: ${!!process.env.GOOGLE_API_KEY ? '✓' : '✗'}`);
@@ -1623,16 +1724,15 @@ app.listen(PORT, () => {
     console.log(`\n📊 Plans disponibles:`);
     console.log(`   🆓 FREE: 3 vérifications/jour`);
     console.log(`   🚀 STARTER: 200 vérifications/mois (14.99€)`);
-    console.log(`   ⭐ PRO: 800 vérifications/mois + 4 Agents IA (39.99€)`);
-    console.log(`   💼 BUSINESS: 4000 vérifications/mois + 4 Agents IA (119.99€)`);
-    console.log(`\n🎯 Nouveautés ajoutées:`);
-    console.log(`   ✅ Système d'authentification complet (bcrypt)`);
-    console.log(`   ✅ Table users avec 4 plans`);
-    console.log(`   ✅ Limites: 3/jour (FREE), 200/mois (STARTER), 800/mois (PRO), 4000/mois (BUSINESS)`);
-    console.log(`   ✅ Agents IA activés UNIQUEMENT pour PRO et BUSINESS`);
-    console.log(`   ✅ Webhook Stripe automatique (détection par montant)`);
-    console.log(`   ✅ Routes admin pour ${ADMIN_EMAIL}`);
-    console.log(`   ✅ Fact-checking et scoring originaux 100% préservés`);
+    console.log(`   ⭐ PRO: 800 vérifications/mois + 4 Agents IA DÉTAILLÉS (39.99€)`);
+    console.log(`   💼 BUSINESS: 4000 vérifications/mois + 4 Agents IA DÉTAILLÉS (119.99€)`);
+    console.log(`\n🎯 Nouveautés v4.1:`);
+    console.log(`   ✅ Agents IA avec DÉTAILS PRÉCIS sur chaque affirmation`);
+    console.log(`   ✅ Fact Checker: Liste affirmations vérifiées vs FAKE`);
+    console.log(`   ✅ Source Analyst: Détecte sources réelles vs inventées`);
+    console.log(`   ✅ Context Guardian: Identifie omissions critiques`);
+    console.log(`   ✅ Freshness Detector: Données récentes vs obsolètes`);
+    console.log(`   ✅ Réponse JSON structurée pour affichage détaillé frontend`);
     console.log(`==========================================\n`);
     initDb();
 });
