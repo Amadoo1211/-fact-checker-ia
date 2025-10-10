@@ -1,6 +1,7 @@
 const fetch = require('node-fetch');
 const express = require('express');
 const cors = require('cors');
+const bcrypt = require('bcrypt'); // ✅ AJOUT AUTH
 const { Pool } = require('pg');
 const app = express();
 
@@ -11,13 +12,22 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '5mb' }));
 
+// ✅ AJOUT: Route webhook Stripe (raw body)
+app.use('/stripe/webhook', express.raw({ type: 'application/json' }));
+
 // Database
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
-// ========== 4 AGENTS IA SPÉCIALISÉS (OpenAI GPT-4o-mini) ==========
+// ✅ AJOUT: Email admin et Stripe config
+const ADMIN_EMAIL = 'nory.benali89@gmail.com';
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
+const stripe = STRIPE_SECRET_KEY ? require('stripe')(STRIPE_SECRET_KEY) : null;
+
+// ========== 4 AGENTS IA SPÉCIALISÉS (OpenAI GPT-4o-mini) - INCHANGÉ ==========
 
 class AIAgentsService {
     constructor() {
@@ -88,7 +98,6 @@ Be concise and precise. Format: JSON with keys: score, verified_facts, concerns`
         }
 
         try {
-            // Extraire JSON de la réponse
             const jsonMatch = result.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
                 return JSON.parse(jsonMatch[0]);
@@ -206,7 +215,6 @@ Format: JSON with keys: freshness_score, data_age, outdated_concerns`;
         }
     }
 
-    // Lancer les 4 agents en parallèle
     async runAllAgents(text, sources) {
         console.log('🤖 Lancement des 4 agents IA...');
 
@@ -228,7 +236,7 @@ Format: JSON with keys: freshness_score, data_age, outdated_concerns`;
     }
 }
 
-// ========== SYSTÈME DE FACT-CHECKING DE BASE ==========
+// ========== SYSTÈME DE FACT-CHECKING DE BASE - 100% INCHANGÉ ==========
 
 class ImprovedFactChecker {
     constructor() {
@@ -904,40 +912,153 @@ function calculateRelevance(item, originalText) {
     return Math.max(0.1, Math.min(1, score));
 }
 
-// ========== VÉRIFIER SI UTILISATEUR EST PRO/BUSINESS ==========
-async function checkUserPlan(email) {
-    if (!email) return { isPro: false, plan: 'free' };
-    
+// ✅ AJOUT: FONCTIONS AUTH & USER MANAGEMENT
+
+async function getUserByEmail(email) {
+    const client = await pool.connect();
     try {
-        const client = await pool.connect();
-        const result = await client.query(
-            'SELECT plan_type FROM subscriptions WHERE user_email = $1 AND status = $2',
-            [email, 'active']
-        );
+        const result = await client.query('SELECT * FROM users WHERE email = $1', [email.toLowerCase()]);
+        return result.rows[0] || null;
+    } finally {
         client.release();
-        
-        if (result.rows.length === 0) {
-            return { isPro: false, plan: 'free' };
-        }
-        
-        const plan = result.rows[0].plan_type.toLowerCase();
-        const isPro = ['professional', 'pro', 'business'].includes(plan);
-        
-        return { isPro, plan };
-        
-    } catch (error) {
-        console.error('Erreur vérification plan:', error);
-        return { isPro: false, plan: 'free' };
     }
 }
 
-// ========== ENDPOINTS API ==========
+async function checkMonthlyLimit(userId) {
+    const client = await pool.connect();
+    try {
+        const result = await client.query(
+            'SELECT monthly_checks_used, daily_checks_used, last_check_date, last_reset_date, plan, role FROM users WHERE id = $1', 
+            [userId]
+        );
+        if (!result.rows[0]) return { allowed: false, remaining: 0 };
+        
+        const user = result.rows[0];
+        const now = new Date();
+        const lastReset = user.last_reset_date ? new Date(user.last_reset_date) : null;
+        
+        // Reset mensuel si nouveau mois
+        if (!lastReset || lastReset.getMonth() !== now.getMonth() || lastReset.getFullYear() !== now.getFullYear()) {
+            await client.query('UPDATE users SET monthly_checks_used = 0, last_reset_date = $1 WHERE id = $2', [now, userId]);
+            user.monthly_checks_used = 0;
+        }
+        
+        // ADMIN = illimité
+        if (user.role === 'admin') return { allowed: true, remaining: 999, plan: user.plan };
+        
+        // FREE = 3/jour
+        if (user.plan === 'free') {
+            const dailyLimit = 3;
+            const today = now.toISOString().split('T')[0];
+            const lastCheckDate = user.last_check_date || '';
+            
+            if (lastCheckDate !== today) {
+                await client.query('UPDATE users SET daily_checks_used = 0, last_check_date = $1 WHERE id = $2', [today, userId]);
+                return { allowed: true, remaining: dailyLimit, plan: 'free' };
+            }
+            
+            if (user.daily_checks_used >= dailyLimit) {
+                return { allowed: false, remaining: 0, plan: 'free' };
+            }
+            return { allowed: true, remaining: dailyLimit - user.daily_checks_used, plan: 'free' };
+        }
+        
+        // STARTER = 200/mois
+        if (user.plan === 'starter') {
+            if (user.monthly_checks_used >= 200) return { allowed: false, remaining: 0, plan: 'starter' };
+            return { allowed: true, remaining: 200 - user.monthly_checks_used, plan: 'starter' };
+        }
+        
+        // PRO = 800/mois
+        if (user.plan === 'pro') {
+            if (user.monthly_checks_used >= 800) return { allowed: false, remaining: 0, plan: 'pro' };
+            return { allowed: true, remaining: 800 - user.monthly_checks_used, plan: 'pro' };
+        }
+        
+        // BUSINESS = 4000/mois
+        if (user.plan === 'business') {
+            if (user.monthly_checks_used >= 4000) return { allowed: false, remaining: 0, plan: 'business' };
+            return { allowed: true, remaining: 4000 - user.monthly_checks_used, plan: 'business' };
+        }
+        
+        return { allowed: false, remaining: 0, plan: 'free' };
+    } finally {
+        client.release();
+    }
+}
+
+async function incrementCheckCount(userId, plan) {
+    const client = await pool.connect();
+    try {
+        if (plan === 'free') {
+            await client.query('UPDATE users SET daily_checks_used = daily_checks_used + 1 WHERE id = $1', [userId]);
+        } else {
+            await client.query('UPDATE users SET monthly_checks_used = monthly_checks_used + 1 WHERE id = $1', [userId]);
+        }
+    } finally {
+        client.release();
+    }
+}
+
+// ✅ AJOUT: ROUTES AUTH
+
+app.post('/auth/signup', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        
+        if (!email || !password) return res.status(400).json({ success: false, error: 'Email et mot de passe requis' });
+        
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) return res.status(400).json({ success: false, error: 'Email invalide' });
+        if (password.length < 6) return res.status(400).json({ success: false, error: 'Mot de passe trop court (min 6)' });
+        
+        const existing = await getUserByEmail(email);
+        if (existing) return res.status(400).json({ success: false, error: 'Email déjà utilisé' });
+        
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const client = await pool.connect();
+        const result = await client.query(
+            `INSERT INTO users (email, password_hash, role, plan, monthly_checks_used, daily_checks_used, last_check_date, last_reset_date) 
+             VALUES ($1, $2, 'user', 'free', 0, 0, CURRENT_DATE, CURRENT_DATE) 
+             RETURNING id, email, role, plan`,
+            [email.toLowerCase(), hashedPassword]
+        );
+        client.release();
+        
+        console.log(`✅ Nouveau compte FREE créé: ${email}`);
+        res.json({ success: true, user: result.rows[0] });
+    } catch (error) {
+        console.error('❌ Erreur signup:', error);
+        res.status(500).json({ success: false, error: 'Erreur serveur' });
+    }
+});
+
+app.post('/auth/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        if (!email || !password) return res.status(400).json({ success: false, error: 'Email et mot de passe requis' });
+        
+        const user = await getUserByEmail(email);
+        if (!user) return res.status(401).json({ success: false, error: 'Email ou mot de passe incorrect' });
+        
+        const validPassword = await bcrypt.compare(password, user.password_hash);
+        if (!validPassword) return res.status(401).json({ success: false, error: 'Email ou mot de passe incorrect' });
+        
+        console.log(`✅ Connexion: ${email} (${user.plan})`);
+        res.json({ success: true, user: { id: user.id, email: user.email, plan: user.plan, role: user.role } });
+    } catch (error) {
+        console.error('❌ Erreur login:', error);
+        res.status(500).json({ success: false, error: 'Erreur serveur' });
+    }
+});
+
+// ========== ENDPOINTS API - MODIFIÉ POUR AUTH ==========
 
 app.post('/verify', async (req, res) => {
     try {
         const { text, smartQueries, analysisType, userEmail } = req.body;
         
-        console.log(`\n🔍 === ANALYSE AVEC AGENTS IA ===`);
+        console.log(`\n🔍 === VÉRIFICATION ===`);
         console.log(`📝 Texte: "${text.substring(0, 80)}..."`);
         console.log(`👤 User: ${userEmail || 'anonymous'}`);
         
@@ -951,9 +1072,31 @@ app.post('/verify', async (req, res) => {
             });
         }
         
-        // Vérifier le plan utilisateur
-        const userPlanInfo = await checkUserPlan(userEmail);
-        console.log(`📊 Plan: ${userPlanInfo.plan} (Pro: ${userPlanInfo.isPro})`);
+        // ✅ AJOUT: Vérifier limites utilisateur
+        let userPlan = 'free';
+        let userId = null;
+        
+        if (userEmail) {
+            const user = await getUserByEmail(userEmail);
+            if (user) {
+                userId = user.id;
+                userPlan = user.plan;
+                
+                const limitCheck = await checkMonthlyLimit(userId);
+                if (!limitCheck.allowed) {
+                    return res.status(429).json({
+                        success: false,
+                        error: 'Limite atteinte',
+                        message: userPlan === 'free' 
+                            ? 'Limite de 3 vérifications/jour atteinte. Passez à STARTER, PRO ou BUSINESS !' 
+                            : `Limite mensuelle atteinte (${userPlan.toUpperCase()}). Passez au plan supérieur !`,
+                        remaining: 0,
+                        plan: userPlan
+                    });
+                }
+                console.log(`📊 Plan: ${userPlan} | Restant: ${limitCheck.remaining}`);
+            }
+        }
         
         const factChecker = new ImprovedFactChecker();
         const claims = factChecker.extractVerifiableClaims(text);
@@ -962,11 +1105,15 @@ app.post('/verify', async (req, res) => {
         const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, text, sources);
         const result = factChecker.calculateBalancedScore(text, analyzedSources, claims);
         
-        // ✅ LANCER LES 4 AGENTS IA SI PRO/BUSINESS
+        // ✅ AJOUT: Incrémenter compteur
+        if (userId) await incrementCheckCount(userId, userPlan);
+        
+        // ✅ MODIFIÉ: Agents IA UNIQUEMENT pour PRO et BUSINESS
         let aiAgentsResults = null;
-        if (userPlanInfo.isPro && sources.length > 0) {
+        if ((userPlan === 'pro' || userPlan === 'business') && sources.length > 0) {
             const aiAgents = new AIAgentsService();
             aiAgentsResults = await aiAgents.runAllAgents(text, sources);
+            console.log('🤖 Agents IA activés');
         }
         
         const response = {
@@ -978,9 +1125,8 @@ app.post('/verify', async (req, res) => {
             claimsAnalyzed: claims,
             details: result.details,
             methodology: "Analyse équilibrée avec détection contextuelle intelligente",
-            // ✅ AJOUT: Résultats des agents IA (null si FREE)
             aiAgents: aiAgentsResults,
-            userPlan: userPlanInfo.plan
+            userPlan: userPlan
         };
         
         console.log(`✅ Score équilibré: ${Math.round(result.score * 100)}%`);
@@ -1003,7 +1149,7 @@ app.post('/verify', async (req, res) => {
     }
 });
 
-// ========== ENDPOINT SUBSCRIPTION EMAIL ==========
+// ========== ENDPOINTS INCHANGÉS ==========
 
 app.post('/subscribe', async (req, res) => {
     try {
@@ -1124,8 +1270,6 @@ app.get('/check-email', async (req, res) => {
     }
 });
 
-// ========== ENDPOINTS ABONNEMENTS STRIPE ==========
-
 app.get('/subscription/status', async (req, res) => {
     try {
         const { email } = req.query;
@@ -1206,22 +1350,211 @@ app.post('/feedback', async (req, res) => {
     }
 });
 
+// ✅ AJOUT: STRIPE WEBHOOK
+
+app.post('/stripe/webhook', async (req, res) => {
+    if (!stripe || !STRIPE_WEBHOOK_SECRET) {
+        console.warn('⚠️ Stripe non configuré');
+        return res.status(400).send('Stripe not configured');
+    }
+
+    const sig = req.headers['stripe-signature'];
+    let event;
+
+    try {
+        event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
+    } catch (err) {
+        console.error('❌ Webhook error:', err.message);
+        return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    console.log(`\n🔔 Stripe Event: ${event.type}`);
+
+    try {
+        if (event.type === 'checkout.session.completed') {
+            const session = event.data.object;
+            const customerEmail = session.customer_email || session.customer_details?.email;
+            const amountPaid = session.amount_total / 100;
+
+            if (!customerEmail) {
+                console.error('❌ Email manquant');
+                return res.json({ received: true });
+            }
+
+            console.log(`💳 Paiement: ${customerEmail} - ${amountPaid}€`);
+
+            // Détecter le plan selon le montant
+            let planType = 'starter';
+            if (amountPaid >= 119) planType = 'business';
+            else if (amountPaid >= 39) planType = 'pro';
+            else if (amountPaid >= 14) planType = 'starter';
+
+            const client = await pool.connect();
+            const userResult = await client.query('SELECT id FROM users WHERE email = $1', [customerEmail.toLowerCase()]);
+
+            if (userResult.rows.length === 0) {
+                console.error(`❌ User non trouvé: ${customerEmail}`);
+                client.release();
+                return res.json({ received: true });
+            }
+
+            await client.query(
+                `UPDATE users 
+                 SET plan = $1, 
+                     stripe_customer_id = $2, 
+                     stripe_subscription_id = $3,
+                     updated_at = NOW()
+                 WHERE id = $4`,
+                [planType, session.customer, session.subscription, userResult.rows[0].id]
+            );
+            client.release();
+
+            console.log(`✅ ${customerEmail} upgradé vers ${planType.toUpperCase()} !`);
+        }
+
+        if (event.type === 'customer.subscription.deleted') {
+            const subscription = event.data.object;
+            const client = await pool.connect();
+            await client.query(
+                `UPDATE users SET plan = 'free', stripe_subscription_id = NULL WHERE stripe_subscription_id = $1`,
+                [subscription.id]
+            );
+            client.release();
+            console.log(`⚠️ Abonnement annulé → FREE`);
+        }
+
+        res.json({ received: true });
+    } catch (error) {
+        console.error('❌ Webhook error:', error);
+        res.status(500).json({ error: 'Webhook failed' });
+    }
+});
+
+// ✅ AJOUT: ROUTES ADMIN
+
+app.get('/admin/users', async (req, res) => {
+    try {
+        const { adminEmail } = req.query;
+        if (adminEmail !== ADMIN_EMAIL) return res.status(403).json({ error: 'Accès refusé' });
+        
+        const client = await pool.connect();
+        const result = await client.query(
+            `SELECT id, email, plan, role, monthly_checks_used, daily_checks_used, created_at 
+             FROM users ORDER BY created_at DESC`
+        );
+        client.release();
+        
+        const stats = {
+            total: result.rows.length,
+            free: result.rows.filter(u => u.plan === 'free').length,
+            starter: result.rows.filter(u => u.plan === 'starter').length,
+            pro: result.rows.filter(u => u.plan === 'pro').length,
+            business: result.rows.filter(u => u.plan === 'business').length,
+            revenue: (
+                result.rows.filter(u => u.plan === 'starter').length * 14.99 +
+                result.rows.filter(u => u.plan === 'pro').length * 39.99 +
+                result.rows.filter(u => u.plan === 'business').length * 119.99
+            )
+        };
+        
+        res.json({ success: true, users: result.rows, stats: stats });
+    } catch (error) {
+        console.error('❌ Erreur admin/users:', error);
+        res.status(500).json({ error: 'Erreur serveur' });
+    }
+});
+
+app.post('/admin/upgrade-user', async (req, res) => {
+    try {
+        const { adminEmail, userEmail, plan } = req.body;
+        if (adminEmail !== ADMIN_EMAIL) return res.status(403).json({ error: 'Accès refusé' });
+        
+        const client = await pool.connect();
+        await client.query('UPDATE users SET plan = $1, updated_at = NOW() WHERE email = $2', [plan, userEmail.toLowerCase()]);
+        client.release();
+        
+        console.log(`✅ ${userEmail} → ${plan} (par admin)`);
+        res.json({ success: true, message: `${userEmail} upgradé vers ${plan}` });
+    } catch (error) {
+        console.error('❌ Erreur upgrade:', error);
+        res.status(500).json({ error: 'Erreur serveur' });
+    }
+});
+
+app.delete('/admin/delete-user', async (req, res) => {
+    try {
+        const { adminEmail, userEmail } = req.body;
+        if (adminEmail !== ADMIN_EMAIL) return res.status(403).json({ error: 'Accès refusé' });
+        
+        const client = await pool.connect();
+        await client.query('DELETE FROM users WHERE email = $1', [userEmail.toLowerCase()]);
+        client.release();
+        
+        console.log(`🗑️ ${userEmail} supprimé`);
+        res.json({ success: true, message: `${userEmail} supprimé` });
+    } catch (error) {
+        console.error('❌ Erreur suppression:', error);
+        res.status(500).json({ error: 'Erreur serveur' });
+    }
+});
+
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
-        version: 'VERIFYAI-3.0-AI-AGENTS',
-        features: ['balanced_scoring', 'contextual_analysis', 'subscriptions', 'stripe_payments', 'email_capture', 'ai_agents_pro'],
+        version: 'VERIFYAI-4.0-AUTH-4PLANS',
+        plans: ['FREE (3/day)', 'STARTER (200/month)', 'PRO (800/month + AI)', 'BUSINESS (4000/month + AI)'],
+        features: ['balanced_scoring', 'contextual_analysis', 'auth', 'stripe_webhook', 'ai_agents_pro_business', 'admin_panel'],
         timestamp: new Date().toISOString(),
         api_configured: !!(process.env.GOOGLE_API_KEY && process.env.SEARCH_ENGINE_ID),
-        openai_configured: !!process.env.OPENAI_API_KEY
+        openai_configured: !!process.env.OPENAI_API_KEY,
+        stripe_configured: !!stripe
     });
 });
 
-// ========== DATABASE INITIALIZATION ==========
+// ========== DATABASE INITIALIZATION - MODIFIÉ ==========
 
 const initDb = async () => {
     try {
         const client = await pool.connect();
+        
+        // ✅ AJOUT: Table users
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                email VARCHAR(255) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                role VARCHAR(50) DEFAULT 'user',
+                plan VARCHAR(50) DEFAULT 'free',
+                stripe_customer_id VARCHAR(255),
+                stripe_subscription_id VARCHAR(255),
+                monthly_checks_used INT DEFAULT 0,
+                daily_checks_used INT DEFAULT 0,
+                last_check_date DATE,
+                last_reset_date DATE,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+            CREATE INDEX IF NOT EXISTS idx_users_plan ON users(plan);
+        `);
+        
+        console.log('✅ Table users créée');
+        
+        // ✅ AJOUT: Créer le compte ADMIN
+        const adminExists = await client.query('SELECT id FROM users WHERE email = $1', [ADMIN_EMAIL]);
+        
+        if (adminExists.rows.length === 0) {
+            const adminPassword = await bcrypt.hash('Admin2025!', 10);
+            await client.query(
+                `INSERT INTO users (email, password_hash, role, plan) 
+                 VALUES ($1, $2, 'admin', 'business')`,
+                [ADMIN_EMAIL, adminPassword]
+            );
+            console.log(`👑 Compte ADMIN créé: ${ADMIN_EMAIL}`);
+            console.log(`🔑 Mot de passe par défaut: Admin2025!`);
+            console.log(`⚠️  CHANGE CE MOT DE PASSE IMMÉDIATEMENT !`);
+        }
         
         await client.query(`
             CREATE TABLE IF NOT EXISTS feedback (
@@ -1268,7 +1601,7 @@ const initDb = async () => {
         `);
         
         client.release();
-        console.log('✅ Database ready (feedback + emails + subscriptions)');
+        console.log('✅ Database ready (users + feedback + emails + subscriptions)');
     } catch (err) {
         console.error('❌ Database error:', err.message);
     }
@@ -1278,15 +1611,28 @@ const initDb = async () => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`\n🚀 === VERIFYAI 3.0 + 4 AGENTS IA ===`);
+    console.log(`\n🚀 === VERIFYAI 4.0 - AUTH + 4 PLANS ===`);
     console.log(`📡 Port: ${PORT}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`🔑 Google API: ${!!process.env.GOOGLE_API_KEY ? '✓' : '✗'}`);
     console.log(`🤖 OpenAI API: ${!!process.env.OPENAI_API_KEY ? '✓' : '✗'}`);
+    console.log(`💳 Stripe: ${!!stripe ? '✓' : '✗'}`);
+    console.log(`🔐 Webhook Secret: ${!!STRIPE_WEBHOOK_SECRET ? '✓' : '✗'}`);
     console.log(`💾 Database: ${!!process.env.DATABASE_URL ? '✓' : '✗'}`);
-    console.log(`📧 Email Capture: ✓`);
-    console.log(`💳 Stripe: ✓`);
-    console.log(`🎯 Features: 4 AI Agents (Pro/Business only)`);
+    console.log(`👑 Admin: ${ADMIN_EMAIL}`);
+    console.log(`\n📊 Plans disponibles:`);
+    console.log(`   🆓 FREE: 3 vérifications/jour`);
+    console.log(`   🚀 STARTER: 200 vérifications/mois (14.99€)`);
+    console.log(`   ⭐ PRO: 800 vérifications/mois + 4 Agents IA (39.99€)`);
+    console.log(`   💼 BUSINESS: 4000 vérifications/mois + 4 Agents IA (119.99€)`);
+    console.log(`\n🎯 Nouveautés ajoutées:`);
+    console.log(`   ✅ Système d'authentification complet (bcrypt)`);
+    console.log(`   ✅ Table users avec 4 plans`);
+    console.log(`   ✅ Limites: 3/jour (FREE), 200/mois (STARTER), 800/mois (PRO), 4000/mois (BUSINESS)`);
+    console.log(`   ✅ Agents IA activés UNIQUEMENT pour PRO et BUSINESS`);
+    console.log(`   ✅ Webhook Stripe automatique (détection par montant)`);
+    console.log(`   ✅ Routes admin pour ${ADMIN_EMAIL}`);
+    console.log(`   ✅ Fact-checking et scoring originaux 100% préservés`);
     console.log(`==========================================\n`);
     initDb();
 });
