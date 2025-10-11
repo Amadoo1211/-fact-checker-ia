@@ -805,26 +805,24 @@ class ImprovedFactChecker {
             reasoning.push(contextBonus.reasoning);
         }
 
-        const finalScore = Math.max(0.15, Math.min(0.92, totalScore));
-        
-        console.log(`Score équilibré: ${Math.round(finalScore * 100)}%`);
-        
-        return {
-            score: finalScore,
-            confidence: Math.min(1.0, confidence),
-            reasoning: reasoning.join(' '),
-            details: {
-                baseScore: contentType.baseScore,
-                sourceImpact: sourceEval.impact,
-                consensusBonus: consensus.bonus,
-                contextBonus: contextBonus.bonus,
-                claimsFound: claims.length,
-                sourcesAnalyzed: analyzedSources.length,
-                supportingSources: analyzedSources.filter(s => s.actuallySupports).length,
-                contradictingSources: analyzedSources.filter(s => s.contradicts).length,
-                contentType: contentType.type
-            }
-        };
+        // SCORING DYNAMIQUE BASÉ SUR LES SOURCES
+const baseConfidence = contentType.baseScore;
+const sourceBonus = sourceEval.impact;
+const consensusBonus = consensus.bonus;
+const contextBonusValue = contextBonus.bonus;
+
+// Score final adaptatif
+let finalScore = baseConfidence + sourceBonus + consensusBonus + contextBonusValue;
+
+// Ajustements selon qualité sources
+const tier1Count = analyzedSources.filter(s => s.credibilityTier === 'tier1').length;
+const supportingHigh = analyzedSources.filter(s => s.actuallySupports && s.credibilityMultiplier > 0.8).length;
+
+if (tier1Count >= 3 && supportingHigh >= 2) {
+    finalScore = Math.min(0.95, finalScore + 0.10); // Boost si sources excellentes
+}
+
+finalScore = Math.max(0.25, Math.min(0.95, finalScore));
     }
 
     calculateSemanticSimilarity(text1, text2) {
