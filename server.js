@@ -22,7 +22,27 @@ const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const stripe = STRIPE_SECRET_KEY ? require('stripe')(STRIPE_SECRET_KEY) : null;
 
-// ========== 4 AGENTS IA AMÉLIORÉS AVEC DÉTAILS PRÉCIS ==========
+// LIMITES SELON NOUVEAUX PLANS
+const PLAN_LIMITS = {
+    free: {
+        dailyVerifications: 3,
+        weeklyOtto: 1  // 1 analyse Otto par semaine
+    },
+    starter: {
+        dailyVerifications: 10,
+        dailyOtto: 5  // 5 analyses Otto par jour
+    },
+    pro: {
+        dailyVerifications: 30,
+        dailyOtto: Infinity  // Otto illimité
+    },
+    business: {
+        dailyVerifications: Infinity,  // Illimité
+        dailyOtto: Infinity  // Otto illimité
+    }
+};
+
+// ========== 4 AGENTS IA (OTTO) - INCHANGÉ ==========
 
 class AIAgentsService {
     constructor() {
@@ -32,7 +52,7 @@ class AIAgentsService {
 
     async callOpenAI(systemPrompt, userPrompt, maxTokens = 500) {
         if (!this.apiKey) {
-            console.warn('⚠️ OpenAI API key manquante - Agent désactivé');
+            console.warn('OpenAI API key manquante - Agent désactivé');
             return null;
         }
 
@@ -62,7 +82,7 @@ class AIAgentsService {
             return data.choices[0].message.content;
 
         } catch (error) {
-            console.error('❌ Erreur appel OpenAI:', error.message);
+            console.error('Erreur appel OpenAI:', error.message);
             return null;
         }
     }
@@ -341,7 +361,7 @@ Identify recent vs outdated information. Return JSON only.`;
     }
 
     async runAllAgents(text, sources) {
-        console.log('🤖 Lancement des 4 agents IA avec détails précis...');
+        console.log('Lancement des 4 agents IA Otto...');
 
         const [factCheck, sourceAnalysis, contextAnalysis, freshnessAnalysis] = await Promise.all([
             this.factChecker(text, sources),
@@ -350,11 +370,11 @@ Identify recent vs outdated information. Return JSON only.`;
             this.freshnessDetector(text, sources)
         ]);
 
-        console.log('✅ Agents IA terminés avec détails:');
-        console.log(`   📊 Fact Checker: ${factCheck.verified_claims?.length || 0} vérifiées, ${factCheck.unverified_claims?.length || 0} non vérifiées`);
-        console.log(`   📚 Source Analyst: ${sourceAnalysis.real_sources?.length || 0} réelles, ${sourceAnalysis.fake_sources?.length || 0} fake`);
-        console.log(`   🎯 Context Guardian: ${contextAnalysis.omissions?.length || 0} omissions`);
-        console.log(`   🔄 Freshness: ${freshnessAnalysis.recent_data?.length || 0} récentes, ${freshnessAnalysis.outdated_data?.length || 0} obsolètes`);
+        console.log('Agents IA Otto terminés:');
+        console.log(`   Fact Checker: ${factCheck.verified_claims?.length || 0} vérifiées, ${factCheck.unverified_claims?.length || 0} non vérifiées`);
+        console.log(`   Source Analyst: ${sourceAnalysis.real_sources?.length || 0} réelles, ${sourceAnalysis.fake_sources?.length || 0} fake`);
+        console.log(`   Context Guardian: ${contextAnalysis.omissions?.length || 0} omissions`);
+        console.log(`   Freshness: ${freshnessAnalysis.recent_data?.length || 0} récentes, ${freshnessAnalysis.outdated_data?.length || 0} obsolètes`);
 
         return {
             fact_checker: factCheck,
@@ -365,7 +385,7 @@ Identify recent vs outdated information. Return JSON only.`;
     }
 }
 
-// ========== SYSTÈME DE FACT-CHECKING DE BASE - 100% INCHANGÉ ==========
+// ========== SYSTÈME DE FACT-CHECKING DE BASE - INCHANGÉ ==========
 
 class ImprovedFactChecker {
     constructor() {
@@ -454,7 +474,7 @@ class ImprovedFactChecker {
             })));
         }
 
-        console.log(`🔍 Claims extraits: ${claims.length}`);
+        console.log(`Claims extraits: ${claims.length}`);
         return claims;
     }
 
@@ -471,7 +491,7 @@ class ImprovedFactChecker {
             return {
                 type: 'OPINION',
                 baseScore: 0.40,
-                reasoning: '**Opinion subjective** (40%) - Point de vue personnel nécessitant d\'autres perspectives.'
+                reasoning: 'Opinion subjective (40%) - Point de vue personnel nécessitant d\'autres perspectives.'
             };
         }
 
@@ -479,7 +499,7 @@ class ImprovedFactChecker {
             return {
                 type: 'QUESTION',
                 baseScore: 0.30,
-                reasoning: '**Question utilisateur** (30%) - Demande d\'information directe.'
+                reasoning: 'Question utilisateur (30%) - Demande d\'information directe.'
             };
         }
 
@@ -493,25 +513,25 @@ class ImprovedFactChecker {
                 return {
                     type: 'SCIENTIFIC_FACT',
                     baseScore: 0.75,
-                    reasoning: '**Fait scientifique** (75%) - Information scientifique établie et vérifiable.'
+                    reasoning: 'Fait scientifique (75%) - Information scientifique établie et vérifiable.'
                 };
             } else if (hasGeographic) {
                 return {
                     type: 'GEOGRAPHIC_FACT',
                     baseScore: 0.70,
-                    reasoning: '**Fait géographique** (70%) - Données géographiques officielles vérifiables.'
+                    reasoning: 'Fait géographique (70%) - Données géographiques officielles vérifiables.'
                 };
             } else if (hasQuantitative) {
                 return {
                     type: 'STATISTICAL_FACT',
                     baseScore: 0.65,
-                    reasoning: '**Données quantitatives** (65%) - Statistiques mesurables et vérifiables.'
+                    reasoning: 'Données quantitatives (65%) - Statistiques mesurables et vérifiables.'
                 };
             } else if (hasHistorical) {
                 return {
                     type: 'HISTORICAL_FACT',
                     baseScore: 0.68,
-                    reasoning: '**Fait historique** (68%) - Information historique documentée.'
+                    reasoning: 'Fait historique (68%) - Information historique documentée.'
                 };
             }
         }
@@ -519,7 +539,7 @@ class ImprovedFactChecker {
         return {
             type: 'GENERAL_INFO',
             baseScore: 0.50,
-            reasoning: '**Information générale** (50%) - Contenu informatif standard.'
+            reasoning: 'Information générale (50%) - Contenu informatif standard.'
         };
     }
 
@@ -758,7 +778,7 @@ class ImprovedFactChecker {
         let confidence = 0;
         const reasoning = [];
 
-        console.log(`🎯 Calcul du score équilibré...`);
+        console.log(`Calcul du score équilibré...`);
 
         const contentType = this.analyzeContentType(originalText, claims);
         totalScore += contentType.baseScore;
@@ -785,7 +805,7 @@ class ImprovedFactChecker {
 
         const finalScore = Math.max(0.15, Math.min(0.92, totalScore));
         
-        console.log(`📊 Score équilibré: ${Math.round(finalScore * 100)}%`);
+        console.log(`Score équilibré: ${Math.round(finalScore * 100)}%`);
         
         return {
             score: finalScore,
@@ -1009,7 +1029,7 @@ async function findWebSources(keywords, smartQueries, originalText) {
         }
     }
     
-    console.log(`📋 ${uniqueSources.length} sources uniques trouvées`);
+    console.log(`${uniqueSources.length} sources uniques trouvées`);
     return uniqueSources;
 }
 
@@ -1041,6 +1061,8 @@ function calculateRelevance(item, originalText) {
     return Math.max(0.1, Math.min(1, score));
 }
 
+// ========== GESTION UTILISATEURS ET LIMITES ==========
+
 async function getUserByEmail(email) {
     const client = await pool.connect();
     try {
@@ -1051,75 +1073,139 @@ async function getUserByEmail(email) {
     }
 }
 
-async function checkMonthlyLimit(userId) {
+async function checkAndResetCounters(user) {
     const client = await pool.connect();
     try {
-        const result = await client.query(
-            'SELECT monthly_checks_used, daily_checks_used, last_check_date, last_reset_date, plan, role FROM users WHERE id = $1', 
-            [userId]
-        );
-        if (!result.rows[0]) return { allowed: false, remaining: 0 };
-        
-        const user = result.rows[0];
         const now = new Date();
-        const lastReset = user.last_reset_date ? new Date(user.last_reset_date) : null;
+        const today = now.toISOString().split('T')[0];
+        const lastCheckDate = user.last_check_date || '';
         
-        if (!lastReset || lastReset.getMonth() !== now.getMonth() || lastReset.getFullYear() !== now.getFullYear()) {
-            await client.query('UPDATE users SET monthly_checks_used = 0, last_reset_date = $1 WHERE id = $2', [now, userId]);
-            user.monthly_checks_used = 0;
+        // Reset compteurs quotidiens si nouvelle journée
+        if (lastCheckDate !== today) {
+            await client.query(
+                'UPDATE users SET daily_checks_used = 0, daily_otto_analysis = 0, last_check_date = $1 WHERE id = $2',
+                [today, user.id]
+            );
+            user.daily_checks_used = 0;
+            user.daily_otto_analysis = 0;
         }
         
-        if (user.role === 'admin') return { allowed: true, remaining: 999, plan: user.plan };
-        
+        // Reset compteur hebdomadaire Otto FREE (lundi 00h00)
         if (user.plan === 'free') {
-            const dailyLimit = 3;
-            const today = now.toISOString().split('T')[0];
-            const lastCheckDate = user.last_check_date || '';
+            const lastWeeklyReset = user.weekly_reset_date ? new Date(user.weekly_reset_date) : null;
+            const currentDayOfWeek = now.getDay(); // 0 = dimanche, 1 = lundi
             
-            if (lastCheckDate !== today) {
-                await client.query('UPDATE users SET daily_checks_used = 0, last_check_date = $1 WHERE id = $2', [today, userId]);
-                return { allowed: true, remaining: dailyLimit, plan: 'free' };
+            // Si c'est lundi et pas encore reset cette semaine
+            if (currentDayOfWeek === 1 && (!lastWeeklyReset || lastWeeklyReset.toISOString().split('T')[0] !== today)) {
+                await client.query(
+                    'UPDATE users SET weekly_otto_analysis = 0, weekly_reset_date = $1 WHERE id = $2',
+                    [today, user.id]
+                );
+                user.weekly_otto_analysis = 0;
             }
-            
-            if (user.daily_checks_used >= dailyLimit) {
-                return { allowed: false, remaining: 0, plan: 'free' };
-            }
-            return { allowed: true, remaining: dailyLimit - user.daily_checks_used, plan: 'free' };
         }
         
-        if (user.plan === 'starter') {
-            if (user.monthly_checks_used >= 200) return { allowed: false, remaining: 0, plan: 'starter' };
-            return { allowed: true, remaining: 200 - user.monthly_checks_used, plan: 'starter' };
-        }
-        
-        if (user.plan === 'pro') {
-            if (user.monthly_checks_used >= 800) return { allowed: false, remaining: 0, plan: 'pro' };
-            return { allowed: true, remaining: 800 - user.monthly_checks_used, plan: 'pro' };
-        }
-        
-        if (user.plan === 'business') {
-            if (user.monthly_checks_used >= 4000) return { allowed: false, remaining: 0, plan: 'business' };
-            return { allowed: true, remaining: 4000 - user.monthly_checks_used, plan: 'business' };
-        }
-        
-        return { allowed: false, remaining: 0, plan: 'free' };
+        return user;
     } finally {
         client.release();
     }
 }
 
-async function incrementCheckCount(userId, plan) {
+async function checkVerificationLimit(userId) {
     const client = await pool.connect();
     try {
-        if (plan === 'free') {
-            await client.query('UPDATE users SET daily_checks_used = daily_checks_used + 1 WHERE id = $1', [userId]);
+        const result = await client.query(
+            'SELECT * FROM users WHERE id = $1', 
+            [userId]
+        );
+        
+        if (!result.rows[0]) return { allowed: false, remaining: 0 };
+        
+        let user = result.rows[0];
+        user = await checkAndResetCounters(user);
+        
+        if (user.role === 'admin') return { allowed: true, remaining: 999, plan: user.plan };
+        
+        const limits = PLAN_LIMITS[user.plan] || PLAN_LIMITS.free;
+        const dailyLimit = limits.dailyVerifications;
+        
+        if (dailyLimit === Infinity) {
+            return { allowed: true, remaining: Infinity, plan: user.plan };
+        }
+        
+        if (user.daily_checks_used >= dailyLimit) {
+            return { allowed: false, remaining: 0, plan: user.plan };
+        }
+        
+        return { allowed: true, remaining: dailyLimit - user.daily_checks_used, plan: user.plan };
+    } finally {
+        client.release();
+    }
+}
+
+async function checkOttoLimit(userId) {
+    const client = await pool.connect();
+    try {
+        const result = await client.query(
+            'SELECT * FROM users WHERE id = $1', 
+            [userId]
+        );
+        
+        if (!result.rows[0]) return { allowed: false, remaining: 0 };
+        
+        let user = result.rows[0];
+        user = await checkAndResetCounters(user);
+        
+        if (user.role === 'admin') return { allowed: true, remaining: 999, plan: user.plan };
+        
+        const limits = PLAN_LIMITS[user.plan] || PLAN_LIMITS.free;
+        
+        if (user.plan === 'free') {
+            // FREE: 1 Otto par semaine
+            const weeklyLimit = limits.weeklyOtto;
+            if (user.weekly_otto_analysis >= weeklyLimit) {
+                return { allowed: false, remaining: 0, plan: user.plan, resetType: 'weekly' };
+            }
+            return { allowed: true, remaining: weeklyLimit - user.weekly_otto_analysis, plan: user.plan, resetType: 'weekly' };
+        } else if (user.plan === 'starter') {
+            // STARTER: 5 Otto par jour
+            const dailyLimit = limits.dailyOtto;
+            if (user.daily_otto_analysis >= dailyLimit) {
+                return { allowed: false, remaining: 0, plan: user.plan, resetType: 'daily' };
+            }
+            return { allowed: true, remaining: dailyLimit - user.daily_otto_analysis, plan: user.plan, resetType: 'daily' };
         } else {
-            await client.query('UPDATE users SET monthly_checks_used = monthly_checks_used + 1 WHERE id = $1', [userId]);
+            // PRO & BUSINESS: Otto illimité
+            return { allowed: true, remaining: Infinity, plan: user.plan, resetType: 'none' };
         }
     } finally {
         client.release();
     }
 }
+
+async function incrementVerificationCount(userId) {
+    const client = await pool.connect();
+    try {
+        await client.query('UPDATE users SET daily_checks_used = daily_checks_used + 1 WHERE id = $1', [userId]);
+    } finally {
+        client.release();
+    }
+}
+
+async function incrementOttoCount(userId, plan) {
+    const client = await pool.connect();
+    try {
+        if (plan === 'free') {
+            await client.query('UPDATE users SET weekly_otto_analysis = weekly_otto_analysis + 1 WHERE id = $1', [userId]);
+        } else {
+            await client.query('UPDATE users SET daily_otto_analysis = daily_otto_analysis + 1 WHERE id = $1', [userId]);
+        }
+    } finally {
+        client.release();
+    }
+}
+
+// ========== ROUTES ==========
 
 app.post('/auth/signup', async (req, res) => {
     try {
@@ -1137,17 +1223,17 @@ app.post('/auth/signup', async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, 10);
         const client = await pool.connect();
         const result = await client.query(
-            `INSERT INTO users (email, password_hash, role, plan, monthly_checks_used, daily_checks_used, last_check_date, last_reset_date) 
-             VALUES ($1, $2, 'user', 'free', 0, 0, CURRENT_DATE, CURRENT_DATE) 
+            `INSERT INTO users (email, password_hash, role, plan, daily_checks_used, daily_otto_analysis, weekly_otto_analysis, last_check_date, weekly_reset_date) 
+             VALUES ($1, $2, 'user', 'free', 0, 0, 0, CURRENT_DATE, CURRENT_DATE) 
              RETURNING id, email, role, plan`,
             [email.toLowerCase(), hashedPassword]
         );
         client.release();
         
-        console.log(`✅ Nouveau compte FREE créé: ${email}`);
+        console.log(`Nouveau compte FREE créé: ${email}`);
         res.json({ success: true, user: result.rows[0] });
     } catch (error) {
-        console.error('❌ Erreur signup:', error);
+        console.error('Erreur signup:', error);
         res.status(500).json({ success: false, error: 'Erreur serveur' });
     }
 });
@@ -1163,26 +1249,27 @@ app.post('/auth/login', async (req, res) => {
         const validPassword = await bcrypt.compare(password, user.password_hash);
         if (!validPassword) return res.status(401).json({ success: false, error: 'Email ou mot de passe incorrect' });
         
-        console.log(`✅ Connexion: ${email} (${user.plan})`);
+        console.log(`Connexion: ${email} (${user.plan})`);
         res.json({ success: true, user: { id: user.id, email: user.email, plan: user.plan, role: user.role } });
     } catch (error) {
-        console.error('❌ Erreur login:', error);
+        console.error('Erreur login:', error);
         res.status(500).json({ success: false, error: 'Erreur serveur' });
     }
 });
 
+// ROUTE VÉRIFICATION CLASSIQUE (INCHANGÉE)
 app.post('/verify', async (req, res) => {
     try {
-        const { text, smartQueries, analysisType, userEmail } = req.body;
+        const { text, smartQueries, userEmail } = req.body;
         
-        console.log(`\n🔍 === VÉRIFICATION ===`);
-        console.log(`📝 Texte: "${text.substring(0, 80)}..."`);
-        console.log(`👤 User: ${userEmail || 'anonymous'}`);
+        console.log(`\n=== VÉRIFICATION CLASSIQUE ===`);
+        console.log(`Texte: "${text.substring(0, 80)}..."`);
+        console.log(`User: ${userEmail || 'anonymous'}`);
         
         if (!text || text.length < 10) {
             return res.json({ 
                 overallConfidence: 0.25,
-                scoringExplanation: "**Texte insuffisant** (25%) - Contenu trop court pour analyse.", 
+                scoringExplanation: "Texte insuffisant (25%) - Contenu trop court pour analyse.", 
                 keywords: [],
                 sources: [],
                 methodology: "Analyse équilibrée avec détection contextuelle"
@@ -1198,19 +1285,19 @@ app.post('/verify', async (req, res) => {
                 userId = user.id;
                 userPlan = user.plan;
                 
-                const limitCheck = await checkMonthlyLimit(userId);
+                const limitCheck = await checkVerificationLimit(userId);
                 if (!limitCheck.allowed) {
                     return res.status(429).json({
                         success: false,
                         error: 'Limite atteinte',
                         message: userPlan === 'free' 
-                            ? 'Limite de 3 vérifications/jour atteinte. Passez à STARTER, PRO ou BUSINESS !' 
-                            : `Limite mensuelle atteinte (${userPlan.toUpperCase()}). Passez au plan supérieur !`,
+                            ? 'Limite de 3 vérifications/jour atteinte. Passez à STARTER, PRO ou BUSINESS' 
+                            : `Limite quotidienne atteinte (${userPlan.toUpperCase()}). Passez au plan supérieur`,
                         remaining: 0,
                         plan: userPlan
                     });
                 }
-                console.log(`📊 Plan: ${userPlan} | Restant: ${limitCheck.remaining}`);
+                console.log(`Plan: ${userPlan} | Restant: ${limitCheck.remaining}`);
             }
         }
         
@@ -1221,14 +1308,7 @@ app.post('/verify', async (req, res) => {
         const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, text, sources);
         const result = factChecker.calculateBalancedScore(text, analyzedSources, claims);
         
-        if (userId) await incrementCheckCount(userId, userPlan);
-        
-        let aiAgentsResults = null;
-        if ((userPlan === 'pro' || userPlan === 'business') && sources.length > 0) {
-            const aiAgents = new AIAgentsService();
-            aiAgentsResults = await aiAgents.runAllAgents(text, sources);
-            console.log('🤖 Agents IA activés avec détails précis');
-        }
+        if (userId) await incrementVerificationCount(userId);
         
         const response = {
             overallConfidence: result.score,
@@ -1239,35 +1319,148 @@ app.post('/verify', async (req, res) => {
             claimsAnalyzed: claims,
             details: result.details,
             methodology: "Analyse équilibrée avec détection contextuelle intelligente",
-            aiAgents: aiAgentsResults,
             userPlan: userPlan
         };
         
-        console.log(`✅ Score équilibré: ${Math.round(result.score * 100)}%`);
-        console.log(`📊 ${analyzedSources.length} sources | ${claims.length} claims`);
-        if (aiAgentsResults) {
-            console.log(`🤖 Agents IA avec détails précis exécutés`);
-        }
+        console.log(`Score équilibré: ${Math.round(result.score * 100)}%`);
+        console.log(`${analyzedSources.length} sources | ${claims.length} claims`);
         
         res.json(response);
         
     } catch (error) {
-        console.error('❌ Erreur analyse:', error);
+        console.error('Erreur analyse:', error);
         res.status(500).json({ 
             overallConfidence: 0.20,
-            scoringExplanation: "**Erreur système** (20%) - Impossible de terminer l'analyse.",
+            scoringExplanation: "Erreur système (20%) - Impossible de terminer l'analyse.",
             keywords: [],
-            sources: [],
-            aiAgents: null
+            sources: []
         });
     }
 });
+
+// NOUVELLE ROUTE : ANALYSE OTTO (APPROFONDIE)
+app.post('/verify-otto', async (req, res) => {
+    try {
+        const { text, smartQueries, userEmail } = req.body;
+        
+        console.log(`\n=== ANALYSE OTTO ===`);
+        console.log(`Texte: "${text.substring(0, 80)}..."`);
+        console.log(`User: ${userEmail || 'anonymous'}`);
+        
+        if (!text || text.length < 10) {
+            return res.json({ 
+                success: false,
+                error: "Texte insuffisant pour analyse Otto"
+            });
+        }
+        
+        if (!userEmail) {
+            return res.status(401).json({
+                success: false,
+                error: 'Authentification requise pour Otto'
+            });
+        }
+        
+        const user = await getUserByEmail(userEmail);
+        if (!user) {
+            return res.status(401).json({
+                success: false,
+                error: 'Utilisateur non trouvé'
+            });
+        }
+        
+        // Vérifier limite Otto
+        const ottoLimit = await checkOttoLimit(user.id);
+        if (!ottoLimit.allowed) {
+            const message = user.plan === 'free' 
+                ? 'Limite Otto FREE: 1 analyse/semaine atteinte. Renouvellement lundi 00h00. Passez à STARTER pour 5 Otto/jour'
+                : `Limite Otto atteinte (${user.plan.toUpperCase()}). Passez au plan supérieur`;
+            
+            return res.status(429).json({
+                success: false,
+                error: 'Limite Otto atteinte',
+                message: message,
+                remaining: 0,
+                plan: user.plan,
+                resetType: ottoLimit.resetType
+            });
+        }
+        
+        console.log(`Plan: ${user.plan} | Otto restant: ${ottoLimit.remaining}`);
+        
+        // Récupérer sources
+        const factChecker = new ImprovedFactChecker();
+        const keywords = extractMainKeywords(text);
+        const sources = await findWebSources(keywords, smartQueries, text);
+        
+        if (sources.length === 0) {
+            return res.json({
+                success: false,
+                error: 'Aucune source trouvée pour analyse Otto'
+            });
+        }
+        
+        // Lancer les 4 agents Otto
+        const aiAgents = new AIAgentsService();
+        const ottoResults = await aiAgents.runAllAgents(text, sources);
+        
+        // Incrémenter compteur Otto
+        await incrementOttoCount(user.id, user.plan);
+        
+        // Calculer niveau de risque global
+        const avgScore = (
+            (ottoResults.fact_checker.score || 50) +
+            (ottoResults.source_analyst.score || 50) +
+            (100 - (ottoResults.context_guardian.context_score || 50)) +
+            (ottoResults.freshness_detector.freshness_score || 50)
+        ) / 4;
+        
+        let riskLevel = 'FAIBLE';
+        if (avgScore < 40) riskLevel = 'ÉLEVÉ';
+        else if (avgScore < 65) riskLevel = 'MOYEN';
+        
+        // Message personnalisé Otto (1ère personne)
+        let ottoMessage = '';
+        if (riskLevel === 'ÉLEVÉ') {
+            ottoMessage = "J'ai détecté plusieurs problèmes critiques dans ce contenu. Je recommande une vérification approfondie avant utilisation.";
+        } else if (riskLevel === 'MOYEN') {
+            ottoMessage = "J'ai identifié quelques éléments nécessitant attention. Vérifiez les sources et les omissions signalées.";
+        } else {
+            ottoMessage = "Mon analyse montre un contenu globalement fiable. Quelques points mineurs à noter ci-dessous.";
+        }
+        
+        const response = {
+            success: true,
+            otto: {
+                riskLevel: riskLevel,
+                message: ottoMessage,
+                globalScore: Math.round(avgScore)
+            },
+            agents: ottoResults,
+            sources: sources,
+            userPlan: user.plan
+        };
+        
+        console.log(`Otto terminé: Risque ${riskLevel} | Score global: ${Math.round(avgScore)}%`);
+        
+        res.json(response);
+        
+    } catch (error) {
+        console.error('Erreur analyse Otto:', error);
+        res.status(500).json({ 
+            success: false,
+            error: "Erreur système lors de l'analyse Otto"
+        });
+    }
+});
+
+// AUTRES ROUTES (INCHANGÉES)
 
 app.post('/subscribe', async (req, res) => {
     try {
         const { email, name, source } = req.body;
         
-        console.log(`📧 Nouvelle inscription email:`);
+        console.log(`Nouvelle inscription email:`);
         console.log(`   Email: ${email}`);
         console.log(`   Nom: ${name || 'Non fourni'}`);
         console.log(`   Source: ${source || 'unknown'}`);
@@ -1300,7 +1493,7 @@ app.post('/subscribe', async (req, res) => {
             );
             
             if (existingUser.rows.length > 0) {
-                console.log(`✅ Email déjà existant: ${sanitizedEmail}`);
+                console.log(`Email déjà existant: ${sanitizedEmail}`);
                 
                 return res.json({ 
                     success: true, 
@@ -1314,7 +1507,7 @@ app.post('/subscribe', async (req, res) => {
                 [sanitizedEmail, sanitizedName, sanitizedSource]
             );
             
-            console.log(`✅ Nouvel abonné enregistré: ${sanitizedEmail} (source: ${sanitizedSource})`);
+            console.log(`Nouvel abonné enregistré: ${sanitizedEmail} (source: ${sanitizedSource})`);
             
             res.json({ 
                 success: true, 
@@ -1327,7 +1520,7 @@ app.post('/subscribe', async (req, res) => {
         }
         
     } catch (error) {
-        console.error('❌ Erreur subscription:', error);
+        console.error('Erreur subscription:', error);
         
         if (error.message.includes('column')) {
             try {
@@ -1338,10 +1531,10 @@ app.post('/subscribe', async (req, res) => {
                 );
                 client.release();
                 
-                console.log(`✅ Email enregistré (mode simple): ${email}`);
+                console.log(`Email enregistré (mode simple): ${email}`);
                 return res.json({ success: true, message: 'Subscribed' });
             } catch (err2) {
-                console.error('❌ Erreur insertion simple:', err2);
+                console.error('Erreur insertion simple:', err2);
             }
         }
         
@@ -1377,67 +1570,7 @@ app.get('/check-email', async (req, res) => {
         }
         
     } catch (error) {
-        console.error('❌ Erreur check email:', error);
-        res.status(500).json({ error: 'Erreur serveur' });
-    }
-});
-
-app.get('/subscription/status', async (req, res) => {
-    try {
-        const { email } = req.query;
-        
-        if (!email) {
-            return res.json({ subscribed: false });
-        }
-        
-        const client = await pool.connect();
-        const result = await client.query(
-            'SELECT * FROM subscriptions WHERE user_email = $1 AND status = $2',
-            [email, 'active']
-        );
-        client.release();
-        
-        if (result.rows.length === 0) {
-            return res.json({ subscribed: false });
-        }
-        
-        const sub = result.rows[0];
-        res.json({
-            subscribed: true,
-            plan: sub.plan_type,
-            verificationsUsed: sub.verification_count,
-            verificationsLimit: sub.verification_limit
-        });
-    } catch (error) {
-        console.error('Erreur statut abonnement:', error);
-        res.status(500).json({ error: 'Erreur serveur' });
-    }
-});
-
-app.post('/admin/activate-subscription', async (req, res) => {
-    try {
-        const { email, plan } = req.body;
-        const adminToken = req.headers['x-admin-token'];
-        
-        if (adminToken !== process.env.ADMIN_TOKEN) {
-            return res.status(403).json({ error: 'Non autorisé' });
-        }
-        
-        const limits = { starter: 200, professional: 800, pro: 800, business: 4000 };
-        const client = await pool.connect();
-        
-        await client.query(`
-            INSERT INTO subscriptions (user_email, plan_type, verification_limit, status)
-            VALUES ($1, $2, $3, 'active')
-            ON CONFLICT (user_email) 
-            DO UPDATE SET plan_type = $2, verification_limit = $3, status = 'active', updated_at = NOW()
-        `, [email, plan, limits[plan]]);
-        
-        client.release();
-        console.log(`✅ Abonnement activé: ${email} - ${plan}`);
-        res.json({ success: true, message: `${email} activé sur plan ${plan}` });
-    } catch (error) {
-        console.error('Erreur activation:', error);
+        console.error('Erreur check email:', error);
         res.status(500).json({ error: 'Erreur serveur' });
     }
 });
@@ -1453,18 +1586,18 @@ app.post('/feedback', async (req, res) => {
         );
         client.release();
         
-        console.log(`📝 Feedback: ${isUseful ? 'Utile' : 'Pas utile'} - Score: ${scoreGiven}`);
+        console.log(`Feedback: ${isUseful ? 'Utile' : 'Pas utile'} - Score: ${scoreGiven}`);
         res.json({ success: true });
         
     } catch (err) {
-        console.error('❌ Erreur feedback:', err);
+        console.error('Erreur feedback:', err);
         res.status(500).json({ error: 'Erreur serveur' });
     }
 });
 
 app.post('/stripe/webhook', async (req, res) => {
     if (!stripe || !STRIPE_WEBHOOK_SECRET) {
-        console.warn('⚠️ Stripe non configuré');
+        console.warn('Stripe non configuré');
         return res.status(400).send('Stripe not configured');
     }
 
@@ -1474,11 +1607,11 @@ app.post('/stripe/webhook', async (req, res) => {
     try {
         event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
     } catch (err) {
-        console.error('❌ Webhook error:', err.message);
+        console.error('Webhook error:', err.message);
         return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    console.log(`\n🔔 Stripe Event: ${event.type}`);
+    console.log(`\nStripe Event: ${event.type}`);
 
     try {
         if (event.type === 'checkout.session.completed') {
@@ -1487,11 +1620,11 @@ app.post('/stripe/webhook', async (req, res) => {
             const amountPaid = session.amount_total / 100;
 
             if (!customerEmail) {
-                console.error('❌ Email manquant');
+                console.error('Email manquant');
                 return res.json({ received: true });
             }
 
-            console.log(`💳 Paiement: ${customerEmail} - ${amountPaid}€`);
+            console.log(`Paiement: ${customerEmail} - ${amountPaid}€`);
 
             let planType = 'starter';
             if (amountPaid >= 119) planType = 'business';
@@ -1502,7 +1635,7 @@ app.post('/stripe/webhook', async (req, res) => {
             const userResult = await client.query('SELECT id FROM users WHERE email = $1', [customerEmail.toLowerCase()]);
 
             if (userResult.rows.length === 0) {
-                console.error(`❌ User non trouvé: ${customerEmail}`);
+                console.error(`User non trouvé: ${customerEmail}`);
                 client.release();
                 return res.json({ received: true });
             }
@@ -1518,7 +1651,7 @@ app.post('/stripe/webhook', async (req, res) => {
             );
             client.release();
 
-            console.log(`✅ ${customerEmail} upgradé vers ${planType.toUpperCase()} !`);
+            console.log(`${customerEmail} upgradé vers ${planType.toUpperCase()}`);
         }
 
         if (event.type === 'customer.subscription.deleted') {
@@ -1529,12 +1662,12 @@ app.post('/stripe/webhook', async (req, res) => {
                 [subscription.id]
             );
             client.release();
-            console.log(`⚠️ Abonnement annulé → FREE`);
+            console.log(`Abonnement annulé → FREE`);
         }
 
         res.json({ received: true });
     } catch (error) {
-        console.error('❌ Webhook error:', error);
+        console.error('Webhook error:', error);
         res.status(500).json({ error: 'Webhook failed' });
     }
 });
@@ -1546,7 +1679,7 @@ app.get('/admin/users', async (req, res) => {
         
         const client = await pool.connect();
         const result = await client.query(
-            `SELECT id, email, plan, role, monthly_checks_used, daily_checks_used, created_at 
+            `SELECT id, email, plan, role, daily_checks_used, daily_otto_analysis, weekly_otto_analysis, created_at 
              FROM users ORDER BY created_at DESC`
         );
         client.release();
@@ -1566,7 +1699,7 @@ app.get('/admin/users', async (req, res) => {
         
         res.json({ success: true, users: result.rows, stats: stats });
     } catch (error) {
-        console.error('❌ Erreur admin/users:', error);
+        console.error('Erreur admin/users:', error);
         res.status(500).json({ error: 'Erreur serveur' });
     }
 });
@@ -1580,10 +1713,10 @@ app.post('/admin/upgrade-user', async (req, res) => {
         await client.query('UPDATE users SET plan = $1, updated_at = NOW() WHERE email = $2', [plan, userEmail.toLowerCase()]);
         client.release();
         
-        console.log(`✅ ${userEmail} → ${plan} (par admin)`);
+        console.log(`${userEmail} → ${plan} (par admin)`);
         res.json({ success: true, message: `${userEmail} upgradé vers ${plan}` });
     } catch (error) {
-        console.error('❌ Erreur upgrade:', error);
+        console.error('Erreur upgrade:', error);
         res.status(500).json({ error: 'Erreur serveur' });
     }
 });
@@ -1597,10 +1730,10 @@ app.delete('/admin/delete-user', async (req, res) => {
         await client.query('DELETE FROM users WHERE email = $1', [userEmail.toLowerCase()]);
         client.release();
         
-        console.log(`🗑️ ${userEmail} supprimé`);
+        console.log(`${userEmail} supprimé`);
         res.json({ success: true, message: `${userEmail} supprimé` });
     } catch (error) {
-        console.error('❌ Erreur suppression:', error);
+        console.error('Erreur suppression:', error);
         res.status(500).json({ error: 'Erreur serveur' });
     }
 });
@@ -1608,9 +1741,22 @@ app.delete('/admin/delete-user', async (req, res) => {
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
-        version: 'VERIFYAI-4.1-DETAILED-AI-AGENTS',
-        plans: ['FREE (3/day)', 'STARTER (200/month)', 'PRO (800/month + AI)', 'BUSINESS (4000/month + AI)'],
-        features: ['balanced_scoring', 'contextual_analysis', 'auth', 'stripe_webhook', 'detailed_ai_agents_pro_business', 'admin_panel'],
+        version: 'VERIFYAI-OTTO-v1.0',
+        plans: [
+            'FREE (3 vérif/jour + 1 Otto/semaine)', 
+            'STARTER (10 vérif/jour + 5 Otto/jour)', 
+            'PRO (30 vérif/jour + Otto illimité)', 
+            'BUSINESS (illimité + Otto illimité)'
+        ],
+        features: [
+            'balanced_scoring', 
+            'contextual_analysis', 
+            'auth', 
+            'stripe_webhook', 
+            'otto_analysis', 
+            'daily_weekly_limits',
+            'admin_panel'
+        ],
         timestamp: new Date().toISOString(),
         api_configured: !!(process.env.GOOGLE_API_KEY && process.env.SEARCH_ENGINE_ID),
         openai_configured: !!process.env.OPENAI_API_KEY,
@@ -1631,10 +1777,11 @@ const initDb = async () => {
                 plan VARCHAR(50) DEFAULT 'free',
                 stripe_customer_id VARCHAR(255),
                 stripe_subscription_id VARCHAR(255),
-                monthly_checks_used INT DEFAULT 0,
                 daily_checks_used INT DEFAULT 0,
+                daily_otto_analysis INT DEFAULT 0,
+                weekly_otto_analysis INT DEFAULT 0,
                 last_check_date DATE,
-                last_reset_date DATE,
+                weekly_reset_date DATE,
                 created_at TIMESTAMP DEFAULT NOW(),
                 updated_at TIMESTAMP DEFAULT NOW()
             );
@@ -1643,7 +1790,20 @@ const initDb = async () => {
             CREATE INDEX IF NOT EXISTS idx_users_plan ON users(plan);
         `);
         
-        console.log('✅ Table users créée');
+        console.log('Table users créée/mise à jour');
+        
+        // Ajouter colonnes Otto si manquantes
+        try {
+            await client.query(`
+                ALTER TABLE users 
+                ADD COLUMN IF NOT EXISTS daily_otto_analysis INT DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS weekly_otto_analysis INT DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS weekly_reset_date DATE DEFAULT CURRENT_DATE;
+            `);
+            console.log('Colonnes Otto ajoutées');
+        } catch (err) {
+            console.log('Colonnes Otto déjà présentes ou erreur:', err.message);
+        }
         
         const adminExists = await client.query('SELECT id FROM users WHERE email = $1', [ADMIN_EMAIL]);
         
@@ -1654,9 +1814,9 @@ const initDb = async () => {
                  VALUES ($1, $2, 'admin', 'business')`,
                 [ADMIN_EMAIL, adminPassword]
             );
-            console.log(`👑 Compte ADMIN créé: ${ADMIN_EMAIL}`);
-            console.log(`🔑 Mot de passe par défaut: Admin2025!`);
-            console.log(`⚠️  CHANGE CE MOT DE PASSE IMMÉDIATEMENT !`);
+            console.log(`Compte ADMIN créé: ${ADMIN_EMAIL}`);
+            console.log(`Mot de passe par défaut: Admin2025!`);
+            console.log(`CHANGE CE MOT DE PASSE IMMÉDIATEMENT`);
         }
         
         await client.query(`
@@ -1684,55 +1844,35 @@ const initDb = async () => {
             CREATE INDEX IF NOT EXISTS idx_emails_created ON emails(created_at);
         `);
         
-        console.log('✅ Table emails vérifiée/créée');
-        
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS subscriptions (
-                id SERIAL PRIMARY KEY,
-                user_email VARCHAR(255) UNIQUE NOT NULL,
-                stripe_customer_id VARCHAR(255),
-                plan_type VARCHAR(50),
-                status VARCHAR(50) DEFAULT 'active',
-                verification_count INT DEFAULT 0,
-                verification_limit INT DEFAULT 200,
-                created_at TIMESTAMP DEFAULT NOW(),
-                updated_at TIMESTAMP DEFAULT NOW()
-            );
-            
-            CREATE INDEX IF NOT EXISTS idx_subscriptions_email ON subscriptions(user_email);
-            CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
-        `);
+        console.log('Table emails vérifiée/créée');
         
         client.release();
-        console.log('✅ Database ready (users + feedback + emails + subscriptions)');
+        console.log('Database ready (users + feedback + emails + Otto columns)');
     } catch (err) {
-        console.error('❌ Database error:', err.message);
+        console.error('Database error:', err.message);
     }
 };
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`\n🚀 === VERIFYAI 4.1 - AGENTS IA DÉTAILLÉS ===`);
-    console.log(`📡 Port: ${PORT}`);
-    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`🔑 Google API: ${!!process.env.GOOGLE_API_KEY ? '✓' : '✗'}`);
-    console.log(`🤖 OpenAI API: ${!!process.env.OPENAI_API_KEY ? '✓' : '✗'}`);
-    console.log(`💳 Stripe: ${!!stripe ? '✓' : '✗'}`);
-    console.log(`🔐 Webhook Secret: ${!!STRIPE_WEBHOOK_SECRET ? '✓' : '✗'}`);
-    console.log(`💾 Database: ${!!process.env.DATABASE_URL ? '✓' : '✗'}`);
-    console.log(`👑 Admin: ${ADMIN_EMAIL}`);
-    console.log(`\n📊 Plans disponibles:`);
-    console.log(`   🆓 FREE: 3 vérifications/jour`);
-    console.log(`   🚀 STARTER: 200 vérifications/mois (14.99€)`);
-    console.log(`   ⭐ PRO: 800 vérifications/mois + 4 Agents IA DÉTAILLÉS (39.99€)`);
-    console.log(`   💼 BUSINESS: 4000 vérifications/mois + 4 Agents IA DÉTAILLÉS (119.99€)`);
-    console.log(`\n🎯 Nouveautés v4.1:`);
-    console.log(`   ✅ Agents IA avec DÉTAILS PRÉCIS sur chaque affirmation`);
-    console.log(`   ✅ Fact Checker: Liste affirmations vérifiées vs FAKE`);
-    console.log(`   ✅ Source Analyst: Détecte sources réelles vs inventées`);
-    console.log(`   ✅ Context Guardian: Identifie omissions critiques`);
-    console.log(`   ✅ Freshness Detector: Données récentes vs obsolètes`);
-    console.log(`   ✅ Réponse JSON structurée pour affichage détaillé frontend`);
+    console.log(`\n=== VERIFYAI avec OTTO ===`);
+    console.log(`Port: ${PORT}`);
+    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`Google API: ${!!process.env.GOOGLE_API_KEY ? 'OK' : 'MANQUANT'}`);
+    console.log(`OpenAI API: ${!!process.env.OPENAI_API_KEY ? 'OK' : 'MANQUANT'}`);
+    console.log(`Stripe: ${!!stripe ? 'OK' : 'MANQUANT'}`);
+    console.log(`Webhook Secret: ${!!STRIPE_WEBHOOK_SECRET ? 'OK' : 'MANQUANT'}`);
+    console.log(`Database: ${!!process.env.DATABASE_URL ? 'OK' : 'MANQUANT'}`);
+    console.log(`Admin: ${ADMIN_EMAIL}`);
+    console.log(`\nPlans disponibles:`);
+    console.log(`   FREE: 3 vérif/jour + 1 Otto/semaine`);
+    console.log(`   STARTER: 10 vérif/jour + 5 Otto/jour (14.99€)`);
+    console.log(`   PRO: 30 vérif/jour + Otto illimité (39.99€)`);
+    console.log(`   BUSINESS: Illimité + Otto illimité (119.99€)`);
+    console.log(`\nNouvelles routes:`);
+    console.log(`   POST /verify - Vérification classique`);
+    console.log(`   POST /verify-otto - Analyse Otto approfondie`);
+    console.log(`   POST /stripe/webhook - Paiements Stripe`);
     console.log(`==========================================\n`);
     initDb();
 });
