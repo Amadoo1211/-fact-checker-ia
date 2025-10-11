@@ -524,8 +524,8 @@ class ImprovedFactChecker {
             } else if (hasQuantitative) {
                 return {
                     type: 'STATISTICAL_FACT',
-                    baseScore: 0.65,
-                    reasoning: 'Données quantitatives (65%) - Statistiques mesurables et vérifiables.'
+                    baseScore: 0.72,
+                    reasoning: 'Données quantitatives (72%) - Statistiques mesurables et vérifiables.'
                 };
             } else if (hasHistorical) {
                 return {
@@ -658,10 +658,12 @@ class ImprovedFactChecker {
         let contradictingHigh = sources.filter(s => s.contradicts && s.credibilityMultiplier > 0.8).length;
 
         if (supportingHigh > 0) {
-            qualityScore += supportingHigh * 0.15;
-        } else if (supportingAny > 0) {
-            qualityScore += supportingAny * 0.08;
-        }
+    qualityScore += supportingHigh * 0.20;  // +5%
+} else if (supportingAny >= 3) {
+    qualityScore += 0.15;  // Bonus si 3+ sources confirment
+} else if (supportingAny > 0) {
+    qualityScore += supportingAny * 0.08;
+}
 
         if (contradictingHigh > 0) {
             qualityScore -= contradictingHigh * 0.08;
@@ -1058,7 +1060,7 @@ function calculateRelevance(item, originalText) {
     
     if (url.includes('reddit') || url.includes('forum')) score -= 0.15;
     
-    return Math.max(0.1, Math.min(1, score));
+const finalScore = Math.max(0.25, Math.min(0.95, totalScore));
 }
 
 // ========== GESTION UTILISATEURS ET LIMITES ==========
