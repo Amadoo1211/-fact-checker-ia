@@ -22,27 +22,27 @@ const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const stripe = STRIPE_SECRET_KEY ? require('stripe')(STRIPE_SECRET_KEY) : null;
 
-// LIMITES SELON NOUVEAUX PLANS
+// LIMITES SELON PLANS
 const PLAN_LIMITS = {
     free: {
         dailyVerifications: 3,
-        weeklyOtto: 1  // 1 analyse Otto par semaine
+        weeklyOtto: 1
     },
     starter: {
         dailyVerifications: 10,
-        dailyOtto: 5  // 5 analyses Otto par jour
+        dailyOtto: 5
     },
     pro: {
         dailyVerifications: 30,
-        dailyOtto: Infinity  // Otto illimité
+        dailyOtto: Infinity
     },
     business: {
-        dailyVerifications: Infinity,  // Illimité
-        dailyOtto: Infinity  // Otto illimité
+        dailyVerifications: Infinity,
+        dailyOtto: Infinity
     }
 };
 
-// ========== 4 AGENTS IA (OTTO) - INCHANGÉ ==========
+// ========== 4 AGENTS IA (OTTO) ==========
 
 class AIAgentsService {
     constructor() {
@@ -361,7 +361,7 @@ Identify recent vs outdated information. Return JSON only.`;
     }
 
     async runAllAgents(text, sources) {
-        console.log('Lancement des 4 agents IA Otto...');
+        console.log('🤖 Lancement des 4 agents Otto...');
 
         const [factCheck, sourceAnalysis, contextAnalysis, freshnessAnalysis] = await Promise.all([
             this.factChecker(text, sources),
@@ -370,7 +370,7 @@ Identify recent vs outdated information. Return JSON only.`;
             this.freshnessDetector(text, sources)
         ]);
 
-        console.log('Agents IA Otto terminés:');
+        console.log('✅ Agents Otto terminés:');
         console.log(`   Fact Checker: ${factCheck.verified_claims?.length || 0} vérifiées, ${factCheck.unverified_claims?.length || 0} non vérifiées`);
         console.log(`   Source Analyst: ${sourceAnalysis.real_sources?.length || 0} réelles, ${sourceAnalysis.fake_sources?.length || 0} fake`);
         console.log(`   Context Guardian: ${contextAnalysis.omissions?.length || 0} omissions`);
@@ -385,7 +385,7 @@ Identify recent vs outdated information. Return JSON only.`;
     }
 }
 
-// ========== SYSTÈME DE FACT-CHECKING DE BASE - INCHANGÉ ==========
+// ========== FACT-CHECKING CLASSIQUE ==========
 
 class ImprovedFactChecker {
     constructor() {
@@ -474,7 +474,7 @@ class ImprovedFactChecker {
             })));
         }
 
-        console.log(`Claims extraits: ${claims.length}`);
+        console.log(`📋 Claims extraits: ${claims.length}`);
         return claims;
     }
 
@@ -658,12 +658,12 @@ class ImprovedFactChecker {
         let contradictingHigh = sources.filter(s => s.contradicts && s.credibilityMultiplier > 0.8).length;
 
         if (supportingHigh > 0) {
-    qualityScore += supportingHigh * 0.20;  // +5%
-} else if (supportingAny >= 3) {
-    qualityScore += 0.15;  // Bonus si 3+ sources confirment
-} else if (supportingAny > 0) {
-    qualityScore += supportingAny * 0.08;
-}
+            qualityScore += supportingHigh * 0.20;
+        } else if (supportingAny >= 3) {
+            qualityScore += 0.15;
+        } else if (supportingAny > 0) {
+            qualityScore += supportingAny * 0.08;
+        }
 
         if (contradictingHigh > 0) {
             qualityScore -= contradictingHigh * 0.08;
@@ -780,7 +780,7 @@ class ImprovedFactChecker {
         let confidence = 0;
         const reasoning = [];
 
-        console.log(`Calcul du score équilibré...`);
+        console.log(`📊 Calcul du score équilibré...`);
 
         const contentType = this.analyzeContentType(originalText, claims);
         totalScore += contentType.baseScore;
@@ -805,24 +805,36 @@ class ImprovedFactChecker {
             reasoning.push(contextBonus.reasoning);
         }
 
-        // SCORING DYNAMIQUE BASÉ SUR LES SOURCES
-const baseConfidence = contentType.baseScore;
-const sourceBonus = sourceEval.impact;
-const consensusBonus = consensus.bonus;
-const contextBonusValue = contextBonus.bonus;
+        // SCORING DYNAMIQUE
+        const baseConfidence = contentType.baseScore;
+        const sourceBonus = sourceEval.impact;
+        const consensusBonus = consensus.bonus;
+        const contextBonusValue = contextBonus.bonus;
 
-// Score final adaptatif
-let finalScore = baseConfidence + sourceBonus + consensusBonus + contextBonusValue;
+        let finalScore = baseConfidence + sourceBonus + consensusBonus + contextBonusValue;
 
-// Ajustements selon qualité sources
-const tier1Count = analyzedSources.filter(s => s.credibilityTier === 'tier1').length;
-const supportingHigh = analyzedSources.filter(s => s.actuallySupports && s.credibilityMultiplier > 0.8).length;
+        const tier1Count = analyzedSources.filter(s => s.credibilityTier === 'tier1').length;
+        const supportingHigh = analyzedSources.filter(s => s.actuallySupports && s.credibilityMultiplier > 0.8).length;
 
-if (tier1Count >= 3 && supportingHigh >= 2) {
-    finalScore = Math.min(0.95, finalScore + 0.10); // Boost si sources excellentes
-}
+        if (tier1Count >= 3 && supportingHigh >= 2) {
+            finalScore = Math.min(0.95, finalScore + 0.10);
+        }
 
-finalScore = Math.max(0.25, Math.min(0.95, finalScore));
+        finalScore = Math.max(0.25, Math.min(0.95, finalScore));
+
+        // ✅ RETURN AJOUTÉ (c'était le bug!)
+        return {
+            score: finalScore,
+            confidence: Math.min(1.0, confidence),
+            reasoning: reasoning.join(' '),
+            details: {
+                contentType: contentType.type,
+                baseScore: contentType.baseScore,
+                sourceImpact: sourceEval.impact,
+                consensusBonus: consensus.bonus,
+                contextBonus: contextBonus.bonus
+            }
+        };
     }
 
     calculateSemanticSimilarity(text1, text2) {
@@ -888,7 +900,7 @@ async function analyzeSourcesWithImprovedLogic(factChecker, originalText, source
             });
             
         } catch (error) {
-            console.error(`Erreur analyse source ${source.url}:`, error.message);
+            console.error(`❌ Erreur analyse source ${source.url}:`, error.message);
             
             const credibility = factChecker.getSourceCredibilityTier(source.url);
             analyzedSources.push({
@@ -938,7 +950,7 @@ function extractMainKeywords(text) {
         return [...new Set(keywords)].filter(k => k && k.length > 2).slice(0, 6);
         
     } catch (e) {
-        console.error('Erreur extraction keywords:', e.message);
+        console.error('❌ Erreur extraction keywords:', e.message);
         return [];
     }
 }
@@ -948,7 +960,7 @@ async function findWebSources(keywords, smartQueries, originalText) {
     const SEARCH_ENGINE_ID = process.env.SEARCH_ENGINE_ID;
 
     if (!API_KEY || !SEARCH_ENGINE_ID) {
-        console.log('API credentials manquantes - sources mock');
+        console.log('⚠️ API credentials manquantes - sources mock');
         return [
             {
                 title: "Wikipedia - Source de référence",
@@ -989,7 +1001,7 @@ async function findWebSources(keywords, smartQueries, originalText) {
                 
                 await new Promise(resolve => setTimeout(resolve, 300));
             } catch (error) {
-                console.error(`Erreur recherche pour "${query}":`, error.message);
+                console.error(`❌ Erreur recherche pour "${query}":`, error.message);
             }
         }
     }
@@ -1013,7 +1025,7 @@ async function findWebSources(keywords, smartQueries, originalText) {
                 allSources.push(...sources);
             }
         } catch (error) {
-            console.error('Erreur recherche fallback:', error.message);
+            console.error('❌ Erreur recherche fallback:', error.message);
         }
     }
     
@@ -1029,7 +1041,7 @@ async function findWebSources(keywords, smartQueries, originalText) {
         }
     }
     
-    console.log(`${uniqueSources.length} sources uniques trouvées`);
+    console.log(`🔍 ${uniqueSources.length} sources uniques trouvées`);
     return uniqueSources;
 }
 
@@ -1058,10 +1070,10 @@ function calculateRelevance(item, originalText) {
     
     if (url.includes('reddit') || url.includes('forum')) score -= 0.15;
     
-const finalScore = Math.max(0.25, Math.min(0.95, totalScore));
+    return Math.max(0.1, Math.min(1.0, score));
 }
 
-// ========== GESTION UTILISATEURS ET LIMITES ==========
+// ========== GESTION UTILISATEURS ==========
 
 async function getUserByEmail(email) {
     const client = await pool.connect();
@@ -1080,7 +1092,6 @@ async function checkAndResetCounters(user) {
         const today = now.toISOString().split('T')[0];
         const lastCheckDate = user.last_check_date || '';
         
-        // Reset compteurs quotidiens si nouvelle journée
         if (lastCheckDate !== today) {
             await client.query(
                 'UPDATE users SET daily_checks_used = 0, daily_otto_analysis = 0, last_check_date = $1 WHERE id = $2',
@@ -1090,12 +1101,10 @@ async function checkAndResetCounters(user) {
             user.daily_otto_analysis = 0;
         }
         
-        // Reset compteur hebdomadaire Otto FREE (lundi 00h00)
         if (user.plan === 'free') {
             const lastWeeklyReset = user.weekly_reset_date ? new Date(user.weekly_reset_date) : null;
-            const currentDayOfWeek = now.getDay(); // 0 = dimanche, 1 = lundi
+            const currentDayOfWeek = now.getDay();
             
-            // Si c'est lundi et pas encore reset cette semaine
             if (currentDayOfWeek === 1 && (!lastWeeklyReset || lastWeeklyReset.toISOString().split('T')[0] !== today)) {
                 await client.query(
                     'UPDATE users SET weekly_otto_analysis = 0, weekly_reset_date = $1 WHERE id = $2',
@@ -1114,11 +1123,7 @@ async function checkAndResetCounters(user) {
 async function checkVerificationLimit(userId) {
     const client = await pool.connect();
     try {
-        const result = await client.query(
-            'SELECT * FROM users WHERE id = $1', 
-            [userId]
-        );
-        
+        const result = await client.query('SELECT * FROM users WHERE id = $1', [userId]);
         if (!result.rows[0]) return { allowed: false, remaining: 0 };
         
         let user = result.rows[0];
@@ -1146,11 +1151,7 @@ async function checkVerificationLimit(userId) {
 async function checkOttoLimit(userId) {
     const client = await pool.connect();
     try {
-        const result = await client.query(
-            'SELECT * FROM users WHERE id = $1', 
-            [userId]
-        );
-        
+        const result = await client.query('SELECT * FROM users WHERE id = $1', [userId]);
         if (!result.rows[0]) return { allowed: false, remaining: 0 };
         
         let user = result.rows[0];
@@ -1161,21 +1162,18 @@ async function checkOttoLimit(userId) {
         const limits = PLAN_LIMITS[user.plan] || PLAN_LIMITS.free;
         
         if (user.plan === 'free') {
-            // FREE: 1 Otto par semaine
             const weeklyLimit = limits.weeklyOtto;
             if (user.weekly_otto_analysis >= weeklyLimit) {
                 return { allowed: false, remaining: 0, plan: user.plan, resetType: 'weekly' };
             }
             return { allowed: true, remaining: weeklyLimit - user.weekly_otto_analysis, plan: user.plan, resetType: 'weekly' };
         } else if (user.plan === 'starter') {
-            // STARTER: 5 Otto par jour
             const dailyLimit = limits.dailyOtto;
             if (user.daily_otto_analysis >= dailyLimit) {
                 return { allowed: false, remaining: 0, plan: user.plan, resetType: 'daily' };
             }
             return { allowed: true, remaining: dailyLimit - user.daily_otto_analysis, plan: user.plan, resetType: 'daily' };
         } else {
-            // PRO & BUSINESS: Otto illimité
             return { allowed: true, remaining: Infinity, plan: user.plan, resetType: 'none' };
         }
     } finally {
@@ -1230,10 +1228,10 @@ app.post('/auth/signup', async (req, res) => {
         );
         client.release();
         
-        console.log(`Nouveau compte FREE créé: ${email}`);
+        console.log(`✅ Nouveau compte FREE créé: ${email}`);
         res.json({ success: true, user: result.rows[0] });
     } catch (error) {
-        console.error('Erreur signup:', error);
+        console.error('❌ Erreur signup:', error);
         res.status(500).json({ success: false, error: 'Erreur serveur' });
     }
 });
@@ -1249,22 +1247,22 @@ app.post('/auth/login', async (req, res) => {
         const validPassword = await bcrypt.compare(password, user.password_hash);
         if (!validPassword) return res.status(401).json({ success: false, error: 'Email ou mot de passe incorrect' });
         
-        console.log(`Connexion: ${email} (${user.plan})`);
+        console.log(`✅ Connexion: ${email} (${user.plan})`);
         res.json({ success: true, user: { id: user.id, email: user.email, plan: user.plan, role: user.role } });
     } catch (error) {
-        console.error('Erreur login:', error);
+        console.error('❌ Erreur login:', error);
         res.status(500).json({ success: false, error: 'Erreur serveur' });
     }
 });
 
-// ROUTE VÉRIFICATION CLASSIQUE (INCHANGÉE)
+// ========== ROUTE VÉRIFICATION CLASSIQUE ==========
 app.post('/verify', async (req, res) => {
     try {
         const { text, smartQueries, userEmail } = req.body;
         
         console.log(`\n=== VÉRIFICATION CLASSIQUE ===`);
-        console.log(`Texte: "${text.substring(0, 80)}..."`);
-        console.log(`User: ${userEmail || 'anonymous'}`);
+        console.log(`📝 Texte: "${text.substring(0, 80)}..."`);
+        console.log(`👤 User: ${userEmail || 'anonymous'}`);
         
         if (!text || text.length < 10) {
             return res.json({ 
@@ -1297,7 +1295,7 @@ app.post('/verify', async (req, res) => {
                         plan: userPlan
                     });
                 }
-                console.log(`Plan: ${userPlan} | Restant: ${limitCheck.remaining}`);
+                console.log(`📊 Plan: ${userPlan} | Restant: ${limitCheck.remaining}`);
             }
         }
         
@@ -1322,13 +1320,13 @@ app.post('/verify', async (req, res) => {
             userPlan: userPlan
         };
         
-        console.log(`Score équilibré: ${Math.round(result.score * 100)}%`);
-        console.log(`${analyzedSources.length} sources | ${claims.length} claims`);
+        console.log(`✅ Score: ${Math.round(result.score * 100)}%`);
+        console.log(`📚 ${analyzedSources.length} sources | ${claims.length} claims`);
         
         res.json(response);
         
     } catch (error) {
-        console.error('Erreur analyse:', error);
+        console.error('❌ Erreur analyse:', error);
         res.status(500).json({ 
             overallConfidence: 0.20,
             scoringExplanation: "Erreur système (20%) - Impossible de terminer l'analyse.",
@@ -1338,14 +1336,14 @@ app.post('/verify', async (req, res) => {
     }
 });
 
-// NOUVELLE ROUTE : ANALYSE OTTO (APPROFONDIE)
+// ========== ROUTE ANALYSE OTTO (APPROFONDIE) ==========
 app.post('/verify-otto', async (req, res) => {
     try {
         const { text, smartQueries, userEmail } = req.body;
         
         console.log(`\n=== ANALYSE OTTO ===`);
-        console.log(`Texte: "${text.substring(0, 80)}..."`);
-        console.log(`User: ${userEmail || 'anonymous'}`);
+        console.log(`📝 Texte: "${text.substring(0, 80)}..."`);
+        console.log(`👤 User: ${userEmail || 'anonymous'}`);
         
         if (!text || text.length < 10) {
             return res.json({ 
@@ -1369,7 +1367,6 @@ app.post('/verify-otto', async (req, res) => {
             });
         }
         
-        // Vérifier limite Otto
         const ottoLimit = await checkOttoLimit(user.id);
         if (!ottoLimit.allowed) {
             const message = user.plan === 'free' 
@@ -1386,9 +1383,8 @@ app.post('/verify-otto', async (req, res) => {
             });
         }
         
-        console.log(`Plan: ${user.plan} | Otto restant: ${ottoLimit.remaining}`);
+        console.log(`📊 Plan: ${user.plan} | Otto restant: ${ottoLimit.remaining}`);
         
-        // Récupérer sources
         const factChecker = new ImprovedFactChecker();
         const keywords = extractMainKeywords(text);
         const sources = await findWebSources(keywords, smartQueries, text);
@@ -1400,14 +1396,11 @@ app.post('/verify-otto', async (req, res) => {
             });
         }
         
-        // Lancer les 4 agents Otto
         const aiAgents = new AIAgentsService();
         const ottoResults = await aiAgents.runAllAgents(text, sources);
         
-        // Incrémenter compteur Otto
         await incrementOttoCount(user.id, user.plan);
         
-        // Calculer niveau de risque global
         const avgScore = (
             (ottoResults.fact_checker.score || 50) +
             (ottoResults.source_analyst.score || 50) +
@@ -1419,7 +1412,6 @@ app.post('/verify-otto', async (req, res) => {
         if (avgScore < 40) riskLevel = 'ÉLEVÉ';
         else if (avgScore < 65) riskLevel = 'MOYEN';
         
-        // Message personnalisé Otto (1ère personne)
         let ottoMessage = '';
         if (riskLevel === 'ÉLEVÉ') {
             ottoMessage = "J'ai détecté plusieurs problèmes critiques dans ce contenu. Je recommande une vérification approfondie avant utilisation.";
@@ -1441,12 +1433,12 @@ app.post('/verify-otto', async (req, res) => {
             userPlan: user.plan
         };
         
-        console.log(`Otto terminé: Risque ${riskLevel} | Score global: ${Math.round(avgScore)}%`);
+        console.log(`✅ Otto terminé: Risque ${riskLevel} | Score: ${Math.round(avgScore)}%`);
         
         res.json(response);
         
     } catch (error) {
-        console.error('Erreur analyse Otto:', error);
+        console.error('❌ Erreur analyse Otto:', error);
         res.status(500).json({ 
             success: false,
             error: "Erreur système lors de l'analyse Otto"
@@ -1454,13 +1446,13 @@ app.post('/verify-otto', async (req, res) => {
     }
 });
 
-// AUTRES ROUTES (INCHANGÉES)
+// ========== AUTRES ROUTES ==========
 
 app.post('/subscribe', async (req, res) => {
     try {
         const { email, name, source } = req.body;
         
-        console.log(`Nouvelle inscription email:`);
+        console.log(`📧 Nouvelle inscription email:`);
         console.log(`   Email: ${email}`);
         console.log(`   Nom: ${name || 'Non fourni'}`);
         console.log(`   Source: ${source || 'unknown'}`);
@@ -1493,7 +1485,7 @@ app.post('/subscribe', async (req, res) => {
             );
             
             if (existingUser.rows.length > 0) {
-                console.log(`Email déjà existant: ${sanitizedEmail}`);
+                console.log(`⚠️ Email déjà existant: ${sanitizedEmail}`);
                 
                 return res.json({ 
                     success: true, 
@@ -1507,7 +1499,7 @@ app.post('/subscribe', async (req, res) => {
                 [sanitizedEmail, sanitizedName, sanitizedSource]
             );
             
-            console.log(`Nouvel abonné enregistré: ${sanitizedEmail} (source: ${sanitizedSource})`);
+            console.log(`✅ Nouvel abonné: ${sanitizedEmail} (${sanitizedSource})`);
             
             res.json({ 
                 success: true, 
@@ -1520,7 +1512,7 @@ app.post('/subscribe', async (req, res) => {
         }
         
     } catch (error) {
-        console.error('Erreur subscription:', error);
+        console.error('❌ Erreur subscription:', error);
         
         if (error.message.includes('column')) {
             try {
@@ -1531,10 +1523,10 @@ app.post('/subscribe', async (req, res) => {
                 );
                 client.release();
                 
-                console.log(`Email enregistré (mode simple): ${email}`);
+                console.log(`✅ Email enregistré (mode simple): ${email}`);
                 return res.json({ success: true, message: 'Subscribed' });
             } catch (err2) {
-                console.error('Erreur insertion simple:', err2);
+                console.error('❌ Erreur insertion simple:', err2);
             }
         }
         
@@ -1570,7 +1562,7 @@ app.get('/check-email', async (req, res) => {
         }
         
     } catch (error) {
-        console.error('Erreur check email:', error);
+        console.error('❌ Erreur check email:', error);
         res.status(500).json({ error: 'Erreur serveur' });
     }
 });
@@ -1586,18 +1578,18 @@ app.post('/feedback', async (req, res) => {
         );
         client.release();
         
-        console.log(`Feedback: ${isUseful ? 'Utile' : 'Pas utile'} - Score: ${scoreGiven}`);
+        console.log(`📝 Feedback: ${isUseful ? 'Utile' : 'Pas utile'} - Score: ${scoreGiven}`);
         res.json({ success: true });
         
     } catch (err) {
-        console.error('Erreur feedback:', err);
+        console.error('❌ Erreur feedback:', err);
         res.status(500).json({ error: 'Erreur serveur' });
     }
 });
 
 app.post('/stripe/webhook', async (req, res) => {
     if (!stripe || !STRIPE_WEBHOOK_SECRET) {
-        console.warn('Stripe non configuré');
+        console.warn('⚠️ Stripe non configuré');
         return res.status(400).send('Stripe not configured');
     }
 
@@ -1607,11 +1599,11 @@ app.post('/stripe/webhook', async (req, res) => {
     try {
         event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
     } catch (err) {
-        console.error('Webhook error:', err.message);
+        console.error('❌ Webhook error:', err.message);
         return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    console.log(`\nStripe Event: ${event.type}`);
+    console.log(`\n💳 Stripe Event: ${event.type}`);
 
     try {
         if (event.type === 'checkout.session.completed') {
@@ -1620,11 +1612,11 @@ app.post('/stripe/webhook', async (req, res) => {
             const amountPaid = session.amount_total / 100;
 
             if (!customerEmail) {
-                console.error('Email manquant');
+                console.error('❌ Email manquant');
                 return res.json({ received: true });
             }
 
-            console.log(`Paiement: ${customerEmail} - ${amountPaid}€`);
+            console.log(`💰 Paiement: ${customerEmail} - ${amountPaid}€`);
 
             let planType = 'starter';
             if (amountPaid >= 119) planType = 'business';
@@ -1635,7 +1627,7 @@ app.post('/stripe/webhook', async (req, res) => {
             const userResult = await client.query('SELECT id FROM users WHERE email = $1', [customerEmail.toLowerCase()]);
 
             if (userResult.rows.length === 0) {
-                console.error(`User non trouvé: ${customerEmail}`);
+                console.error(`❌ User non trouvé: ${customerEmail}`);
                 client.release();
                 return res.json({ received: true });
             }
@@ -1651,7 +1643,7 @@ app.post('/stripe/webhook', async (req, res) => {
             );
             client.release();
 
-            console.log(`${customerEmail} upgradé vers ${planType.toUpperCase()}`);
+            console.log(`✅ ${customerEmail} upgradé vers ${planType.toUpperCase()}`);
         }
 
         if (event.type === 'customer.subscription.deleted') {
@@ -1662,12 +1654,12 @@ app.post('/stripe/webhook', async (req, res) => {
                 [subscription.id]
             );
             client.release();
-            console.log(`Abonnement annulé → FREE`);
+            console.log(`❌ Abonnement annulé → FREE`);
         }
 
         res.json({ received: true });
     } catch (error) {
-        console.error('Webhook error:', error);
+        console.error('❌ Webhook error:', error);
         res.status(500).json({ error: 'Webhook failed' });
     }
 });
@@ -1699,7 +1691,7 @@ app.get('/admin/users', async (req, res) => {
         
         res.json({ success: true, users: result.rows, stats: stats });
     } catch (error) {
-        console.error('Erreur admin/users:', error);
+        console.error('❌ Erreur admin/users:', error);
         res.status(500).json({ error: 'Erreur serveur' });
     }
 });
@@ -1713,10 +1705,10 @@ app.post('/admin/upgrade-user', async (req, res) => {
         await client.query('UPDATE users SET plan = $1, updated_at = NOW() WHERE email = $2', [plan, userEmail.toLowerCase()]);
         client.release();
         
-        console.log(`${userEmail} → ${plan} (par admin)`);
+        console.log(`✅ ${userEmail} → ${plan} (par admin)`);
         res.json({ success: true, message: `${userEmail} upgradé vers ${plan}` });
     } catch (error) {
-        console.error('Erreur upgrade:', error);
+        console.error('❌ Erreur upgrade:', error);
         res.status(500).json({ error: 'Erreur serveur' });
     }
 });
@@ -1730,10 +1722,10 @@ app.delete('/admin/delete-user', async (req, res) => {
         await client.query('DELETE FROM users WHERE email = $1', [userEmail.toLowerCase()]);
         client.release();
         
-        console.log(`${userEmail} supprimé`);
+        console.log(`✅ ${userEmail} supprimé`);
         res.json({ success: true, message: `${userEmail} supprimé` });
     } catch (error) {
-        console.error('Erreur suppression:', error);
+        console.error('❌ Erreur suppression:', error);
         res.status(500).json({ error: 'Erreur serveur' });
     }
 });
@@ -1741,7 +1733,7 @@ app.delete('/admin/delete-user', async (req, res) => {
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
-        version: 'VERIFYAI-OTTO-v1.0',
+        version: 'VERIFYAI-OTTO-v1.1-FIXED',
         plans: [
             'FREE (3 vérif/jour + 1 Otto/semaine)', 
             'STARTER (10 vérif/jour + 5 Otto/jour)', 
@@ -1749,7 +1741,7 @@ app.get('/health', (req, res) => {
             'BUSINESS (illimité + Otto illimité)'
         ],
         features: [
-            'balanced_scoring', 
+            'balanced_scoring_fixed', 
             'contextual_analysis', 
             'auth', 
             'stripe_webhook', 
@@ -1790,9 +1782,8 @@ const initDb = async () => {
             CREATE INDEX IF NOT EXISTS idx_users_plan ON users(plan);
         `);
         
-        console.log('Table users créée/mise à jour');
+        console.log('✅ Table users créée/mise à jour');
         
-        // Ajouter colonnes Otto si manquantes
         try {
             await client.query(`
                 ALTER TABLE users 
@@ -1800,9 +1791,9 @@ const initDb = async () => {
                 ADD COLUMN IF NOT EXISTS weekly_otto_analysis INT DEFAULT 0,
                 ADD COLUMN IF NOT EXISTS weekly_reset_date DATE DEFAULT CURRENT_DATE;
             `);
-            console.log('Colonnes Otto ajoutées');
+            console.log('✅ Colonnes Otto ajoutées');
         } catch (err) {
-            console.log('Colonnes Otto déjà présentes ou erreur:', err.message);
+            console.log('⚠️ Colonnes Otto déjà présentes ou erreur:', err.message);
         }
         
         const adminExists = await client.query('SELECT id FROM users WHERE email = $1', [ADMIN_EMAIL]);
@@ -1814,9 +1805,9 @@ const initDb = async () => {
                  VALUES ($1, $2, 'admin', 'business')`,
                 [ADMIN_EMAIL, adminPassword]
             );
-            console.log(`Compte ADMIN créé: ${ADMIN_EMAIL}`);
-            console.log(`Mot de passe par défaut: Admin2025!`);
-            console.log(`CHANGE CE MOT DE PASSE IMMÉDIATEMENT`);
+            console.log(`✅ Compte ADMIN créé: ${ADMIN_EMAIL}`);
+            console.log(`🔑 Mot de passe par défaut: Admin2025!`);
+            console.log(`⚠️ CHANGE CE MOT DE PASSE IMMÉDIATEMENT`);
         }
         
         await client.query(`
@@ -1844,35 +1835,43 @@ const initDb = async () => {
             CREATE INDEX IF NOT EXISTS idx_emails_created ON emails(created_at);
         `);
         
-        console.log('Table emails vérifiée/créée');
+        console.log('✅ Table emails vérifiée/créée');
         
         client.release();
-        console.log('Database ready (users + feedback + emails + Otto columns)');
+        console.log('✅ Database ready');
     } catch (err) {
-        console.error('Database error:', err.message);
+        console.error('❌ Database error:', err.message);
     }
 };
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`\n=== VERIFYAI avec OTTO ===`);
-    console.log(`Port: ${PORT}`);
-    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`Google API: ${!!process.env.GOOGLE_API_KEY ? 'OK' : 'MANQUANT'}`);
-    console.log(`OpenAI API: ${!!process.env.OPENAI_API_KEY ? 'OK' : 'MANQUANT'}`);
-    console.log(`Stripe: ${!!stripe ? 'OK' : 'MANQUANT'}`);
-    console.log(`Webhook Secret: ${!!STRIPE_WEBHOOK_SECRET ? 'OK' : 'MANQUANT'}`);
-    console.log(`Database: ${!!process.env.DATABASE_URL ? 'OK' : 'MANQUANT'}`);
-    console.log(`Admin: ${ADMIN_EMAIL}`);
-    console.log(`\nPlans disponibles:`);
+    console.log(`\n╔═══════════════════════════════════════╗`);
+    console.log(`║  VERIFYAI avec OTTO - v1.1 FIXED     ║`);
+    console.log(`╚═══════════════════════════════════════╝`);
+    console.log(`\n🚀 Serveur démarré:`);
+    console.log(`   Port: ${PORT}`);
+    console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`\n🔑 API Status:`);
+    console.log(`   Google API: ${!!process.env.GOOGLE_API_KEY ? '✅ OK' : '❌ MANQUANT'}`);
+    console.log(`   OpenAI API: ${!!process.env.OPENAI_API_KEY ? '✅ OK' : '❌ MANQUANT'}`);
+    console.log(`   Stripe: ${!!stripe ? '✅ OK' : '❌ MANQUANT'}`);
+    console.log(`   Webhook Secret: ${!!STRIPE_WEBHOOK_SECRET ? '✅ OK' : '❌ MANQUANT'}`);
+    console.log(`   Database: ${!!process.env.DATABASE_URL ? '✅ OK' : '❌ MANQUANT'}`);
+    console.log(`\n👤 Admin: ${ADMIN_EMAIL}`);
+    console.log(`\n📋 Plans disponibles:`);
     console.log(`   FREE: 3 vérif/jour + 1 Otto/semaine`);
     console.log(`   STARTER: 10 vérif/jour + 5 Otto/jour (14.99€)`);
     console.log(`   PRO: 30 vérif/jour + Otto illimité (39.99€)`);
     console.log(`   BUSINESS: Illimité + Otto illimité (119.99€)`);
-    console.log(`\nNouvelles routes:`);
-    console.log(`   POST /verify - Vérification classique`);
-    console.log(`   POST /verify-otto - Analyse Otto approfondie`);
+    console.log(`\n🛣️  Routes disponibles:`);
+    console.log(`   POST /verify - Vérification classique (AUTO)`);
+    console.log(`   POST /verify-otto - Analyse Otto (COLLER)`);
+    console.log(`   POST /auth/signup - Inscription`);
+    console.log(`   POST /auth/login - Connexion`);
     console.log(`   POST /stripe/webhook - Paiements Stripe`);
+    console.log(`   GET  /health - Status serveur`);
+    console.log(`\n✅ BUG CORRIGÉ: calculateBalancedScore() retourne maintenant un objet valide`);
     console.log(`==========================================\n`);
     initDb();
 });
