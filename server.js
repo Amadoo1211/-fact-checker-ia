@@ -42,12 +42,105 @@ const PLAN_LIMITS = {
     }
 };
 
+// ========= UTILITAIRES DE LANGUE =========
+
+function normalizeLang(lang) {
+    if (!lang || typeof lang !== 'string') {
+        return null;
+    }
+    const lowered = lang.toLowerCase();
+    if (lowered.startsWith('fr')) return 'fr';
+    if (lowered.startsWith('en')) return 'en';
+    return null;
+}
+
+function detectLanguageFromText(text = '') {
+    if (!text) return 'en';
+    const lower = text.toLowerCase();
+    const accentRegex = /[àâäçéèêëîïôöùûüÿœ]/i;
+    const frenchIndicators = [' selon ', ' croissance ', ' rapport ', ' données ', ' année ', 'source'];
+    const englishIndicators = [' according to ', ' growth ', ' report ', ' data ', ' year '];
+
+    const frenchScore = frenchIndicators.reduce((score, word) => score + (lower.includes(word) ? 1 : 0), 0) + (accentRegex.test(text) ? 2 : 0);
+    const englishScore = englishIndicators.reduce((score, word) => score + (lower.includes(word) ? 1 : 0), 0);
+
+    if (frenchScore === englishScore) {
+        return accentRegex.test(text) ? 'fr' : 'en';
+    }
+
+    return frenchScore > englishScore ? 'fr' : 'en';
+}
+
 // ========== 4 AGENTS IA (OTTO) ==========
 
 class AIAgentsService {
     constructor() {
         this.apiKey = process.env.OPENAI_API_KEY;
         this.model = 'gpt-4o-mini';
+        this.defaultFallbackScore = 60;
+        this.parseFallbackScore = 70;
+        this.languageStrings = {
+            fr: {
+                globalInstruction: 'Analyse le texte ci-dessous pour détecter les hallucinations, vérifier la fiabilité et les sources. Fournis un rapport structuré en français.',
+                agentUnavailable: 'Agent non disponible.',
+                parseError: "Impossible d'interpréter la réponse de l'agent.",
+                summaryHigh: 'Otto dit : Mon analyse montre un contenu globalement fiable.',
+                summaryMedium: 'Otto dit : Mon analyse détecte quelques signaux à surveiller.',
+                summaryLow: 'Otto dit : Mon analyse révèle plusieurs incohérences importantes.',
+                quickFallback: 'Analyse rapide indisponible.',
+                quickPrompt: 'Donne un score de fiabilité global (0-100) et une explication courte en français.',
+                quickSummaryKey: 'explication',
+                riskLevels: { low: 'Faible', medium: 'Modéré', high: 'Élevé' },
+                recommendations: {
+                    low: 'Convient pour usage professionnel.',
+                    medium: 'Relecture humaine recommandée.',
+                    high: 'Vérification approfondie nécessaire avant diffusion.'
+                },
+                ottoMessage: 'Analyse complète effectuée avec 5 agents Otto.',
+                aiNotesFallback: "Analyse d'origine IA indisponible."
+            },
+            en: {
+                globalInstruction: 'Analyze the text below for hallucinations, reliability, and sources. Provide a structured report in English.',
+                agentUnavailable: 'Agent unavailable.',
+                parseError: 'Unable to parse agent response.',
+                summaryHigh: 'Otto says: My analysis shows the content is largely reliable.',
+                summaryMedium: 'Otto says: My analysis flags a few elements that need attention.',
+                summaryLow: 'Otto says: My analysis reveals several critical inconsistencies.',
+                quickFallback: 'Quick analysis unavailable.',
+                quickPrompt: 'Provide an overall reliability score (0-100) and a short explanation in English.',
+                quickSummaryKey: 'explanation',
+                riskLevels: { low: 'Low', medium: 'Moderate', high: 'High' },
+                recommendations: {
+                    low: 'Suitable for professional use.',
+                    medium: 'Human review recommended.',
+                    high: 'Thorough verification required before distribution.'
+                },
+                ottoMessage: 'Full analysis completed with 5 Otto agents.',
+                aiNotesFallback: 'AI origin analysis unavailable.'
+            }
+        };
+        this.ottoPersona = {
+            fr: "Tu es Otto, un auditeur d'études B2B. Ton rôle est d’évaluer la fiabilité du contenu. Sois neutre, précis, factuel et professionnel. Écris toujours dans la langue détectée du texte. Otto ne doit jamais donner d’avis subjectif.",
+        };
+        this.ottoPersona.en = 'You are Otto, a B2B study auditor. Your role is to evaluate content reliability. Stay neutral, precise, factual, and professional. Always respond in the detected language. Otto must never provide subjective opinions.';
+    }
+
+    localize(lang, key) {
+        const normalized = normalizeLang(lang) || 'en';
+        return this.languageStrings[normalized][key] || this.languageStrings.en[key];
+    }
+
+    resolveLanguage(preferredLang, text) {
+        return normalizeLang(preferredLang) || detectLanguageFromText(text);
+    }
+
+    getOttoPersonaPrompt(lang) {
+        const normalized = normalizeLang(lang) || 'en';
+        return this.ottoPersona[normalized] || this.ottoPersona.en;
+    }
+
+    getGlobalInstruction(lang) {
+        return this.localize(lang, 'globalInstruction');
     }
 
     async callOpenAI(systemPrompt, userPrompt, maxTokens = 500) {
@@ -87,303 +180,486 @@ class AIAgentsService {
         }
     }
 
-    async factChecker(text, sources) {
-        const systemPrompt = `You are an expert fact-checker. Analyze the text and identify:
-1. VERIFIED claims (with proof from sources)
-2. UNVERIFIED/FALSE claims (with explanation why)
-3. Overall confidence score (0-100)
-
-Return ONLY valid JSON:
-{
-  "score": 75,
-  "verified_claims": [
-    {"claim": "exact quote", "status": "verified", "source": "source name", "confidence": 95}
-  ],
-  "unverified_claims": [
-    {"claim": "exact quote", "status": "false", "reason": "why it's false or unverified"}
-  ],
-  "summary": "brief overall assessment"
-}`;
-
-        const sourcesText = sources.slice(0, 3).map(s => 
-            `Source: ${s.title}\nURL: ${s.url}\n${s.snippet}`
-        ).join('\n\n---\n\n');
-
-        const userPrompt = `Analyze this text and extract specific claims:
-
-TEXT TO VERIFY:
-"${text.substring(0, 1200)}"
-
-SOURCES AVAILABLE:
-${sourcesText}
-
-Identify specific factual claims (statistics, dates, names, events) and verify each one against the sources. Return JSON only.`;
-
-        const result = await this.callOpenAI(systemPrompt, userPrompt, 600);
-        
-        if (!result) {
-            return {
-                score: 50,
-                verified_claims: [],
-                unverified_claims: [{ claim: "Analysis unavailable", status: "unavailable", reason: "OpenAI API not configured" }],
-                summary: "Agent unavailable"
-            };
+    clampScore(value, fallback) {
+        if (typeof value === 'number' && !Number.isNaN(value)) {
+            return Math.max(0, Math.min(100, Math.round(value)));
         }
+        return fallback;
+    }
 
+    parseJsonFromResponse(result) {
+        if (!result) return null;
+        const jsonMatch = result.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) return null;
         try {
-            const jsonMatch = result.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                const parsed = JSON.parse(jsonMatch[0]);
-                if (!parsed.verified_claims) parsed.verified_claims = [];
-                if (!parsed.unverified_claims) parsed.unverified_claims = [];
-                if (!parsed.score) parsed.score = 50;
-                return parsed;
-            }
-            return { 
-                score: 50, 
-                verified_claims: [], 
-                unverified_claims: [{ claim: result.substring(0, 150), status: "error", reason: "Could not parse response" }],
-                summary: "Parsing error"
-            };
-        } catch (e) {
-            console.error('Parse error fact_checker:', e);
-            return { 
-                score: 50, 
-                verified_claims: [], 
-                unverified_claims: [{ claim: "Parse error", status: "error", reason: e.message }],
-                summary: "Error"
-            };
+            return JSON.parse(jsonMatch[0]);
+        } catch (error) {
+            console.error('Parse error JSON:', error.message);
+            return null;
         }
     }
 
-    async sourceAnalyst(text, sources) {
-        const systemPrompt = `You are a source credibility analyst. For each source provided, determine:
-1. If it's a REAL source (exists and is credible)
-2. If it's a FAKE/INVENTED source (doesn't exist or is unreliable)
-3. Overall source quality score (0-100)
-
-Return ONLY valid JSON:
-{
-  "score": 80,
-  "real_sources": [
-    {"citation": "source name", "status": "verified", "url": "url", "credibility": "high/medium/low"}
-  ],
-  "fake_sources": [
-    {"citation": "source name", "status": "not_found", "reason": "why it's fake"}
-  ],
-  "summary": "brief assessment"
-}`;
-
-        const sourcesText = sources.map(s => 
-            `Title: ${s.title}\nURL: ${s.url}\nSnippet: ${s.snippet}`
-        ).join('\n\n---\n\n');
-
-        const userPrompt = `Analyze these sources and determine if they are real and credible:
-
-TEXT CONTEXT:
-"${text.substring(0, 600)}"
-
-SOURCES TO ANALYZE:
-${sourcesText}
-
-Check if sources actually exist, are credible, and support the claims. Return JSON only.`;
-
-        const result = await this.callOpenAI(systemPrompt, userPrompt, 600);
-        
-        if (!result) {
-            return {
-                score: 50,
-                real_sources: sources.map(s => ({ citation: s.title, status: "unknown", url: s.url, credibility: "unknown" })),
-                fake_sources: [],
-                summary: "Agent unavailable"
-            };
+    extractScore(data, rawContent, fallback) {
+        if (data && typeof data.score === 'number') {
+            return this.clampScore(data.score, fallback);
         }
 
-        try {
-            const jsonMatch = result.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                const parsed = JSON.parse(jsonMatch[0]);
-                if (!parsed.real_sources) parsed.real_sources = [];
-                if (!parsed.fake_sources) parsed.fake_sources = [];
-                if (!parsed.score) parsed.score = 50;
-                return parsed;
+        if (typeof data === 'number') {
+            return this.clampScore(data, fallback);
+        }
+
+        if (typeof rawContent === 'string') {
+            const match = rawContent.match(/score[^\d]*(\d{1,3})/i);
+            if (match) {
+                return this.clampScore(parseInt(match[1], 10), fallback);
             }
-            return { 
-                score: 50, 
-                real_sources: [], 
-                fake_sources: [{ citation: "Parse error", status: "error", reason: "Could not parse response" }],
-                summary: "Error"
-            };
-        } catch (e) {
-            console.error('Parse error source_analyst:', e);
-            return { 
-                score: 50, 
-                real_sources: [], 
-                fake_sources: [{ citation: "Error", status: "error", reason: e.message }],
-                summary: "Error"
-            };
         }
+
+        return fallback;
     }
 
-    async contextGuardian(text, sources) {
-        const systemPrompt = `You are a context analysis expert. Identify what important information is MISSING or OMITTED from the text:
-1. Missing temporal context (dates, timeframes)
-2. Missing geographic context
-3. Missing important facts
-4. Context manipulation score (0-100, where 0 = complete, 100 = heavily manipulated)
-
-Return ONLY valid JSON:
-{
-  "context_score": 25,
-  "omissions": [
-    {"type": "temporal/geographic/fact", "description": "what's missing", "importance": "critical/important/minor"}
-  ],
-  "manipulation_detected": true/false,
-  "summary": "brief assessment"
-}`;
-
-        const sourcesText = sources.slice(0, 3).map(s => s.snippet).join('\n');
-
-        const userPrompt = `Analyze what's MISSING from this text:
-
-TEXT:
-"${text.substring(0, 1200)}"
-
-SOURCES FOR CONTEXT:
-${sourcesText}
-
-What important information is omitted? What context is missing? Return JSON only.`;
-
-        const result = await this.callOpenAI(systemPrompt, userPrompt, 500);
-        
-        if (!result) {
-            return {
-                context_score: 50,
-                omissions: [{ type: "unknown", description: "Analysis unavailable", importance: "unknown" }],
-                manipulation_detected: false,
-                summary: "Agent unavailable"
-            };
-        }
-
-        try {
-            const jsonMatch = result.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                const parsed = JSON.parse(jsonMatch[0]);
-                if (!parsed.omissions) parsed.omissions = [];
-                if (!parsed.context_score) parsed.context_score = 50;
-                if (parsed.manipulation_detected === undefined) parsed.manipulation_detected = false;
-                return parsed;
-            }
-            return { 
-                context_score: 50, 
-                omissions: [{ type: "error", description: "Parse error", importance: "unknown" }], 
-                manipulation_detected: false,
-                summary: "Error"
-            };
-        } catch (e) {
-            console.error('Parse error context_guardian:', e);
-            return { 
-                context_score: 50, 
-                omissions: [{ type: "error", description: e.message, importance: "unknown" }], 
-                manipulation_detected: false,
-                summary: "Error"
-            };
-        }
+    buildSourcesText(sources, lang, limit = 3) {
+        const selected = sources.slice(0, limit);
+        const isFrench = normalizeLang(lang) === 'fr';
+        return selected.map(s => {
+            const header = isFrench ? 'Source' : 'Source';
+            return `${header}: ${s.title}\nURL: ${s.url}\n${s.snippet || ''}`;
+        }).join('\n\n---\n\n');
     }
 
-    async freshnessDetector(text, sources) {
-        const systemPrompt = `You are a data freshness analyst. Identify:
-1. Recent data (< 6 months old)
-2. Outdated data (> 18 months old)
-3. Freshness score (0-100, where 100 = very recent)
+    buildFactCheckerPrompts(text, sources, lang) {
+        const instruction = this.getGlobalInstruction(lang);
+        const isFrench = normalizeLang(lang) === 'fr';
+        const schema = `\n{\n  "score": 0-100,\n  "summary": "string",\n  "verified_claims": [\n    {"claim": "text", "source": "source name"}\n  ],\n  "unverified_claims": [\n    {"claim": "text", "reason": "why"}\n  ],\n  "hallucinated_references": [\n    {"reference": "text", "reason": "why it is invented"}\n  ]\n}`;
+        const roleInstruction = isFrench
+            ? "Tu es l'agent Fact Checker. Vérifie chaque affirmation, liste celles confirmées et celles non vérifiées."
+            : 'You are the Fact Checker agent. Verify each claim, listing confirmed and unverified ones.';
+        const systemPrompt = `${instruction}\n${this.getOttoPersonaPrompt(lang)}\n${roleInstruction}\nRespecte strictement le schéma JSON suivant :${schema}`;
 
-Return ONLY valid JSON:
-{
-  "freshness_score": 75,
-  "recent_data": [
-    {"data_point": "what data", "age": "how old", "relevance": "why it matters"}
-  ],
-  "outdated_data": [
-    {"data_point": "what data", "age": "how old", "concern": "why it's a problem"}
-  ],
-  "summary": "brief assessment"
-}`;
+        const userPrompt = `${isFrench ? 'Texte à analyser' : 'Text to verify'}:\n"${text.substring(0, 1800)}"\n\n${isFrench ? 'Sources disponibles' : 'Available sources'}:\n${this.buildSourcesText(sources, lang, 3)}\n\n${isFrench ? 'Liste les hallucinations, omissions ou affirmations inventées. Réponds uniquement en JSON.' : 'List hallucinations, omissions, or invented statements. Return JSON only.'}`;
 
-        const sourcesText = sources.slice(0, 3).map(s => 
-            `${s.title}\n${s.snippet}`
-        ).join('\n\n');
-
-        const userPrompt = `Evaluate data freshness:
-
-TEXT:
-"${text.substring(0, 1200)}"
-
-SOURCES:
-${sourcesText}
-
-Identify recent vs outdated information. Return JSON only.`;
-
-        const result = await this.callOpenAI(systemPrompt, userPrompt, 500);
-        
-        if (!result) {
-            return {
-                freshness_score: 50,
-                recent_data: [],
-                outdated_data: [{ data_point: "Unknown", age: "unknown", concern: "Analysis unavailable" }],
-                summary: "Agent unavailable"
-            };
-        }
-
-        try {
-            const jsonMatch = result.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                const parsed = JSON.parse(jsonMatch[0]);
-                if (!parsed.recent_data) parsed.recent_data = [];
-                if (!parsed.outdated_data) parsed.outdated_data = [];
-                if (!parsed.freshness_score) parsed.freshness_score = 50;
-                return parsed;
-            }
-            return { 
-                freshness_score: 50, 
-                recent_data: [], 
-                outdated_data: [{ data_point: "Parse error", age: "unknown", concern: "Could not parse" }],
-                summary: "Error"
-            };
-        } catch (e) {
-            console.error('Parse error freshness_detector:', e);
-            return { 
-                freshness_score: 50, 
-                recent_data: [], 
-                outdated_data: [{ data_point: "Error", age: "unknown", concern: e.message }],
-                summary: "Error"
-            };
-        }
+        return { systemPrompt, userPrompt };
     }
 
-    async runAllAgents(text, sources) {
-        console.log('🤖 Lancement des 4 agents Otto...');
+    async factChecker(text, sources, lang) {
+        const fallback = {
+            name: 'Fact Checker',
+            score: this.defaultFallbackScore,
+            description: this.localize(lang, 'agentUnavailable'),
+            verified_claims: [],
+            unverified_claims: [],
+            hallucinated_references: []
+        };
 
-        const [factCheck, sourceAnalysis, contextAnalysis, freshnessAnalysis] = await Promise.all([
-            this.factChecker(text, sources),
-            this.sourceAnalyst(text, sources),
-            this.contextGuardian(text, sources),
-            this.freshnessDetector(text, sources)
-        ]);
+        const { systemPrompt, userPrompt } = this.buildFactCheckerPrompts(text, sources, lang);
+        const result = await this.callOpenAI(systemPrompt, userPrompt, 700);
 
-        console.log('✅ Agents Otto terminés:');
-        console.log(`   Fact Checker: ${factCheck.verified_claims?.length || 0} vérifiées, ${factCheck.unverified_claims?.length || 0} non vérifiées`);
-        console.log(`   Source Analyst: ${sourceAnalysis.real_sources?.length || 0} réelles, ${sourceAnalysis.fake_sources?.length || 0} fake`);
-        console.log(`   Context Guardian: ${contextAnalysis.omissions?.length || 0} omissions`);
-        console.log(`   Freshness: ${freshnessAnalysis.recent_data?.length || 0} récentes, ${freshnessAnalysis.outdated_data?.length || 0} obsolètes`);
+        if (!result) {
+            return fallback;
+        }
+
+        const parsed = this.parseJsonFromResponse(result) || {};
+        const score = this.extractScore(parsed, result, this.parseFallbackScore);
 
         return {
-            fact_checker: factCheck,
-            source_analyst: sourceAnalysis,
-            context_guardian: contextAnalysis,
-            freshness_detector: freshnessAnalysis
+            name: 'Fact Checker',
+            score,
+            description: parsed.summary || this.localize(lang, 'parseError'),
+            verified_claims: Array.isArray(parsed.verified_claims) ? parsed.verified_claims : [],
+            unverified_claims: Array.isArray(parsed.unverified_claims) ? parsed.unverified_claims : [],
+            hallucinated_references: Array.isArray(parsed.hallucinated_references) ? parsed.hallucinated_references : []
+        };
+    }
+    buildSourceAnalystPrompts(text, sources, lang) {
+        const instruction = this.getGlobalInstruction(lang);
+        const isFrench = normalizeLang(lang) === 'fr';
+        const schema = `\n{\n  "score": 0-100,\n  "summary": "string",\n  "reliable_sources": [\n    {"citation": "string", "url": "string"}\n  ],\n  "fake_sources": [\n    {"citation": "string", "reason": "string"}\n  ]\n}`;
+        const roleInstruction = isFrench
+            ? "Tu es l'agent Source Analyst. Évalue la fiabilité de chaque source et signale celles qui semblent inventées."
+            : 'You are the Source Analyst agent. Evaluate the reliability of each source and flag invented references.';
+        const systemPrompt = `${instruction}\n${this.getOttoPersonaPrompt(lang)}\n${roleInstruction}\nRespecte strictement le schéma JSON suivant :${schema}`;
+
+        const userPrompt = `${isFrench ? 'Contexte du texte' : 'Text context'}:\n"${text.substring(0, 900)}"\n\n${isFrench ? 'Sources à analyser' : 'Sources to review'}:\n${this.buildSourcesText(sources, lang, 5)}\n\n${isFrench ? 'Indique les sources crédibles et celles qui sont inventées ou ne corroborent pas le texte. Réponds en JSON.' : 'Indicate credible sources and any that appear invented or unsupported. Respond in JSON only.'}`;
+
+        return { systemPrompt, userPrompt };
+    }
+
+    async sourceAnalyst(text, sources, lang) {
+        const fallback = {
+            name: 'Source Analyst',
+            score: this.defaultFallbackScore,
+            description: this.localize(lang, 'agentUnavailable'),
+            reliable_sources: [],
+            fake_sources: []
+        };
+
+        const { systemPrompt, userPrompt } = this.buildSourceAnalystPrompts(text, sources, lang);
+        const result = await this.callOpenAI(systemPrompt, userPrompt, 650);
+
+        if (!result) {
+            return fallback;
+        }
+
+        const parsed = this.parseJsonFromResponse(result) || {};
+        const score = this.extractScore(parsed, result, this.parseFallbackScore);
+
+        return {
+            name: 'Source Analyst',
+            score,
+            description: parsed.summary || this.localize(lang, 'parseError'),
+            reliable_sources: Array.isArray(parsed.reliable_sources) ? parsed.reliable_sources : (Array.isArray(parsed.real_sources) ? parsed.real_sources : []),
+            fake_sources: Array.isArray(parsed.fake_sources) ? parsed.fake_sources : []
+        };
+    }
+
+    buildContextGuardianPrompts(text, sources, lang) {
+        const instruction = this.getGlobalInstruction(lang);
+        const isFrench = normalizeLang(lang) === 'fr';
+        const schema = `\n{\n  "score": 0-100,\n  "summary": "string",\n  "omissions": [\n    {"type": "string", "description": "string"}\n  ],\n  "manipulation": true/false\n}`;
+        const roleInstruction = isFrench
+            ? "Tu es l'agent Context Guardian. Signale les omissions majeures et indique s'il y a manipulation contextuelle."
+            : 'You are the Context Guardian agent. Highlight major omissions and note if context manipulation is present.';
+        const systemPrompt = `${instruction}\n${this.getOttoPersonaPrompt(lang)}\n${roleInstruction}\nRespecte strictement le schéma JSON suivant :${schema}`;
+
+        const userPrompt = `${isFrench ? 'Texte à auditer' : 'Text to audit'}:\n"${text.substring(0, 1800)}"\n\n${isFrench ? 'Aide contextuelle (extraits de sources)' : 'Context from sources'}:\n${this.buildSourcesText(sources, lang, 3)}\n\n${isFrench ? 'Liste les omissions clés et précise si le texte manipule le contexte. Réponds uniquement en JSON.' : 'List key omissions and indicate if the context is manipulated. Return JSON only.'}`;
+
+        return { systemPrompt, userPrompt };
+    }
+
+    async contextGuardian(text, sources, lang) {
+        const fallback = {
+            name: 'Context Guardian',
+            score: this.defaultFallbackScore,
+            description: this.localize(lang, 'agentUnavailable'),
+            omissions: [],
+            manipulation: false
+        };
+
+        const { systemPrompt, userPrompt } = this.buildContextGuardianPrompts(text, sources, lang);
+        const result = await this.callOpenAI(systemPrompt, userPrompt, 600);
+
+        if (!result) {
+            return fallback;
+        }
+
+        const parsed = this.parseJsonFromResponse(result) || {};
+        const score = this.extractScore(parsed, result, this.parseFallbackScore);
+
+        return {
+            name: 'Context Guardian',
+            score,
+            description: parsed.summary || this.localize(lang, 'parseError'),
+            omissions: Array.isArray(parsed.omissions) ? parsed.omissions : [],
+            manipulation: typeof parsed.manipulation === 'boolean' ? parsed.manipulation : (typeof parsed.manipulation_detected === 'boolean' ? parsed.manipulation_detected : false)
+        };
+    }
+
+    buildFreshnessPrompts(text, sources, lang) {
+        const instruction = this.getGlobalInstruction(lang);
+        const isFrench = normalizeLang(lang) === 'fr';
+        const schema = `\n{\n  "score": 0-100,\n  "summary": "string",\n  "outdated_data": [\n    {"data_point": "string", "age": "string"}\n  ],\n  "recent_data": [\n    {"data_point": "string", "age": "string"}\n  ]\n}`;
+        const roleInstruction = isFrench
+            ? "Tu es l'agent Freshness Detector. Évalue la fraîcheur des données et signale les informations obsolètes."
+            : 'You are the Freshness Detector agent. Evaluate data freshness and flag outdated information.';
+        const systemPrompt = `${instruction}\n${this.getOttoPersonaPrompt(lang)}\n${roleInstruction}\nRespecte strictement le schéma JSON suivant :${schema}`;
+
+        const userPrompt = `${isFrench ? 'Texte analysé' : 'Text under review'}:\n"${text.substring(0, 1800)}"\n\n${isFrench ? 'Sources associées' : 'Associated sources'}:\n${this.buildSourcesText(sources, lang, 3)}\n\n${isFrench ? 'Identifie les données récentes et obsolètes. Réponds en JSON uniquement.' : 'Identify recent and outdated data. Respond in JSON only.'}`;
+
+        return { systemPrompt, userPrompt };
+    }
+
+    async freshnessDetector(text, sources, lang) {
+        const fallback = {
+            name: 'Freshness Detector',
+            score: this.defaultFallbackScore,
+            description: this.localize(lang, 'agentUnavailable'),
+            outdated_data: [],
+            recent_data: []
+        };
+
+        const { systemPrompt, userPrompt } = this.buildFreshnessPrompts(text, sources, lang);
+        const result = await this.callOpenAI(systemPrompt, userPrompt, 600);
+
+        if (!result) {
+            return fallback;
+        }
+
+        const parsed = this.parseJsonFromResponse(result) || {};
+        const score = this.extractScore(parsed, result, this.parseFallbackScore);
+
+        return {
+            name: 'Freshness Detector',
+            score,
+            description: parsed.summary || this.localize(lang, 'parseError'),
+            outdated_data: Array.isArray(parsed.outdated_data) ? parsed.outdated_data : [],
+            recent_data: Array.isArray(parsed.recent_data) ? parsed.recent_data : []
+        };
+    }
+
+    // 🧠 Otto v1.7 Upgrade - AI Detector agent
+    buildAIDetectorPrompts(text, lang) {
+        const isFrench = normalizeLang(lang) === 'fr';
+        const persona = this.getOttoPersonaPrompt(lang);
+        const instruction = isFrench
+            ? "Tu es l'agent AI Detector. Estime la probabilité que le texte soit généré par une IA (GPT, Claude, Gemini...)."
+            : 'You are the AI Detector agent. Estimate the likelihood the text was generated by an AI model (GPT, Claude, Gemini...).';
+        const schema = `\n{\n  "ai_likelihood": 0-100,\n  "detected_model": "string",\n  "reason": "string"\n}`;
+        const systemPrompt = `${this.getGlobalInstruction(lang)}\n${persona}\n${instruction}\nReturn valid JSON only using this schema:${schema}`;
+        const userPrompt = `${isFrench ? 'Texte à évaluer' : 'Text to evaluate'}:\n"${text.substring(0, 1800)}"\n\n${isFrench ? 'Donne uniquement le JSON demandé.' : 'Respond with JSON only.'}`;
+        return { systemPrompt, userPrompt };
+    }
+
+    async aiDetector(text, lang) {
+        const fallbackScore = this.defaultFallbackScore;
+        const normalizedLang = this.resolveLanguage(lang, text);
+        const { systemPrompt, userPrompt } = this.buildAIDetectorPrompts(text, normalizedLang);
+        const result = await this.callOpenAI(systemPrompt, userPrompt, 400);
+
+        if (!result) {
+            return {
+                name: 'AI Detector',
+                score: fallbackScore,
+                ai_likelihood: fallbackScore,
+                detected_model: normalizedLang === 'fr' ? 'Inconnu' : 'Unknown',
+                notes: this.languageStrings[normalizedLang].aiNotesFallback || this.languageStrings.en.aiNotesFallback
+            };
+        }
+
+        const parsed = this.parseJsonFromResponse(result) || {};
+        const likelihood = this.clampScore(parsed.ai_likelihood, this.parseFallbackScore);
+        const detectedModel = typeof parsed.detected_model === 'string' && parsed.detected_model.trim().length > 0
+            ? parsed.detected_model.trim()
+            : (likelihood > 60
+                ? (normalizedLang === 'fr' ? 'Probablement IA' : 'Likely AI')
+                : (normalizedLang === 'fr' ? 'Probablement humain' : 'Likely human'));
+        const reason = typeof parsed.reason === 'string' && parsed.reason.trim().length > 0
+            ? parsed.reason.trim()
+            : (normalizedLang === 'fr' ? 'Analyse IA limitée.' : 'Limited AI analysis.');
+
+        return {
+            name: 'AI Detector',
+            score: likelihood,
+            ai_likelihood: likelihood,
+            detected_model: detectedModel,
+            notes: reason
+        };
+    }
+
+
+    buildQuickAutoPrompts(text, lang) {
+        const instruction = this.getGlobalInstruction(lang);
+        const isFrench = normalizeLang(lang) === 'fr';
+        const schema = `
+{
+  "score": 0-100,
+  "explanation": "string"
+}`;
+        const systemPrompt = `${instruction}
+${isFrench
+            ? 'Fais une synthèse express en français avec un score global.'
+            : 'Provide a quick overall synthesis in English with a global score.'}
+Respecte ce format JSON :${schema}`;
+
+        const userPrompt = `${isFrench ? 'Texte à évaluer rapidement' : 'Text for quick evaluation'}:
+"${text.substring(0, 1500)}"
+
+${this.localize(lang, 'quickPrompt')}
+Réponds uniquement en JSON.`;
+
+        return { systemPrompt, userPrompt };
+    }
+
+    async quickAutoVerify(text, lang) {
+        const targetLang = this.resolveLanguage(lang, text);
+        const { systemPrompt, userPrompt } = this.buildQuickAutoPrompts(text, targetLang);
+        const result = await this.callOpenAI(systemPrompt, userPrompt, 250);
+
+        if (!result) {
+            return {
+                score: this.defaultFallbackScore,
+                explanation: this.localize(targetLang, 'quickFallback'),
+                language: targetLang
+            };
+        }
+
+        const parsed = this.parseJsonFromResponse(result) || {};
+        const score = this.extractScore(parsed, result, this.parseFallbackScore);
+        const explanation = parsed.explanation || parsed.explication || this.localize(targetLang, 'parseError');
+
+        return {
+            score,
+            explanation,
+            language: targetLang
+        };
+    }
+    async runAgentWithTiming(label, fn) {
+        const start = Date.now();
+        try {
+            const result = await fn();
+            const duration = Date.now() - start;
+            console.log(`⏱️ [Otto][${label}] ${duration}ms`);
+            return result;
+        } catch (error) {
+            const duration = Date.now() - start;
+            console.error(`❌ [Otto][${label}] Erreur après ${duration}ms:`, error.message);
+            return {
+                name: label,
+                score: this.defaultFallbackScore,
+                description: error.message,
+                details: []
+            };
+        }
+    }
+
+    buildSummaryFromScore(avgScore, lang) {
+        if (avgScore >= 75) {
+            return this.localize(lang, 'summaryHigh');
+        }
+        if (avgScore >= 55) {
+            return this.localize(lang, 'summaryMedium');
+        }
+        return this.localize(lang, 'summaryLow');
+    }
+
+    // 🧠 Otto v1.7 Upgrade - Risk & recommendation helpers
+    determineRiskLevel(trustIndex, aiLikelihood = 0) {
+        if (typeof aiLikelihood === 'number' && aiLikelihood > 85) {
+            return 'high';
+        }
+        if (trustIndex < 55 || aiLikelihood > 70) {
+            return 'high';
+        }
+        if (trustIndex < 75 || aiLikelihood > 50) {
+            return 'medium';
+        }
+        return 'low';
+    }
+
+    localizeRiskLevel(level, lang) {
+        const normalized = normalizeLang(lang) || 'en';
+        const strings = this.languageStrings[normalized] || this.languageStrings.en;
+        return (strings.riskLevels && strings.riskLevels[level]) || this.languageStrings.en.riskLevels[level] || level;
+    }
+
+    getRecommendation(level, lang) {
+        const normalized = normalizeLang(lang) || 'en';
+        const strings = this.languageStrings[normalized] || this.languageStrings.en;
+        return (strings.recommendations && strings.recommendations[level]) || this.languageStrings.en.recommendations[level] || '';
+    }
+
+    getOttoMessage(lang) {
+        const normalized = normalizeLang(lang) || 'en';
+        const strings = this.languageStrings[normalized] || this.languageStrings.en;
+        return strings.ottoMessage || this.languageStrings.en.ottoMessage;
+    }
+
+    async runAllAgents(text, sources, lang) {
+        const targetLang = this.resolveLanguage(lang, text);
+        console.log('🤖 Lancement des agents Otto (langue détectée):', targetLang);
+
+        const [factChecker, sourceAnalyst, contextGuardian, freshnessDetector, aiDetector] = await Promise.all([
+            this.runAgentWithTiming('Fact Checker', () => this.factChecker(text, sources, targetLang)),
+            this.runAgentWithTiming('Source Analyst', () => this.sourceAnalyst(text, sources, targetLang)),
+            this.runAgentWithTiming('Context Guardian', () => this.contextGuardian(text, sources, targetLang)),
+            this.runAgentWithTiming('Freshness Detector', () => this.freshnessDetector(text, sources, targetLang)),
+            this.runAgentWithTiming('AI Detector', () => this.aiDetector(text, targetLang))
+        ]);
+
+        const safeScore = (value) => (typeof value === 'number' && !Number.isNaN(value) ? value : this.defaultFallbackScore);
+        const factScore = safeScore(factChecker.score);
+        const sourceScore = safeScore(sourceAnalyst.score);
+        const contextScore = safeScore(contextGuardian.score);
+        const freshnessScore = safeScore(freshnessDetector.score);
+
+        const aiLikelihood = safeScore(aiDetector.ai_likelihood);
+        const aiAdjustment = (100 - aiLikelihood) * 0.1;
+        let trustIndex = (factScore * 0.3) + (sourceScore * 0.25) + (contextScore * 0.2) + (freshnessScore * 0.15) + aiAdjustment;
+        if (aiLikelihood > 70) {
+            trustIndex -= 10;
+        }
+        trustIndex = this.clampScore(trustIndex, this.defaultFallbackScore);
+
+        const riskLevelKey = this.determineRiskLevel(trustIndex, aiLikelihood);
+        const riskLevel = this.localizeRiskLevel(riskLevelKey, targetLang);
+        const recommendation = this.getRecommendation(riskLevelKey, targetLang);
+        const summary = this.buildSummaryFromScore(trustIndex, targetLang);
+        const message = this.getOttoMessage(targetLang);
+
+        const hallucinationsSet = new Set();
+        const addHallucination = (value) => {
+            if (typeof value === 'string') {
+                const trimmed = value.trim();
+                if (trimmed.length > 0) {
+                    hallucinationsSet.add(trimmed);
+                }
+            }
+        };
+
+        (Array.isArray(factChecker.hallucinated_references) ? factChecker.hallucinated_references : []).forEach((ref) => {
+            if (ref && typeof ref === 'object') {
+                addHallucination(ref.reference || ref.citation || ref.note);
+            }
+        });
+        (Array.isArray(factChecker.unverified_claims) ? factChecker.unverified_claims : []).forEach((claim) => {
+            if (claim && typeof claim === 'object') {
+                const composed = [claim.claim, claim.reason].filter(Boolean).join(' - ');
+                addHallucination(composed);
+            }
+        });
+        (Array.isArray(sourceAnalyst.fake_sources) ? sourceAnalyst.fake_sources : []).forEach((fake) => {
+            if (fake && typeof fake === 'object') {
+                addHallucination(fake.citation || fake.reference || fake.reason);
+            }
+        });
+
+        const agentsPayload = {
+            ai_detector: {
+                score: safeScore(aiDetector.score),
+                ai_likelihood: aiLikelihood,
+                detected_model: aiDetector.detected_model,
+                notes: aiDetector.notes
+            },
+            fact_checker: {
+                score: factScore,
+                description: factChecker.description,
+                verified_claims: Array.isArray(factChecker.verified_claims) ? factChecker.verified_claims : [],
+                unverified_claims: Array.isArray(factChecker.unverified_claims) ? factChecker.unverified_claims : [],
+                hallucinated_references: Array.isArray(factChecker.hallucinated_references) ? factChecker.hallucinated_references : []
+            },
+            source_analyst: {
+                score: sourceScore,
+                description: sourceAnalyst.description,
+                reliable_sources: Array.isArray(sourceAnalyst.reliable_sources) ? sourceAnalyst.reliable_sources : [],
+                fake_sources: Array.isArray(sourceAnalyst.fake_sources) ? sourceAnalyst.fake_sources : []
+            },
+            context_guardian: {
+                score: contextScore,
+                description: contextGuardian.description,
+                omissions: Array.isArray(contextGuardian.omissions) ? contextGuardian.omissions : [],
+                manipulation: typeof contextGuardian.manipulation === 'boolean' ? contextGuardian.manipulation : false
+            },
+            freshness_detector: {
+                score: freshnessScore,
+                description: freshnessDetector.description,
+                outdated_data: Array.isArray(freshnessDetector.outdated_data) ? freshnessDetector.outdated_data : [],
+                recent_data: Array.isArray(freshnessDetector.recent_data) ? freshnessDetector.recent_data : []
+            }
+        };
+
+        return {
+            language: targetLang,
+            trustIndex,
+            riskLevel,
+            recommendation,
+            summary,
+            message,
+            aiLikelihood,
+            hallucinations: Array.from(hallucinationsSet),
+            agents: agentsPayload
         };
     }
 }
+
 
 // ========== FACT-CHECKING CLASSIQUE ==========
 
@@ -933,7 +1209,7 @@ function sanitizeInput(text) {
 function extractMainKeywords(text) {
     const cleaned = sanitizeInput(text).substring(0, 1000);
     const keywords = [];
-    
+
     try {
         const namedEntities = cleaned.match(/\b[A-Z][a-zA-ZÀ-ÿ]+(?:\s+[A-Z][a-zA-ZÀ-ÿ]+){0,2}\b/g) || [];
         keywords.push(...namedEntities.slice(0, 4));
@@ -953,6 +1229,71 @@ function extractMainKeywords(text) {
         console.error('❌ Erreur extraction keywords:', e.message);
         return [];
     }
+}
+
+function generateContextualQueries(text, keywords = []) {
+    const sanitized = sanitizeInput(text);
+    if (!sanitized) return [];
+
+    const queries = [];
+    const keywordList = [...new Set((keywords || []).filter(Boolean))];
+
+    const stopWords = new Set(['le', 'la', 'les', 'de', 'des', 'du', 'the', 'and', 'for', 'with', 'dans', 'pour', 'une', 'un', 'et']);
+    const entityMatches = sanitized.match(/\b[A-Z][\wÀ-ÿ']+(?:\s+[A-Z][\wÀ-ÿ']+){0,2}\b/g) || [];
+    const entities = entityMatches
+        .map(entity => entity.trim())
+        .filter(entity => entity.length > 2 && !stopWords.has(entity.toLowerCase()));
+    const uniqueEntities = [...new Set(entities)].slice(0, 6);
+
+    const eventKeywords = (sanitized.match(/\b(scandale|rapport|enquête|sanctions?|controverse|erreurs?|hallucinations?|intelligence artificielle|IA|AI|fact-check|fraude|remboursement)\b/gi) || [])
+        .map(word => word.toLowerCase());
+    const uniqueEventKeywords = [...new Set(eventKeywords)];
+
+    if (uniqueEntities.length >= 2) {
+        const secondEntity = uniqueEntities[1] || '';
+        const eventWord = uniqueEventKeywords[0] || keywordList[0] || '';
+        queries.push(`${uniqueEntities[0]} ${secondEntity} ${eventWord}`.trim());
+    }
+
+    if (uniqueEntities.length >= 1 && uniqueEventKeywords.length > 0) {
+        queries.push(`${uniqueEntities[0]} ${uniqueEventKeywords.slice(0, 2).join(' ')}`.trim());
+    }
+
+    if (keywordList.length >= 2) {
+        queries.push(`${keywordList[0]} ${keywordList[1]} fact check`.trim());
+    }
+
+    const years = sanitized.match(/\b(19|20)\d{2}\b/g) || [];
+    if (years.length > 0 && uniqueEntities.length > 0) {
+        queries.push(`${uniqueEntities[0]} ${years[0]} news`);
+    }
+
+    const locations = sanitized.match(/\b(Australie|Australia|France|États-Unis|USA|Canada|Europe|Sydney|Melbourne|Paris|Canberra|Brisbane)\b/gi) || [];
+    if (locations.length > 0 && uniqueEntities.length > 0) {
+        queries.push(`${uniqueEntities[0]} ${locations[0]} scandale`);
+    }
+
+    const informativeSentences = sanitized
+        .split(/[.!?]/)
+        .map(sentence => sentence.trim())
+        .filter(sentence => sentence.length > 0 && /\d{4}|million|milliard|scandale|rapport|sanction|hallucination|IA|AI|enquête|fact-check|rembourser/i.test(sentence))
+        .slice(0, 2);
+
+    informativeSentences.forEach(sentence => {
+        const words = sentence
+            .split(/\s+/)
+            .filter(word => word.length > 3)
+            .slice(0, 8)
+            .join(' ');
+        if (words.length > 0) {
+            queries.push(words);
+        }
+    });
+
+    return [...new Set(queries)]
+        .map(query => query.trim())
+        .filter(query => query.length > 0)
+        .slice(0, 5);
 }
 
 async function findWebSources(keywords, smartQueries, originalText) {
@@ -978,16 +1319,29 @@ async function findWebSources(keywords, smartQueries, originalText) {
             }
         ];
     }
-    
+
     let allSources = [];
-    
+
+    const contextualQueries = generateContextualQueries(originalText, keywords);
+    const combinedQueries = [];
+
     if (smartQueries && smartQueries.length > 0) {
-        for (const query of smartQueries.slice(0, 2)) {
+        combinedQueries.push(...smartQueries.filter(Boolean).slice(0, 3));
+    }
+
+    contextualQueries.forEach(query => {
+        if (!combinedQueries.includes(query)) {
+            combinedQueries.push(query);
+        }
+    });
+
+    if (combinedQueries.length > 0) {
+        for (const query of combinedQueries.slice(0, 5)) {
             try {
                 const url = `https://www.googleapis.com/customsearch/v1?key=${API_KEY}&cx=${SEARCH_ENGINE_ID}&q=${encodeURIComponent(query)}&num=4`;
                 const response = await fetch(url);
                 const data = await response.json();
-                
+
                 if (response.ok && data.items) {
                     const sources = data.items.map(item => ({
                         title: item.title || 'Sans titre',
@@ -1005,12 +1359,12 @@ async function findWebSources(keywords, smartQueries, originalText) {
             }
         }
     }
-    
+
     if (allSources.length < 2 && keywords.length > 0) {
         try {
             const fallbackQuery = keywords.slice(0, 3).join(' ');
             const url = `https://www.googleapis.com/customsearch/v1?key=${API_KEY}&cx=${SEARCH_ENGINE_ID}&q=${encodeURIComponent(fallbackQuery)}&num=3`;
-            
+
             const response = await fetch(url);
             const data = await response.json();
             
@@ -1336,10 +1690,43 @@ app.post('/verify', async (req, res) => {
     }
 });
 
+app.post('/verify-auto', async (req, res) => {
+    const aiAgents = new AIAgentsService();
+    try {
+        const { text, lang } = req.body || {};
+
+        console.log(`\n=== ANALYSE AUTO (rapide) ===`);
+        if (!text || typeof text !== 'string' || text.trim().length < 10) {
+            return res.status(400).json({
+                success: false,
+                error: 'Texte insuffisant pour une vérification rapide'
+            });
+        }
+
+        const quickResult = await aiAgents.quickAutoVerify(text, lang);
+
+        return res.json({
+            success: true,
+            score: quickResult.score,
+            explanation: quickResult.explanation,
+            language: quickResult.language
+        });
+    } catch (error) {
+        console.error('❌ Erreur analyse auto:', error);
+        const fallbackLang = aiAgents.resolveLanguage(req.body?.lang, req.body?.text || '');
+        return res.status(500).json({
+            success: false,
+            score: aiAgents.defaultFallbackScore,
+            explanation: aiAgents.localize(fallbackLang, 'agentUnavailable'),
+            language: fallbackLang
+        });
+    }
+});
+
 // ========== ROUTE ANALYSE OTTO (APPROFONDIE) ==========
 app.post('/verify-otto', async (req, res) => {
     try {
-        const { text, smartQueries, userEmail } = req.body;
+        const { text, smartQueries, userEmail, lang } = req.body;
         
         console.log(`\n=== ANALYSE OTTO ===`);
         console.log(`📝 Texte: "${text.substring(0, 80)}..."`);
@@ -1385,7 +1772,6 @@ app.post('/verify-otto', async (req, res) => {
         
         console.log(`📊 Plan: ${user.plan} | Otto restant: ${ottoLimit.remaining}`);
         
-        const factChecker = new ImprovedFactChecker();
         const keywords = extractMainKeywords(text);
         const sources = await findWebSources(keywords, smartQueries, text);
         
@@ -1397,44 +1783,33 @@ app.post('/verify-otto', async (req, res) => {
         }
         
         const aiAgents = new AIAgentsService();
-        const ottoResults = await aiAgents.runAllAgents(text, sources);
-        
+        const targetLang = aiAgents.resolveLanguage(lang, text);
+        const ottoResults = await aiAgents.runAllAgents(text, sources, targetLang);
+
         await incrementOttoCount(user.id, user.plan);
-        
-        const avgScore = (
-            (ottoResults.fact_checker.score || 50) +
-            (ottoResults.source_analyst.score || 50) +
-            (100 - (ottoResults.context_guardian.context_score || 50)) +
-            (ottoResults.freshness_detector.freshness_score || 50)
-        ) / 4;
-        
-        let riskLevel = 'FAIBLE';
-        if (avgScore < 40) riskLevel = 'ÉLEVÉ';
-        else if (avgScore < 65) riskLevel = 'MOYEN';
-        
-        let ottoMessage = '';
-        if (riskLevel === 'ÉLEVÉ') {
-            ottoMessage = "J'ai détecté plusieurs problèmes critiques dans ce contenu. Je recommande une vérification approfondie avant utilisation.";
-        } else if (riskLevel === 'MOYEN') {
-            ottoMessage = "J'ai identifié quelques éléments nécessitant attention. Vérifiez les sources et les omissions signalées.";
-        } else {
-            ottoMessage = "Mon analyse montre un contenu globalement fiable. Quelques points mineurs à noter ci-dessous.";
-        }
-        
+
+        // 🧠 Otto v1.7 Upgrade - Response payload enrichi
+        const ottoPayload = {
+            trust_index: ottoResults.trustIndex,
+            risk_level: ottoResults.riskLevel,
+            ai_likelihood: ottoResults.aiLikelihood,
+            summary: ottoResults.summary,
+            recommendation: ottoResults.recommendation,
+            hallucinations_detected: ottoResults.hallucinations,
+            message: ottoResults.message
+        };
+
         const response = {
             success: true,
-            otto: {
-                riskLevel: riskLevel,
-                message: ottoMessage,
-                globalScore: Math.round(avgScore)
-            },
-            agents: ottoResults,
+            otto: ottoPayload,
+            agents: ottoResults.agents,
             sources: sources,
-            userPlan: user.plan
+            userPlan: user.plan,
+            language: ottoResults.language
         };
-        
-        console.log(`✅ Otto terminé: Risque ${riskLevel} | Score: ${Math.round(avgScore)}%`);
-        
+
+        console.log(`✅ Otto terminé | TrustIndex: ${ottoResults.trustIndex}% | AI likelihood: ${ottoResults.aiLikelihood}% | Langue: ${ottoResults.language}`);
+
         res.json(response);
         
     } catch (error) {
