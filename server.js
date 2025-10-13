@@ -163,6 +163,88 @@ const PLAN_LIMITS = {
     }
 };
 
+const userUsage = Object.create(null);
+
+const getTodayIsoDate = () => new Date().toISOString().slice(0, 10);
+
+const getWeekStartIsoDate = (date) => {
+    const utcDate = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+    const day = utcDate.getUTCDay() || 7; // ISO week starts on Monday (1)
+    utcDate.setUTCDate(utcDate.getUTCDate() - (day - 1));
+    return utcDate.toISOString().slice(0, 10);
+};
+
+function getUserUsage(email) {
+    if (!email) return null;
+
+    if (!userUsage[email]) {
+        const now = new Date();
+        userUsage[email] = {
+            checksToday: 0,
+            checksWeek: 0,
+            ottoToday: 0,
+            ottoWeek: 0,
+            lastDailyReset: getTodayIsoDate(),
+            lastWeeklyReset: getWeekStartIsoDate(now),
+        };
+    }
+
+    return userUsage[email];
+}
+
+function resetUsageIfNeeded(usage) {
+    if (!usage) return;
+
+    const now = new Date();
+    const today = getTodayIsoDate();
+
+    if (usage.lastDailyReset !== today) {
+        usage.checksToday = 0;
+        usage.ottoToday = 0;
+        usage.lastDailyReset = today;
+    }
+
+    const currentWeekStart = getWeekStartIsoDate(now);
+    if (usage.lastWeeklyReset !== currentWeekStart) {
+        usage.checksWeek = 0;
+        usage.ottoWeek = 0;
+        usage.lastWeeklyReset = currentWeekStart;
+    }
+}
+
+const getPlanKey = (plan) => (plan || 'free').toLowerCase();
+
+const getPlanLimits = (planKey) => PLAN_LIMITS[planKey] || PLAN_LIMITS.free;
+
+function canUseVerification(usage, planKey) {
+    const limits = getPlanLimits(planKey);
+    const dailyLimit = limits.dailyVerifications ?? Infinity;
+
+    if (dailyLimit !== Infinity && usage.checksToday >= dailyLimit) {
+        return { allowed: false, type: 'daily', limit: dailyLimit };
+    }
+
+    return { allowed: true };
+}
+
+function canUseOtto(usage, planKey) {
+    const limits = getPlanLimits(planKey);
+
+    if (planKey === 'free') {
+        const weeklyLimit = limits.weeklyOtto ?? Infinity;
+        if (weeklyLimit !== Infinity && usage.ottoWeek >= weeklyLimit) {
+            return { allowed: false, type: 'weekly', limit: weeklyLimit };
+        }
+    }
+
+    const dailyOttoLimit = limits.dailyOtto ?? Infinity;
+    if (dailyOttoLimit !== Infinity && usage.ottoToday >= dailyOttoLimit) {
+        return { allowed: false, type: 'daily', limit: dailyOttoLimit };
+    }
+
+    return { allowed: true };
+}
+
 // ========== 4 AGENTS IA (OTTO) ==========
 
 class AIAgentsService {
@@ -1477,43 +1559,47 @@ app.post('/verify', async (req, res) => {
         }
         console.log(`👤 User: ${userEmail || 'anonymous'}`);
 
-        if (!text || text.trim().length === 0) {
-            return res.status(400).json({ error: 'Texte vide' });
+        if (!text || text.trim().length === 0 || !userEmail) {
+            return res.status(400).json({ error: 'Texte ou email manquant' });
         }
 
+        const usage = getUserUsage(userEmail);
+        resetUsageIfNeeded(usage);
+
         let userPlan = 'free';
-        let userId = null;
+        const user = await getUserByEmail(userEmail);
+        if (user?.plan) {
+            userPlan = user.plan;
+        }
 
-        if (userEmail) {
-            const user = await getUserByEmail(userEmail);
-            if (user) {
-                userId = user.id;
-                userPlan = user.plan;
+        const planKey = getPlanKey(userPlan);
+        const verificationLimit = canUseVerification(usage, planKey);
 
-                const limitCheck = await checkVerificationLimit(userId);
-                if (!limitCheck.allowed) {
-                    return res.status(429).json({
-                        success: false,
-                        error: 'Limite atteinte',
-                        message: userPlan === 'free'
-                            ? 'Limite de 3 vérifications/jour atteinte. Passez à STARTER, PRO ou BUSINESS'
-                            : `Limite quotidienne atteinte (${userPlan.toUpperCase()}). Passez au plan supérieur`,
-                        remaining: 0,
-                        plan: userPlan
-                    });
-                }
-                console.log(`📊 Plan: ${userPlan} | Restant: ${limitCheck.remaining}`);
-            }
+        if (!verificationLimit.allowed) {
+            console.log(`⛔️ Limite documentaire atteinte pour ${userEmail} (${planKey})`);
+            return res.status(403).json({
+                error: 'Limite quotidienne atteinte',
+                plan: planKey.toUpperCase(),
+                limit: verificationLimit.limit,
+            });
         }
 
         const result = await runDocumentaryAnalysis(text);
 
-        if (userId) await incrementVerificationCount(userId);
+        usage.checksToday += 1;
+        usage.checksWeek += 1;
 
         console.log(`✅ Score documentaire: ${result.score}`);
         console.log(`📚 Sources proposées: ${result.sources.length}`);
 
-        res.json(result);
+        res.json({
+            ...result,
+            usage: {
+                today: usage.checksToday,
+                week: usage.checksWeek,
+                plan: planKey.toUpperCase(),
+            },
+        });
 
     } catch (error) {
         console.error('Erreur analyse documentaire :', error);
@@ -1680,16 +1766,42 @@ function evaluateOttoAgents(text) {
 // ========== ROUTE ANALYSE OTTO (APPROFONDIE) ==========
 app.post('/verify-otto', async (req, res) => {
     try {
-        const { text } = req.body || {};
+        const { text, userEmail } = req.body || {};
 
-        if (!text || text.trim() === '') {
-            return res.status(400).json({ error: 'Texte vide' });
+        if (!text || text.trim() === '' || !userEmail) {
+            return res.status(400).json({ error: 'Texte ou email manquant' });
+        }
+
+        const usage = getUserUsage(userEmail);
+        resetUsageIfNeeded(usage);
+
+        let userPlan = 'free';
+        const user = await getUserByEmail(userEmail);
+        if (user?.plan) {
+            userPlan = user.plan;
+        }
+
+        const planKey = getPlanKey(userPlan);
+        const ottoLimit = canUseOtto(usage, planKey);
+        if (!ottoLimit.allowed) {
+            const limitMessage = ottoLimit.type === 'weekly'
+                ? 'Limite Otto hebdomadaire atteinte'
+                : 'Limite Otto quotidienne atteinte';
+            console.log(`⛔️ ${limitMessage} pour ${userEmail} (${planKey})`);
+            return res.status(403).json({
+                error: limitMessage,
+                plan: planKey.toUpperCase(),
+                limit: ottoLimit.limit,
+            });
         }
 
         console.log('🚀 [OTTO] Audit démarré');
 
         const summary = await runOttoAnalysis(text.trim());
         const { trustIndex, risk, agents, barColor } = evaluateOttoAgents(text);
+
+        usage.ottoToday += 1;
+        usage.ottoWeek += 1;
 
         console.log(`✅ [OTTO] Indice calculé: ${trustIndex}% | Risque ${risk}`);
 
@@ -1698,7 +1810,12 @@ app.post('/verify-otto', async (req, res) => {
             risk,
             summary,
             agents,
-            barColor
+            barColor,
+            usage: {
+                today: usage.ottoToday,
+                week: usage.ottoWeek,
+                plan: planKey.toUpperCase(),
+            },
         });
 
     } catch (error) {
