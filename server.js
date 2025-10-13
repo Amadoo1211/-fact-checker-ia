@@ -1473,76 +1473,153 @@ app.post('/fetch-source', async (req, res) => {
     }
 });
 
+// ====== Analyse Otto améliorée ======
+const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
+async function runOttoAnalysis(text) {
+    const apiKey = process.env.OPENAI_API_KEY;
+    const prompt = `Tu es Otto, un auditeur d'information.
+Ton rôle est d'évaluer la fiabilité d’un texte en analysant :
+1️⃣ La véracité des faits.
+2️⃣ La crédibilité et la diversité des sources citées.
+3️⃣ La clarté du contexte et des méthodologies.
+4️⃣ La fraîcheur et l’actualité des informations.
+
+Analyse le texte suivant :
+"""${text}"""
+
+Fournis une synthèse brève et neutre (3 à 5 phrases) qui résume :
+- Ce qui est vérifiable.
+- Ce qui manque.
+- Ce qui semble cohérent ou douteux.`;
+
+    if (!apiKey) {
+        console.warn('⚠️ OPENAI_API_KEY manquant - résumé Otto dégradé.');
+        return 'Résumé indisponible : configurez une clé OpenAI pour obtenir une analyse détaillée.';
+    }
+
+    try {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+                model: 'gpt-4o-mini',
+                messages: [{ role: 'user', content: prompt }],
+                temperature: 0.2,
+                max_tokens: 400
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`OpenAI API error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        return data?.choices?.[0]?.message?.content?.trim() || 'Analyse Otto indisponible.';
+    } catch (error) {
+        console.error('❌ Erreur OpenAI Otto:', error.message || error);
+        return 'Analyse Otto indisponible pour le moment.';
+    }
+}
+
+function evaluateOttoAgents(text) {
+    const normalized = text.toLowerCase();
+    const sourceKeywords = ['giec', 'nasa', 'noaa', 'unesco', 'mckinsey', 'rapport', 'étude', 'source', 'publication', 'journal'];
+    const riskKeywords = ['rumeur', 'controversé', 'non confirmé', 'hoax'];
+    const claimKeywords = ['affirme', 'déclare', 'selon', 'prétend', 'annonce', 'indique'];
+    const recencyIndicators = ['2020', '2021', '2022', '2023', '2024', '2025', 'récent', 'récente', 'nouveau', 'nouvelle étude'];
+    const temporalIndicators = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre', '202', '20'];
+
+    const sourceMatches = sourceKeywords.reduce((count, keyword) => count + (normalized.includes(keyword) ? 1 : 0), 0);
+    const hasSources = sourceMatches > 0;
+    const hasMultipleSources = sourceMatches > 2;
+    const hasClaims = claimKeywords.some(keyword => normalized.includes(keyword));
+    const hasNumbers = /(\d+\s?%|\d{4})/.test(text);
+    const hasRecency = recencyIndicators.some(keyword => normalized.includes(keyword));
+    const hasContextualDetails = text.length > 220 || temporalIndicators.some(keyword => normalized.includes(keyword));
+    const hasWarnings = riskKeywords.some(keyword => normalized.includes(keyword));
+
+    const factCheckerScore = clamp(65 + (hasSources ? 15 : 0) + (hasClaims ? 0 : 5) + (hasWarnings ? -20 : 0) + (hasNumbers && !hasSources ? -10 : 0), 25, 95);
+    const sourceAnalystScore = clamp(55 + (hasSources ? 20 : -10) + (hasMultipleSources ? 10 : 0) + (hasWarnings ? -15 : 0), 20, 92);
+    const contextGuardianScore = clamp(60 + (hasContextualDetails ? 10 : -15) + (hasSources ? 5 : 0) + (hasClaims && !hasContextualDetails ? -10 : 0), 25, 90);
+    const freshnessDetectorScore = clamp(58 + (hasRecency ? 20 : -8) + (hasNumbers ? 5 : 0), 20, 95);
+
+    const agents = [
+        {
+            name: 'Fact Checker',
+            score: factCheckerScore,
+            comment: hasSources
+                ? 'Les affirmations sont étayées par des éléments vérifiables.'
+                : hasClaims
+                    ? 'Des affirmations sont présentes mais nécessitent des preuves explicites.'
+                    : 'Le texte reste prudent mais peu de faits concrets sont fournis.'
+        },
+        {
+            name: 'Source Analyst',
+            score: sourceAnalystScore,
+            comment: hasSources
+                ? hasMultipleSources
+                    ? 'Plusieurs sources crédibles sont citées et renforcent la fiabilité.'
+                    : 'Des sources sont citées mais un complément de diversité serait utile.'
+                : 'Aucune source explicite n’est mentionnée, la crédibilité reste à confirmer.'
+        },
+        {
+            name: 'Context Guardian',
+            score: contextGuardianScore,
+            comment: hasContextualDetails
+                ? 'Le contexte fourni permet de comprendre les conditions et les limites.'
+                : 'Le texte manque de détails sur le contexte ou la méthodologie.'
+        },
+        {
+            name: 'Freshness Detector',
+            score: freshnessDetectorScore,
+            comment: hasRecency
+                ? 'Les informations mentionnées sont récentes ou clairement datées.'
+                : 'Peu d’indices temporels récents sont présents dans le texte.'
+        }
+    ];
+
+    const trustIndex = Math.round(
+        agents[0].score * 0.4 +
+        agents[1].score * 0.3 +
+        agents[2].score * 0.2 +
+        agents[3].score * 0.1
+    );
+
+    const risk = trustIndex >= 75 ? 'Faible' : trustIndex >= 50 ? 'Moyen' : 'Élevé';
+
+    return { trustIndex, risk, agents };
+}
+
 // ========== ROUTE ANALYSE OTTO (APPROFONDIE) ==========
 app.post('/verify-otto', async (req, res) => {
     try {
         const { text } = req.body || {};
 
         if (!text || text.trim() === '') {
-            return res.status(400).json({
-                trustIndex: 0,
-                risk: 'ERREUR',
-                message: 'Texte manquant pour Otto.'
-            });
+            return res.status(400).json({ error: 'Texte vide' });
         }
 
-        console.log('🚀 [OTTO] Analyse complète démarrée...');
+        console.log('🚀 [OTTO] Audit démarré');
 
-        const agents = new AIAgentsService();
-        const factChecker = new ImprovedFactChecker();
+        const summary = await runOttoAnalysis(text.trim());
+        const { trustIndex, risk, agents } = evaluateOttoAgents(text);
 
-        const keywords = extractMainKeywords(text);
-        const sources = await findWebSources(keywords, [], text);
-        const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, text, sources);
-
-        const claims = factChecker.extractVerifiableClaims(text);
-        const improvedAssessment = factChecker.calculateBalancedScore(text, analyzedSources, claims);
-
-        const results = await agents.runAllAgents(text, analyzedSources);
-
-        if (results?.fact_checker) {
-            results.fact_checker.improved_analysis = {
-                balancedScore: improvedAssessment,
-                claims
-            };
-        }
-
-        const trustIndex = Math.round((
-            (results?.fact_checker?.score || 0) * 0.4 +
-            (results?.source_analyst?.score || 0) * 0.2 +
-            (100 - (results?.context_guardian?.context_score ?? 100)) * 0.2 +
-            (results?.freshness_detector?.freshness_score || 0) * 0.2
-        ));
-
-        const risk = trustIndex >= 75 ? 'FAIBLE' :
-            trustIndex >= 40 ? 'MOYEN' : 'ÉLEVÉ';
-
-        const summary = [
-            results?.fact_checker?.summary,
-            results?.source_analyst?.summary,
-            results?.context_guardian?.summary,
-            results?.freshness_detector?.summary
-        ].filter(Boolean).join(' ');
-
-        console.log('✅ Otto terminé: TrustIndex=', trustIndex);
+        console.log(`✅ [OTTO] Indice calculé: ${trustIndex}% | Risque ${risk}`);
 
         return res.json({
             trustIndex,
             risk,
-            message: 'Analyse Otto complète réussie',
             summary,
-            details: results,
-            sources: analyzedSources,
-            keywords
+            agents
         });
 
     } catch (error) {
-        console.error('❌ Erreur Otto complète:', error);
-        return res.status(500).json({
-            trustIndex: 0,
-            risk: 'ERREUR',
-            message: 'Analyse Otto échouée'
-        });
+        console.error('❌ Erreur Otto :', error);
+        return res.status(500).json({ error: 'Erreur interne Otto' });
     }
 });
 
