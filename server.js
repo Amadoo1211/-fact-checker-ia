@@ -1476,8 +1476,14 @@ app.post('/fetch-source', async (req, res) => {
 // ====== Analyse Otto améliorée ======
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
-async function runOttoAnalysis(text) {
+async function runOttoAnalysis(rawText = '') {
     const apiKey = process.env.OPENAI_API_KEY;
+    const text = (rawText || '').trim();
+
+    if (!text) {
+        return 'Aucune analyse Otto possible : le texte transmis est vide.';
+    }
+
     const prompt = `Tu es Otto, un auditeur d'information.
 Ton rôle est d'évaluer la fiabilité d’un texte en analysant :
 1️⃣ La véracité des faits.
@@ -1495,7 +1501,7 @@ Fournis une synthèse brève et neutre (3 à 5 phrases) qui résume :
 
     if (!apiKey) {
         console.warn('⚠️ OPENAI_API_KEY manquant - résumé Otto dégradé.');
-        return 'Résumé indisponible : configurez une clé OpenAI pour obtenir une analyse détaillée.';
+        return "Otto ne peut pas générer de synthèse détaillée sans clé OpenAI configurée. Les scores et recommandations locaux restent disponibles pour orienter l'évaluation.";
     }
 
     try {
@@ -1507,7 +1513,13 @@ Fournis une synthèse brève et neutre (3 à 5 phrases) qui résume :
             },
             body: JSON.stringify({
                 model: 'gpt-4o-mini',
-                messages: [{ role: 'user', content: prompt }],
+                messages: [
+                    {
+                        role: 'system',
+                        content: 'Tu es Otto, un auditeur méthodique qui fournit des analyses concises, neutres et sourcées.'
+                    },
+                    { role: 'user', content: prompt }
+                ],
                 temperature: 0.2,
                 max_tokens: 400
             })
@@ -1521,8 +1533,15 @@ Fournis une synthèse brève et neutre (3 à 5 phrases) qui résume :
         return data?.choices?.[0]?.message?.content?.trim() || 'Analyse Otto indisponible.';
     } catch (error) {
         console.error('❌ Erreur OpenAI Otto:', error.message || error);
-        return 'Analyse Otto indisponible pour le moment.';
+        return "Analyse Otto indisponible pour le moment. Réessayez plus tard ou vérifiez la configuration OpenAI.";
     }
+}
+
+function computeOttoBarColor(trustIndex) {
+    if (typeof trustIndex !== 'number' || Number.isNaN(trustIndex)) {
+        return 'orange';
+    }
+    return trustIndex >= 75 ? 'green' : trustIndex >= 50 ? 'orange' : 'red';
 }
 
 function evaluateOttoAgents(text) {
@@ -1605,9 +1624,10 @@ app.post('/verify-otto', async (req, res) => {
 
         console.log('🚀 [OTTO] Audit démarré');
 
-        const summary = await runOttoAnalysis(text.trim());
-        const { trustIndex, risk, agents } = evaluateOttoAgents(text);
-        const barColor = trustIndex >= 75 ? 'green' : trustIndex >= 50 ? 'orange' : 'red';
+        const trimmedText = text.trim();
+        const summary = await runOttoAnalysis(trimmedText);
+        const { trustIndex, risk, agents } = evaluateOttoAgents(trimmedText);
+        const barColor = computeOttoBarColor(trustIndex);
 
         console.log(`✅ [OTTO] Indice calculé: ${trustIndex}% | Risque ${risk}`);
 
