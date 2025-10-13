@@ -1583,15 +1583,20 @@ app.post('/verify', async (req, res) => {
 
         const result = await runDocumentaryAnalysis(text);
 
-        refreshedUser.daily_checks_used += 1;
-        await persistUserUsageCounters(refreshedUser);
-        const confirmedUsage = await fetchUserUsageById(refreshedUser.id);
-        const usageSnapshot = buildUsageSnapshot(confirmedUsage, refreshedUser);
+        refreshedUser.daily_checks_used = Number(refreshedUser.daily_checks_used || 0) + 1;
+        refreshedUser.last_check_date = getTodayIso();
+        const persistedUsage = await persistUserUsageCounters(refreshedUser);
+        const usageSnapshot = buildUsageSnapshot(persistedUsage, refreshedUser);
 
-        if (confirmedUsage) {
+        if (persistedUsage) {
             refreshedUser.daily_checks_used = usageSnapshot.daily_checks_used;
             refreshedUser.weekly_otto_analysis = usageSnapshot.weekly_otto_analysis;
         }
+
+        const usageCounters = {
+            dailyChecksUsed: usageSnapshot.daily_checks_used,
+            weeklyOttoAnalysis: usageSnapshot.weekly_otto_analysis,
+        };
 
         const trustIndex = result.score;
         const risk = getRiskLevel(trustIndex);
@@ -1607,6 +1612,7 @@ app.post('/verify', async (req, res) => {
             summary: result.summary,
             sources: result.sources,
             usage: usageSnapshot,
+            ...usageCounters,
         });
 
     } catch (error) {
@@ -1658,8 +1664,162 @@ const getRiskLevel = (trustIndex) => {
     return 'Élevé';
 };
 
+const escapeHtml = (value = '') => value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const ensureHttpUrl = (value) => {
+    if (!value || typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    const normalize = (url) => {
+        try {
+            const parsed = new URL(url);
+            if (!['http:', 'https:'].includes(parsed.protocol)) return null;
+            return parsed.toString();
+        } catch (error) {
+            return null;
+        }
+    };
+
+    const direct = normalize(trimmed);
+    if (direct) return direct;
+
+    const withoutProtocol = trimmed.replace(/^https?:\/\//i, '');
+    return normalize(`https://${withoutProtocol}`);
+};
+
+const capitalizeFirstLetter = (value = '') => {
+    if (!value) return '';
+    return value.charAt(0).toUpperCase() + value.slice(1);
+};
+
+const buildFallbackOttoSources = (text, limit = 5) => {
+    const stopwords = new Set([
+        'la', 'le', 'les', 'un', 'une', 'des', 'du', 'de', 'et', 'ou', 'en', 'au', 'aux', 'dans', 'par', 'pour', 'sur',
+        'avec', 'sans', 'plus', 'moins', 'entre', 'selon', 'que', 'qui', 'quoi', 'dont', 'est', 'sont', 'ete', 'etre',
+        'fait', 'faire', 'cette', 'ces', 'son', 'sa', 'ses', 'leur', 'leurs', 'ainsi', 'donc', 'car', 'mais', 'comme',
+    ]);
+
+    const cleanedTokens = (text || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/\p{Diacritic}/gu, '')
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .map(word => word.trim())
+        .filter(word => word.length > 2 && !stopwords.has(word));
+
+    const keywords = [];
+    for (const token of cleanedTokens) {
+        if (!keywords.includes(token)) {
+            keywords.push(token);
+        }
+        if (keywords.length >= limit) break;
+    }
+
+    if (!keywords.length) {
+        keywords.push('analyse', 'fiabilite', 'information');
+    }
+
+    return keywords.slice(0, limit).map((keyword, index) => {
+        const displayTitle = `Recherche ${capitalizeFirstLetter(keyword)}`;
+        const href = `https://www.google.com/search?q=${encodeURIComponent(`${keyword} source fiable`)}`;
+        const anchor = `<a href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(displayTitle)}</a>`;
+        return {
+            title: displayTitle,
+            url: anchor,
+        };
+    });
+};
+
+const stripJsonCodeFence = (value = '') => {
+    if (!value.trim().startsWith('```')) {
+        return value;
+    }
+
+    return value
+        .replace(/^```json/i, '')
+        .replace(/^```/i, '')
+        .replace(/```$/i, '')
+        .trim();
+};
+
+const parseOttoAnalysisPayload = (rawContent) => {
+    if (!rawContent || typeof rawContent !== 'string') return null;
+
+    let cleaned = stripJsonCodeFence(rawContent).trim();
+    if (!cleaned) return null;
+
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+        cleaned = jsonMatch[0];
+    }
+
+    try {
+        return JSON.parse(cleaned);
+    } catch (error) {
+        return null;
+    }
+};
+
+const normalizeOttoAnalysisPayload = (rawPayload, fallback) => {
+    const summary = typeof rawPayload?.summary === 'string' && rawPayload.summary.trim()
+        ? rawPayload.summary.trim()
+        : fallback.summary;
+
+    const normalizedSources = Array.isArray(rawPayload?.sources)
+        ? rawPayload.sources
+            .map((source, index) => {
+                if (!source) return null;
+
+                const title = typeof source.title === 'string' && source.title.trim()
+                    ? source.title.trim()
+                    : `Source ${index + 1}`;
+
+                const rawUrlCandidate =
+                    (typeof source.url === 'string' && source.url.trim()) ||
+                    (typeof source.href === 'string' && source.href.trim()) ||
+                    (typeof source.link === 'string' && source.link.trim()) ||
+                    '';
+
+                const href = ensureHttpUrl(rawUrlCandidate);
+                if (!href) return null;
+
+                const safeTitle = title.slice(0, 180);
+                const anchor = `<a href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(safeTitle)}</a>`;
+
+                return {
+                    title: safeTitle,
+                    url: anchor,
+                };
+            })
+            .filter(Boolean)
+            .slice(0, 5)
+        : [];
+
+    return {
+        summary,
+        sources: normalizedSources.length ? normalizedSources : fallback.sources,
+    };
+};
+
 async function runOttoAnalysis(text) {
     const apiKey = process.env.OPENAI_API_KEY;
+    const fallback = {
+        summary: 'Analyse Otto indisponible pour le moment. Réessayez plus tard.',
+        sources: buildFallbackOttoSources(text),
+    };
+
+    if (!apiKey) {
+        console.warn('⚠️ OPENAI_API_KEY manquant - analyse Otto dégradée.');
+        return fallback;
+    }
+
     const prompt = `Tu es Otto, un auditeur d'information.
 Ton rôle est d'évaluer la fiabilité d’un texte en analysant :
 1️⃣ La véracité des faits.
@@ -1670,15 +1830,17 @@ Ton rôle est d'évaluer la fiabilité d’un texte en analysant :
 Analyse le texte suivant :
 """${text}"""
 
-Fournis une synthèse brève et neutre (3 à 5 phrases) qui résume :
-- Ce qui est vérifiable.
-- Ce qui manque.
-- Ce qui semble cohérent ou douteux.`;
+Réponds UNIQUEMENT en JSON valide avec la structure suivante :
+{
+  "summary": "Synthèse neutre en français (3 à 5 phrases).",
+  "sources": [
+    { "title": "Titre court de la source", "url": "https://adresse-fiable.com" }
+  ]
+}
 
-    if (!apiKey) {
-        console.warn('⚠️ OPENAI_API_KEY manquant - résumé Otto dégradé.');
-        return 'Résumé indisponible : configurez une clé OpenAI pour obtenir une analyse détaillée.';
-    }
+- Fournis jusqu'à 5 sources fiables maximum.
+- Les URL doivent commencer par https://.
+- Si aucune source n'est disponible, renvoie un tableau vide.`;
 
     try {
         const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -1691,7 +1853,7 @@ Fournis une synthèse brève et neutre (3 à 5 phrases) qui résume :
                 model: 'gpt-4o-mini',
                 messages: [{ role: 'user', content: prompt }],
                 temperature: 0.2,
-                max_tokens: 400
+                max_tokens: 550
             })
         });
 
@@ -1700,10 +1862,17 @@ Fournis une synthèse brève et neutre (3 à 5 phrases) qui résume :
         }
 
         const data = await response.json();
-        return data?.choices?.[0]?.message?.content?.trim() || 'Analyse Otto indisponible.';
+        const rawContent = data?.choices?.[0]?.message?.content || '';
+        const parsed = parseOttoAnalysisPayload(rawContent);
+        if (!parsed) {
+            console.warn('⚠️ Réponse Otto non structurée, utilisation du fallback.');
+            return fallback;
+        }
+
+        return normalizeOttoAnalysisPayload(parsed, fallback);
     } catch (error) {
         console.error('❌ Erreur OpenAI Otto:', error.message || error);
-        return 'Analyse Otto indisponible pour le moment.';
+        return fallback;
     }
 }
 
@@ -1808,25 +1977,28 @@ app.post('/verify-otto', async (req, res) => {
 
         console.log('🚀 [OTTO] Audit démarré');
 
-        const summary = await runOttoAnalysis(text.trim());
+        const analysis = await runOttoAnalysis(text.trim());
         const { trustIndex, risk, agents, barColor } = evaluateOttoAgents(text);
 
-        const usageBeforeUpdate = await fetchUserUsageById(refreshedUser.id);
-        const beforeWeeklyOtto = Number(usageBeforeUpdate?.weekly_otto_analysis ?? refreshedUser.weekly_otto_analysis ?? 0) || 0;
+        const beforeWeeklyOtto = Number(refreshedUser.weekly_otto_analysis ?? 0) || 0;
         console.log(`🧮 [OTTO][USAGE] ${refreshedUser.email} - weekly_otto_analysis before update: ${beforeWeeklyOtto}`);
 
         refreshedUser.weekly_otto_analysis = beforeWeeklyOtto + 1;
-        await persistUserUsageCounters(refreshedUser);
-        const confirmedUsage = await fetchUserUsageById(refreshedUser.id);
-        const afterWeeklyOtto = Number(confirmedUsage?.weekly_otto_analysis ?? refreshedUser.weekly_otto_analysis ?? 0) || 0;
+        refreshedUser.last_check_date = getTodayIso();
+        const persistedUsage = await persistUserUsageCounters(refreshedUser);
+        const usageSnapshot = buildUsageSnapshot(persistedUsage, refreshedUser);
+        const afterWeeklyOtto = usageSnapshot.weekly_otto_analysis;
         console.log(`🧮 [OTTO][USAGE] ${refreshedUser.email} - weekly_otto_analysis after update: ${afterWeeklyOtto}`);
 
-        const usageSnapshot = buildUsageSnapshot(confirmedUsage, refreshedUser);
-
-        if (confirmedUsage) {
+        if (persistedUsage) {
             refreshedUser.daily_checks_used = usageSnapshot.daily_checks_used;
             refreshedUser.weekly_otto_analysis = usageSnapshot.weekly_otto_analysis;
         }
+
+        const usageCounters = {
+            dailyChecksUsed: usageSnapshot.daily_checks_used,
+            weeklyOttoAnalysis: usageSnapshot.weekly_otto_analysis,
+        };
 
         console.log(`✅ [OTTO] Indice calculé: ${trustIndex}% | Risque ${risk}`);
 
@@ -1835,10 +2007,16 @@ app.post('/verify-otto', async (req, res) => {
             plan: planKey.toUpperCase(),
             trustIndex,
             risk,
-            summary,
+            summary: analysis.summary,
+            analysis: {
+                summary: analysis.summary,
+                sources: analysis.sources,
+            },
+            sources: analysis.sources,
             agents,
             barColor,
             usage: usageSnapshot,
+            ...usageCounters,
         });
 
     } catch (error) {
