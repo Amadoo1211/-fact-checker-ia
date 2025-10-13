@@ -1379,7 +1379,7 @@ app.post('/verify', async (req, res) => {
         
         if (!text || text.length < 10) {
             return res.json({
-                overallConfidence: 0.25,
+                score: 0.25,
                 summary: "Texte insuffisant (25%) - Contenu trop court pour analyse.",
                 sources: []
             });
@@ -1420,7 +1420,7 @@ app.post('/verify', async (req, res) => {
         if (userId) await incrementVerificationCount(userId);
         
         const response = {
-            overallConfidence: result.score,
+            score: result.score,
             summary: result.reasoning,
             sources: analyzedSources
         };
@@ -1433,7 +1433,7 @@ app.post('/verify', async (req, res) => {
     } catch (error) {
         console.error('❌ Erreur analyse:', error);
         res.status(500).json({
-            overallConfidence: 0.20,
+            score: 0.20,
             summary: "Erreur système (20%) - Impossible de terminer l'analyse.",
             sources: []
         });
@@ -1466,6 +1466,16 @@ app.post('/fetch-source', async (req, res) => {
 
 // ====== Analyse Otto améliorée ======
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
+const getOttoBarColor = (trustIndex) => {
+    if (trustIndex >= 75) {
+        return '#22c55e';
+    }
+    if (trustIndex >= 50) {
+        return '#f97316';
+    }
+    return '#ef4444';
+};
 
 async function runOttoAnalysis(text) {
     const apiKey = process.env.OPENAI_API_KEY;
@@ -1581,8 +1591,9 @@ function evaluateOttoAgents(text) {
     );
 
     const risk = trustIndex >= 75 ? 'Faible' : trustIndex >= 50 ? 'Moyen' : 'Élevé';
+    const barColor = getOttoBarColor(trustIndex);
 
-    return { trustIndex, risk, agents };
+    return { trustIndex, risk, agents, barColor };
 }
 
 // ========== ROUTE ANALYSE OTTO (APPROFONDIE) ==========
@@ -1597,7 +1608,7 @@ app.post('/verify-otto', async (req, res) => {
         console.log('🚀 [OTTO] Audit démarré');
 
         const summary = await runOttoAnalysis(text.trim());
-        const { trustIndex, risk, agents } = evaluateOttoAgents(text);
+        const { trustIndex, risk, agents, barColor } = evaluateOttoAgents(text);
 
         console.log(`✅ [OTTO] Indice calculé: ${trustIndex}% | Risque ${risk}`);
 
@@ -1605,7 +1616,8 @@ app.post('/verify-otto', async (req, res) => {
             trustIndex,
             risk,
             summary,
-            agents
+            agents,
+            barColor
         });
 
     } catch (error) {
