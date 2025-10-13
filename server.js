@@ -24,11 +24,11 @@ if (typeof ReadableStream === 'undefined') {
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
-const crypto = require('crypto');
 const { Pool } = require('pg');
 const pdfParse = require('pdf-parse');
 const cheerio = require('cheerio');
 const multer = require('multer');
+const schedule = require('node-schedule');
 const app = express();
 
 let openai = null;
@@ -56,64 +56,6 @@ const upload = multer({
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
-
-const PASSWORD_RESET_TARGETS = [
-    'nory.benali89@gmail.com',
-    'bou3285@gmail.com',
-    'ziadtakedine@gmail.com'
-];
-
-const generateRandomPassword = (length = 10) => {
-    const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    const randomBytes = crypto.randomBytes(length);
-    let password = '';
-
-    for (let i = 0; i < length; i += 1) {
-        const index = randomBytes[i] % charset.length;
-        password += charset[index];
-    }
-
-    return password;
-};
-
-const resetUserPasswords = async () => {
-    const client = await pool.connect();
-    const summary = [];
-
-    try {
-        await client.query('BEGIN');
-
-        for (const email of PASSWORD_RESET_TARGETS) {
-            const newPassword = generateRandomPassword(10);
-            const passwordHash = bcrypt.hashSync(newPassword, 10);
-
-            await client.query(
-                'UPDATE users SET password_hash = $1 WHERE email = $2',
-                [passwordHash, email]
-            );
-
-            summary.push({ email, newPassword });
-        }
-
-        await client.query('COMMIT');
-    } catch (error) {
-        await client.query('ROLLBACK');
-        console.error('❌ Password reset failed:', error);
-        throw error;
-    } finally {
-        client.release();
-    }
-
-    console.log('🔐 Password reset summary:');
-    for (const { email, newPassword } of summary) {
-        console.log(`- ${email} → nouveau mdp: ${newPassword}`);
-    }
-};
-
-// 🚨 À DÉSACTIVER APRÈS EXÉCUTION
-resetUserPasswords().catch((error) => {
-    console.error('❌ Error running resetUserPasswords:', error.message);
 });
 
 const TRUSTED_DOMAINS = [
@@ -1471,6 +1413,27 @@ async function checkOttoLimit(userId) {
     }
 }
 
+async function resetAllCounters() {
+    const client = await pool.connect();
+    try {
+        await client.query(`
+            UPDATE users
+            SET daily_checks_used = 0,
+                daily_otto_analysis = 0,
+                weekly_otto_analysis = 0,
+                last_check_date = CURRENT_DATE,
+                weekly_reset_date = CURRENT_DATE,
+                updated_at = NOW()
+        `);
+        console.log('✅ Tous les compteurs ont été remis à zéro !');
+    } catch (error) {
+        console.error('❌ Erreur lors de la réinitialisation des compteurs:', error.message);
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
 async function incrementVerificationCount(userId) {
     const client = await pool.connect();
     try {
@@ -2322,6 +2285,28 @@ const initDb = async () => {
         console.error('❌ Database error:', err.message);
     }
 };
+
+schedule.scheduleJob({ hour: 0, minute: 0, tz: 'Etc/UTC' }, async () => {
+    console.log('🕛 Réinitialisation quotidienne automatique...');
+    try {
+        await resetAllCounters();
+    } catch (error) {
+        console.error('❌ Erreur lors de la réinitialisation quotidienne automatique:', error.message);
+    }
+});
+
+app.post('/admin/reset-counters', async (req, res) => {
+    const { adminEmail } = req.body;
+    if (adminEmail !== ADMIN_EMAIL) return res.status(403).json({ error: 'Accès refusé' });
+    try {
+        console.log('🕛 Réinitialisation des compteurs demandée par admin...');
+        await resetAllCounters();
+        res.json({ success: true, message: "Tous les compteurs ont été remis à zéro !" });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Erreur serveur" });
+    }
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
