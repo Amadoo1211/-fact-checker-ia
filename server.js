@@ -24,11 +24,11 @@ if (typeof ReadableStream === 'undefined') {
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
-const { Pool } = require('pg');
 const pdfParse = require('pdf-parse');
 const cheerio = require('cheerio');
 const multer = require('multer');
 const schedule = require('node-schedule');
+const pool = require('./db');
 const app = express();
 
 let openai = null;
@@ -53,32 +53,31 @@ const upload = multer({
     }
 });
 
-const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+schedule.scheduleJob('0 0 * * *', async () => {
+    try {
+        await pool.query(`
+      UPDATE users
+      SET daily_checks_used = 0,
+          last_check_date = CURRENT_DATE;
+    `);
+        console.log('✅ Reset quotidien exécuté');
+    } catch (err) {
+        console.error('❌ Erreur reset quotidien:', err);
+    }
 });
 
-const scheduleDailyAndWeeklyResets = () => {
-    schedule.scheduleJob('0 0 * * *', async () => {
-        try {
-            await pool.query('UPDATE users SET daily_checks_used = 0, last_check_date = CURRENT_DATE');
-            console.log('✅ Reset quotidien exécuté');
-        } catch (error) {
-            console.error('❌ Échec du reset quotidien:', error.message);
-        }
-    });
-
-    schedule.scheduleJob('0 0 * * 1', async () => {
-        try {
-            await pool.query('UPDATE users SET weekly_otto_analysis = 0, weekly_reset_date = CURRENT_DATE');
-            console.log('✅ Reset hebdomadaire exécuté');
-        } catch (error) {
-            console.error('❌ Échec du reset hebdomadaire:', error.message);
-        }
-    });
-};
-
-scheduleDailyAndWeeklyResets();
+schedule.scheduleJob('0 0 * * 1', async () => {
+    try {
+        await pool.query(`
+      UPDATE users
+      SET weekly_otto_analysis = 0,
+          weekly_reset_date = CURRENT_DATE;
+    `);
+        console.log('✅ Reset hebdomadaire exécuté');
+    } catch (err) {
+        console.error('❌ Erreur reset hebdo:', err);
+    }
+});
 
 const TRUSTED_DOMAINS = [
     'oecd.org',
@@ -1291,14 +1290,15 @@ const getCurrentWeekStartIso = () => {
 };
 
 async function persistUserUsageCounters(user) {
-    await pool.query(
+    const result = await pool.query(
         `UPDATE users
          SET daily_checks_used = $1,
              weekly_otto_analysis = $2,
              last_check_date = $3,
              weekly_reset_date = $4,
              updated_at = NOW()
-         WHERE id = $5`,
+         WHERE id = $5
+         RETURNING id, email, plan, role, daily_checks_used, weekly_otto_analysis, last_check_date, weekly_reset_date`,
         [
             user.daily_checks_used,
             user.weekly_otto_analysis,
@@ -1307,6 +1307,8 @@ async function persistUserUsageCounters(user) {
             user.id,
         ]
     );
+
+    return result.rows[0] || null;
 }
 
 async function refreshUserCounters(user) {
@@ -1343,11 +1345,22 @@ async function refreshUserCounters(user) {
     user.weekly_otto_analysis = weeklyOttoAnalysis;
 
     if (hasUpdates) {
-        await persistUserUsageCounters(user);
+        const persisted = await persistUserUsageCounters(user);
+        if (persisted) {
+            user.daily_checks_used = Number(persisted.daily_checks_used) || 0;
+            user.weekly_otto_analysis = Number(persisted.weekly_otto_analysis) || 0;
+            user.last_check_date = toIsoDateString(persisted.last_check_date) || user.last_check_date;
+            user.weekly_reset_date = toIsoDateString(persisted.weekly_reset_date) || user.weekly_reset_date;
+        }
     }
 
     return user;
 }
+
+const buildUsageSnapshot = (primary, fallback = {}) => ({
+    daily_checks_used: Number(primary?.daily_checks_used ?? fallback.daily_checks_used ?? 0) || 0,
+    weekly_otto_analysis: Number(primary?.weekly_otto_analysis ?? fallback.weekly_otto_analysis ?? 0) || 0,
+});
 
 async function resetAllCounters() {
     const client = await pool.connect();
@@ -1542,17 +1555,20 @@ app.post('/verify', async (req, res) => {
             const message = planKey === 'free' ? 'Limite quotidienne atteinte' : 'Quota quotidien atteint';
             return res.status(statusCode).json({
                 error: message,
-                usage: {
-                    daily_checks_used: refreshedUser.daily_checks_used,
-                    weekly_otto_analysis: refreshedUser.weekly_otto_analysis,
-                },
+                usage: buildUsageSnapshot(refreshedUser),
             });
         }
 
         const result = await runDocumentaryAnalysis(text);
 
         refreshedUser.daily_checks_used += 1;
-        await persistUserUsageCounters(refreshedUser);
+        const persistedUsage = await persistUserUsageCounters(refreshedUser);
+        const usageSnapshot = buildUsageSnapshot(persistedUsage, refreshedUser);
+
+        if (persistedUsage) {
+            refreshedUser.daily_checks_used = usageSnapshot.daily_checks_used;
+            refreshedUser.weekly_otto_analysis = usageSnapshot.weekly_otto_analysis;
+        }
 
         const trustIndex = result.score;
         const risk = getRiskLevel(trustIndex);
@@ -1567,10 +1583,7 @@ app.post('/verify', async (req, res) => {
             risk,
             summary: result.summary,
             sources: result.sources,
-            usage: {
-                daily_checks_used: refreshedUser.daily_checks_used,
-                weekly_otto_analysis: refreshedUser.weekly_otto_analysis,
-            },
+            usage: usageSnapshot,
         });
 
     } catch (error) {
@@ -1766,10 +1779,7 @@ app.post('/verify-otto', async (req, res) => {
             const message = planKey === 'free' ? 'Limite hebdomadaire atteinte' : 'Quota hebdomadaire atteint';
             return res.status(statusCode).json({
                 error: message,
-                usage: {
-                    daily_checks_used: refreshedUser.daily_checks_used,
-                    weekly_otto_analysis: refreshedUser.weekly_otto_analysis,
-                },
+                usage: buildUsageSnapshot(refreshedUser),
             });
         }
 
@@ -1779,7 +1789,13 @@ app.post('/verify-otto', async (req, res) => {
         const { trustIndex, risk, agents, barColor } = evaluateOttoAgents(text);
 
         refreshedUser.weekly_otto_analysis += 1;
-        await persistUserUsageCounters(refreshedUser);
+        const persistedUsage = await persistUserUsageCounters(refreshedUser);
+        const usageSnapshot = buildUsageSnapshot(persistedUsage, refreshedUser);
+
+        if (persistedUsage) {
+            refreshedUser.daily_checks_used = usageSnapshot.daily_checks_used;
+            refreshedUser.weekly_otto_analysis = usageSnapshot.weekly_otto_analysis;
+        }
 
         console.log(`✅ [OTTO] Indice calculé: ${trustIndex}% | Risque ${risk}`);
 
@@ -1791,10 +1807,7 @@ app.post('/verify-otto', async (req, res) => {
             summary,
             agents,
             barColor,
-            usage: {
-                daily_checks_used: refreshedUser.daily_checks_used,
-                weekly_otto_analysis: refreshedUser.weekly_otto_analysis,
-            },
+            usage: usageSnapshot,
         });
 
     } catch (error) {
