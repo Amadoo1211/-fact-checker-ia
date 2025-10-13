@@ -21,7 +21,6 @@ if (typeof ReadableStream === 'undefined') {
     global.ReadableStream = require('stream/web').ReadableStream;
 }
 
-const fetch = require('node-fetch');
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
@@ -1475,465 +1474,93 @@ app.post('/fetch-source', async (req, res) => {
 });
 
 // ========== ROUTE ANALYSE OTTO (APPROFONDIE) ==========
-app.post('/verify-otto', upload.single('file'), async (req, res) => {
-    try {
-        const { userEmail } = req.body || {};
-        let analysisText = '';
+app.post("/verify-otto", async (req, res) => {
+  console.log("=========== ANALYSE OTTO ===========");
+  const { text, lang } = req.body;
+  const openAIApiKey = process.env.OPENAI_API_KEY;
 
-        if (req.file) {
-            try {
-                const pdfBuffer = req.file.buffer;
-                const parsedPdf = await pdfParse(pdfBuffer);
-                const extractedText = cleanExtractedText(parsedPdf.text || '');
-                analysisText = extractedText.substring(0, 20000);
-                const fileName = req.file.originalname || 'uploaded.pdf';
-                console.log(`PDF received for Otto analysis: ${fileName} (${analysisText.length} chars)`);
-            } catch (pdfError) {
-                console.error('❌ Erreur lecture PDF Otto:', pdfError);
-                return res.status(400).json({
-                    success: false,
-                    error: 'Impossible de lire le PDF fourni pour Otto'
-                });
-            }
-        } else if (typeof req.body?.text === 'string') {
-            analysisText = req.body.text.trim();
-        }
-
-        if (!analysisText && !req.file) {
-            return res.status(400).json({ error: 'No input provided' });
-        }
-
-        const sanitizedText = (analysisText || '').trim();
-        const preview = sanitizedText.substring(0, 80);
-        console.log(`\n=== ANALYSE OTTO ===`);
-        console.log(`📝 Texte: "${preview}..."`);
-        console.log(`👤 User: ${userEmail || 'anonymous'}`);
-
-        if (!sanitizedText || sanitizedText.length < 50) {
-            return res.status(400).json({
-                success: false,
-                error: "Texte insuffisant pour analyse Otto"
-            });
-        }
-
-        if (!userEmail) {
-            return res.status(401).json({
-                success: false,
-                error: 'Authentification requise pour Otto'
-            });
-        }
-
-        const user = await getUserByEmail(userEmail);
-        if (!user) {
-            return res.status(401).json({
-                success: false,
-                error: 'Utilisateur non trouvé'
-            });
-        }
-
-        const ottoLimit = await checkOttoLimit(user.id);
-        if (!ottoLimit.allowed) {
-            const message = user.plan === 'free'
-                ? 'Limite Otto FREE: 1 analyse/semaine atteinte. Renouvellement lundi 00h00. Passez à STARTER pour 5 Otto/jour'
-                : `Limite Otto atteinte (${user.plan.toUpperCase()}). Passez au plan supérieur`;
-
-            return res.status(429).json({
-                success: false,
-                error: 'Limite Otto atteinte',
-                message: message,
-                remaining: 0,
-                plan: user.plan,
-                resetType: ottoLimit.resetType
-            });
-        }
-
-        console.log(`📊 Plan: ${user.plan} | Otto restant: ${ottoLimit.remaining}`);
-
-        let francModule;
-        try {
-            francModule = require('franc');
-        } catch (err) {
-            console.warn('Module franc introuvable, fallback interne utilisé');
-        }
-
-        const francFn = typeof francModule === 'function' ? francModule : francModule?.franc;
-        let detectedLang = 'und';
-        if (francFn) {
-            try {
-                detectedLang = francFn(sanitizedText);
-            } catch (err) {
-                console.warn('Erreur détection franc:', err.message);
-            }
-        }
-
-        if (detectedLang === 'und') {
-            const frenchHint = /[éèàùâêîôûçëïüœ]/i.test(sanitizedText);
-            const englishHint = /the\b|and\b|of\b|to\b|for\b/i.test(sanitizedText);
-            detectedLang = frenchHint && !englishHint ? 'fra' : (englishHint && !frenchHint ? 'eng' : 'eng');
-        }
-
-        const isFrench = detectedLang === 'fra';
-        const outputLanguage = isFrench ? 'French' : 'English';
-        const languageCode = isFrench ? 'fr' : 'en';
-
-        const urlRegex = /https?:\/\/[^\s)>'"\]}]+/gi;
-        const rawUrls = sanitizedText.match(urlRegex) || [];
-        const cleanedUrls = Array.from(new Set(rawUrls.map((link) => link.replace(/[),.;]+$/, ''))));
-
-        const trustedSourceContents = [];
-        for (const candidate of cleanedUrls) {
-            if (!candidate) continue;
-            if (!isTrustedDomain(candidate)) {
-                const skippedHost = parseUrlSafely(candidate)?.hostname;
-                if (skippedHost) {
-                    console.log(`⛔ Domaine non fiable ignoré: ${skippedHost.toLowerCase()}`);
-                }
-                continue;
-            }
-
-            if (trustedSourceContents.length >= MAX_PROMPT_SOURCES) {
-                break;
-            }
-
-            try {
-                const sourceData = await extractTrustedSourceContent(candidate);
-                if (sourceData.content) {
-                    trustedSourceContents.push({
-                        url: candidate,
-                        domain: sourceData.domain,
-                        content: sourceData.content
-                    });
-                }
-            } catch (err) {
-                console.error(`⚠️ Échec source (${candidate}):`, err.message || err);
-            }
-        }
-
-        const sourceExcerptsPrompt = trustedSourceContents.length
-            ? trustedSourceContents.map((source, index) => {
-                const excerpt = source.content.substring(0, SOURCE_PROMPT_EXCERPT_LENGTH);
-                return `Source ${index + 1}: ${source.url}\nDomaine: ${source.domain}\nExtrait:\n${excerpt}`;
-            }).join('\n\n-----\n\n')
-            : (isFrench ? 'Aucune source fiable extraite.' : 'No trusted source excerpts available.');
-
-        const systemPrompt = `You are OTTO, a senior AI audit consultant for enterprise governance teams. Produce rigorous reliability audits of AI-generated content.
-
-Respond strictly in valid JSON (no markdown). Use ${outputLanguage} for all text fields and maintain a concise, neutral consulting tone.
-
-Return JSON with the following structure:
-{
-  "trust_index": integer 0-100,
-  "risk_level": ${isFrench ? '"ÉLEVÉ" | "MOYEN" | "FAIBLE"' : '"HIGH" | "MEDIUM" | "LOW"'},
-  "ai_likelihood": integer 0-100,
-  "summary": string,
-  "hallucinations_detected": boolean,
-  "agents": {
-    "fact_checker": {
-      "score": integer 0-100,
-      "summary": string,
-      "verified_claims": [{"claim": string, "evidence": string}],
-      "unverified_claims": [{"claim": string, "reason": string}]
-    },
-    "source_analyst": {
-      "score": integer 0-100,
-      "summary": string,
-      "supporting_sources": [{"citation": string, "relevance": string}],
-      "fake_sources": [{"citation": string, "reason": string}]
-    },
-    "context_guardian": {
-      "context_score": integer 0-100,
-      "summary": string,
-      "manipulation_detected": boolean,
-      "omissions": [{"description": string, "importance": string}]
-    },
-    "freshness_detector": {
-      "freshness_score": integer 0-100,
-      "summary": string,
-      "outdated_data": [{"detail": string, "age": string}]
-    }
+  if (!text || text.trim() === "") {
+    return res.status(400).json({ error: "Texte manquant pour Otto." });
   }
-}
 
-Responsibilities:
-1. Analyse factual claims from the user's text against the trusted source excerpts provided.
-2. Reward claims that align with the trusted evidence by increasing trust_index and relevant agent scores.
-3. Penalise claims that contradict or lack support by decreasing trust_index, marking hallucinations when necessary.
-4. Reference the trusted excerpts in agent summaries when explaining matches or contradictions.
-5. Align risk_level with the trust_index (${isFrench ? 'ÉLEVÉ < 40, MOYEN 40-69, FAIBLE ≥ 70' : 'HIGH < 40, MEDIUM 40-69, LOW ≥ 70'}).
-6. Estimate ai_likelihood (0-100) based on stylistic cues and factual consistency.
+  if (!openAIApiKey) {
+    console.warn("⚠️ OPENAI_API_KEY manquant pour Otto");
+    return res.json({
+      trustIndex: 0,
+      risk: "INCONNU",
+      message: "Aucune clé OpenAI disponible"
+    });
+  }
 
-Return ONLY the JSON object.`;
+  try {
+    console.log("🚀 [OTTO] Début de l’analyse pour :", text.slice(0, 80) + "...");
 
-        const truncatedText = sanitizedText.substring(0, 6000);
-        const userPrompt = `Audit language: ${outputLanguage}.
-User email (for context): ${userEmail}.
-Evaluate the following document for AI-generated content reliability, referencing factual accuracy, sourcing quality, contextual completeness, and data recency. Compare every verifiable claim with the trusted source excerpts. Return only the JSON object described.
+    const systemPrompt = "Tu es Otto, un moteur d’analyse de fiabilité. Donne un score de confiance (0-100%) et un niveau de risque : FAIBLE, MOYEN, ÉLEVÉ.";
+    const userPrompt = `Analyse cette affirmation : "${text}" et retourne uniquement un résumé court avec le pourcentage de fiabilité et le niveau de risque.`;
 
-TEXT START
-${truncatedText}
-TEXT END
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${openAIApiKey}`
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        temperature: 0.3,
+        max_tokens: 900
+      })
+    });
 
-TRUSTED SOURCE EXCERPTS
-${sourceExcerptsPrompt}`;
+    const rawText = await response.text();
+    console.log("🔍 [OTTO RAW RESPONSE]", rawText.slice(0, 300));
 
-        const openAIApiKey = process.env.OPENAI_API_KEY;
-
-        
-
-        const clampScore = (value, defaultValue = 50) => {
-            const num = Number(value);
-            if (Number.isFinite(num)) {
-                const rounded = Math.round(num);
-                return Math.max(0, Math.min(100, rounded));
-            }
-            return defaultValue;
-        };
-
-        const ensureString = (value, fallback = '') => {
-            if (typeof value === 'string') {
-                return value.trim();
-            }
-            return fallback;
-        };
-
-        const ensureArray = (value) => Array.isArray(value) ? value : [];
-
-        const ensureBoolean = (value, fallback = false) => {
-            if (typeof value === 'boolean') {
-                return value;
-            }
-            if (value === undefined) {
-                return fallback;
-            }
-            return Boolean(value);
-        };
-
-        const normaliseAgentArray = (value, allowedKeys) => {
-            return ensureArray(value).map(item => {
-                if (!item || typeof item !== 'object') return null;
-                const cleaned = {};
-                allowedKeys.forEach(key => {
-                    if (item[key] !== undefined) {
-                        const fieldValue = item[key];
-                        cleaned[key] = typeof fieldValue === 'string' ? fieldValue.trim() : fieldValue;
-                    }
-                });
-                return Object.keys(cleaned).length ? cleaned : null;
-            }).filter(Boolean);
-        };
-
-        const computeRiskLabel = (score) => {
-            if (score < 40) {
-                return isFrench ? 'ÉLEVÉ' : 'HIGH';
-            }
-            if (score < 70) {
-                return isFrench ? 'MOYEN' : 'MEDIUM';
-            }
-            return isFrench ? 'FAIBLE' : 'LOW';
-        };
-
-        const buildFallbackResponse = () => {
-            const defaultScore = 50;
-            return {
-                trust_index: defaultScore,
-                risk_level: computeRiskLabel(defaultScore),
-                ai_likelihood: defaultScore,
-                summary: isFrench ? 'Analyse Otto indisponible pour le moment.' : 'Otto audit unavailable at this time.',
-                hallucinations_detected: false,
-                agents: {
-                    fact_checker: {
-                        score: defaultScore,
-                        summary: isFrench ? 'Analyse indisponible.' : 'Analysis unavailable.',
-                        verified_claims: [],
-                        unverified_claims: []
-                    },
-                    source_analyst: {
-                        score: defaultScore,
-                        summary: isFrench ? 'Analyse indisponible.' : 'Analysis unavailable.',
-                        supporting_sources: [],
-                        fake_sources: []
-                    },
-                    context_guardian: {
-                        context_score: defaultScore,
-                        summary: isFrench ? 'Analyse indisponible.' : 'Analysis unavailable.',
-                        manipulation_detected: false,
-                        omissions: []
-                    },
-                    freshness_detector: {
-                        freshness_score: defaultScore,
-                        summary: isFrench ? 'Analyse indisponible.' : 'Analysis unavailable.',
-                        outdated_data: []
-                    }
-                }
-            };
-        };
-
-        let parsedAudit = null;
-
-        if (openAIApiKey) {
-            try {
-                const response = await fetch('https://api.openai.com/v1/chat/completions', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${openAIApiKey}`
-                    },
-                    body: JSON.stringify({
-                        model: 'gpt-4o-mini',
-                        messages: [
-                            { role: 'system', content: systemPrompt },
-                            { role: 'user', content: userPrompt }
-                        ],
-                        temperature: 0.3,
-                        max_tokens: 900
-                    })
-                });
-
-                if (!response.ok) {
-                    throw new Error(`OpenAI API error: ${response.status}`);
-                }
-
-                const data = await response.json();
-                const rawContent = data?.choices?.[0]?.message?.content;
-                if (typeof rawContent !== 'string') {
-                    throw new Error('Réponse OpenAI vide');
-                }
-
-                const cleanedContent = rawContent
-                    .replace(/^```json\s*/i, '')
-                    .replace(/```$/i, '')
-                    .trim();
-
-                try {
-                    parsedAudit = JSON.parse(cleanedContent);
-                } catch (innerError) {
-                    const jsonMatch = cleanedContent.match(/\{[\s\S]*\}/);
-                    if (jsonMatch) {
-                        parsedAudit = JSON.parse(jsonMatch[0]);
-                    } else {
-                        throw innerError;
-                    }
-                }
-            } catch (apiError) {
-                console.error('❌ Erreur OpenAI Otto:', apiError);
-            }
-        } else {
-            console.warn('⚠️ OPENAI_API_KEY manquant pour Otto');
-        }
-
-        const buildResponseFromAudit = (auditPayload) => {
-            const agents = auditPayload?.agents || {};
-            const factChecker = agents.fact_checker || {};
-            const sourceAnalyst = agents.source_analyst || {};
-            const contextGuardian = agents.context_guardian || {};
-            const freshnessDetector = agents.freshness_detector || {};
-
-            const fcScore = clampScore(factChecker.score);
-            const saScore = clampScore(sourceAnalyst.score);
-            const cgScore = clampScore(contextGuardian.context_score);
-            const fdScore = clampScore(freshnessDetector.freshness_score);
-
-            const compositeScore = Math.round(
-                fcScore * 0.35 +
-                saScore * 0.30 +
-                cgScore * 0.20 +
-                fdScore * 0.15
-            );
-
-            const trustIndex = clampScore(auditPayload?.trust_index, compositeScore);
-            const aiLikelihood = clampScore(auditPayload?.ai_likelihood);
-
-            return {
-                trust_index: trustIndex,
-                risk_level: computeRiskLabel(trustIndex),
-                ai_likelihood: aiLikelihood,
-                summary: ensureString(auditPayload?.summary, isFrench ? 'Résumé non fourni.' : 'Summary not provided.'),
-                hallucinations_detected: ensureBoolean(auditPayload?.hallucinations_detected),
-                agents: {
-                    fact_checker: {
-                        score: fcScore,
-                        summary: ensureString(factChecker.summary, isFrench ? 'Analyse manquante.' : 'Analysis unavailable.'),
-                        verified_claims: normaliseAgentArray(factChecker.verified_claims, ['claim', 'evidence']),
-                        unverified_claims: normaliseAgentArray(factChecker.unverified_claims, ['claim', 'reason'])
-                    },
-                    source_analyst: {
-                        score: saScore,
-                        summary: ensureString(sourceAnalyst.summary, isFrench ? 'Analyse manquante.' : 'Analysis unavailable.'),
-                        supporting_sources: normaliseAgentArray(sourceAnalyst.supporting_sources, ['citation', 'relevance']),
-                        fake_sources: normaliseAgentArray(sourceAnalyst.fake_sources, ['citation', 'reason'])
-                    },
-                    context_guardian: {
-                        context_score: cgScore,
-                        summary: ensureString(contextGuardian.summary, isFrench ? 'Analyse manquante.' : 'Analysis unavailable.'),
-                        manipulation_detected: ensureBoolean(contextGuardian.manipulation_detected),
-                        omissions: normaliseAgentArray(contextGuardian.omissions, ['description', 'importance'])
-                    },
-                    freshness_detector: {
-                        freshness_score: fdScore,
-                        summary: ensureString(freshnessDetector.summary, isFrench ? 'Analyse manquante.' : 'Analysis unavailable.'),
-                        outdated_data: normaliseAgentArray(freshnessDetector.outdated_data, ['detail', 'age'])
-                    }
-                }
-            };
-        };
-
-        const finalResponse = parsedAudit ? buildResponseFromAudit(parsedAudit) : buildFallbackResponse();
-
-        await incrementOttoCount(user.id, user.plan);
-
-        console.log(`✅ Otto terminé: Langue=${languageCode} | TrustIndex=${finalResponse.trust_index} | Risque=${finalResponse.risk_level}`);
-
-        const responsePayload = {
-            ...finalResponse,
-            trustIndex: finalResponse.trust_index,
-            riskLevel: finalResponse.risk_level,
-            aiLikelihood: finalResponse.ai_likelihood,
-            hallucinationsDetected: finalResponse.hallucinations_detected
-        };
-
-        return res.json(responsePayload);
-
-    } catch (error) {
-        console.error('❌ Erreur analyse Otto:', error);
-        res.status(500).json({
-            trust_index: 0,
-            trustIndex: 0,
-            risk_level: 'HIGH',
-            riskLevel: 'HIGH',
-            ai_likelihood: 50,
-            aiLikelihood: 50,
-            summary: "Otto analysis unavailable due to a system error.",
-            hallucinations_detected: false,
-            hallucinationsDetected: false,
-            agents: {
-                fact_checker: {
-                    score: 0,
-                    summary: 'Agent unavailable because of an error.',
-                    verified_claims: [],
-                    unverified_claims: []
-                },
-                source_analyst: {
-                    score: 0,
-                    summary: 'Agent unavailable because of an error.',
-                    supporting_sources: [],
-                    fake_sources: []
-                },
-                context_guardian: {
-                    context_score: 0,
-                    summary: 'Agent unavailable because of an error.',
-                    manipulation_detected: false,
-                    omissions: []
-                },
-                freshness_detector: {
-                    freshness_score: 0,
-                    summary: 'Agent unavailable because of an error.',
-                    outdated_data: []
-                }
-            }
-        });
+    if (!response.ok) {
+      throw new Error(`OpenAI API error ${response.status}: ${rawText}`);
     }
-});
 
+    let data;
+    try {
+      data = JSON.parse(rawText);
+    } catch (err) {
+      console.error("❌ JSON parse error:", err);
+      throw new Error("Invalid JSON from OpenAI");
+    }
+
+    const rawContent = data?.choices?.[0]?.message?.content;
+    if (!rawContent || typeof rawContent !== "string") {
+      throw new Error("Empty Otto response");
+    }
+
+    // Extraction du score
+    const trustMatch = rawContent.match(/(\d{1,3})\s*%/);
+    const trustIndex = trustMatch ? parseInt(trustMatch[1], 10) : 50;
+    const riskLevel =
+      trustIndex >= 75 ? "FAIBLE" :
+      trustIndex >= 40 ? "MOYEN" : "ÉLEVÉ";
+
+    console.log(`✅ Otto terminé: Langue=${lang} | TrustIndex=${trustIndex} | Risque=${riskLevel}`);
+
+    return res.json({
+      trustIndex,
+      risk: riskLevel,
+      message: "Analyse Otto réussie",
+      raw: rawContent
+    });
+
+  } catch (err) {
+    console.error("❌ Erreur OpenAI Otto:", err);
+    return res.status(500).json({
+      trustIndex: 0,
+      risk: "ERREUR",
+      message: "Analyse Otto échouée",
+      error: err.message
+    });
+  }
+});
 
 // ========== AUTRES ROUTES ==========
 
