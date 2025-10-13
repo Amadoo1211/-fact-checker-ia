@@ -1,6 +1,6 @@
 // --- Polyfill for ReadableStream on Node < 20 ---
-if (typeof ReadableStream === 'undefined') {
-    global.ReadableStream = require('stream/web').ReadableStream;
+if (typeof ReadableStream === "undefined") {
+    global.ReadableStream = require("stream/web").ReadableStream;
 }
 
 // --- Polyfill for Blob and File on Node < 20 ---
