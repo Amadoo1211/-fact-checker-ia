@@ -4,10 +4,10 @@ if (typeof ReadableStream === 'undefined') {
 }
 
 // --- Polyfill for Blob and File on Node < 20 ---
-if (typeof Blob === 'undefined') {
-    global.Blob = require('buffer').Blob;
+if (typeof Blob === "undefined") {
+    global.Blob = require("buffer").Blob;
 }
-if (typeof File === 'undefined') {
+if (typeof File === "undefined") {
     global.File = class File extends Blob {
         constructor(chunks, name, options = {}) {
             super(chunks, options);
