@@ -1,3 +1,8 @@
+// --- Polyfill for ReadableStream on Node < 20 ---
+if (typeof ReadableStream === 'undefined') {
+    global.ReadableStream = require('stream/web').ReadableStream;
+}
+
 const fetch = require('node-fetch');
 const express = require('express');
 const cors = require('cors');
