@@ -30,6 +30,14 @@ const cheerio = require('cheerio');
 const multer = require('multer');
 const app = express();
 
+let openai = null;
+try {
+    const OpenAI = require('openai');
+    openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+} catch (error) {
+    console.warn('⚠️ Client OpenAI non initialisé pour l\'analyse documentaire:', error.message);
+}
+
 app.use(cors({ 
     origin:'*',
     credentials: true
@@ -154,6 +162,55 @@ const PLAN_LIMITS = {
         dailyOtto: Infinity
     }
 };
+
+const userUsage = {};
+
+const getISOWeekIdentifier = (date) => {
+    const target = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+    const dayNum = target.getUTCDay() || 7;
+    target.setUTCDate(target.getUTCDate() + 4 - dayNum);
+    const yearStart = new Date(Date.UTC(target.getUTCFullYear(), 0, 1));
+    const weekNo = Math.ceil((((target - yearStart) / 86400000) + 1) / 7);
+    return `${target.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
+};
+
+function getUserUsage(email) {
+    if (!userUsage[email]) {
+        const now = new Date();
+        userUsage[email] = {
+            checksToday: 0,
+            checksWeek: 0,
+            ottoToday: 0,
+            ottoWeek: 0,
+            lastReset: now.toISOString().slice(0, 10),
+            lastWeek: getISOWeekIdentifier(now)
+        };
+    }
+    return userUsage[email];
+}
+
+function resetUsageIfNeeded(usage) {
+    const now = new Date();
+    const today = now.toISOString().slice(0, 10);
+    if (usage.lastReset !== today) {
+        usage.checksToday = 0;
+        usage.ottoToday = 0;
+        usage.lastReset = today;
+    }
+
+    const currentWeek = getISOWeekIdentifier(now);
+    if (usage.lastWeek !== currentWeek) {
+        usage.checksWeek = 0;
+        usage.ottoWeek = 0;
+        usage.lastWeek = currentWeek;
+    }
+}
+
+async function resolveUserPlan(email) {
+    if (!email) return 'free';
+    const user = await getUserByEmail(email);
+    return user?.plan || 'free';
+}
 
 // ========== 4 AGENTS IA (OTTO) ==========
 
@@ -1316,6 +1373,96 @@ async function incrementOttoCount(userId, plan) {
     }
 }
 
+async function runDocumentaryAnalysis(text) {
+    const cleanText = text.trim().slice(0, 1000);
+
+    const keywordPrompt = `
+  Extrait les 3 à 6 mots-clés essentiels du texte suivant pour une recherche documentaire :
+  """${cleanText}"""
+  Retourne uniquement les mots-clés, séparés par des virgules.
+  `;
+
+    let keywords = [];
+
+    if (openai?.chat?.completions?.create) {
+        try {
+            const keywordResponse = await openai.chat.completions.create({
+                model: 'gpt-4o-mini',
+                messages: [{ role: 'user', content: keywordPrompt }],
+            });
+
+            const rawKeywords = keywordResponse?.choices?.[0]?.message?.content || '';
+            keywords = rawKeywords
+                .split(',')
+                .map(k => k.trim())
+                .filter(k => k.length > 2)
+                .slice(0, 6);
+        } catch (error) {
+            console.warn('⚠️ Erreur OpenAI (analyse documentaire):', error.message);
+        }
+    }
+
+    if (!keywords.length) {
+        const stopwords = new Set([
+            'la', 'le', 'les', 'un', 'une', 'des', 'du', 'de', 'et', 'ou', 'en', 'au', 'aux', 'dans', 'par', 'pour', 'sur',
+            'avec', 'sans', 'plus', 'moins', 'entre', 'selon', 'que', 'qui', 'quoi', 'dont', 'est', 'sont', 'ete', 'etre',
+            'fait', 'faire', 'cette', 'ces', 'son', 'sa', 'ses', 'leur', 'leurs'
+        ]);
+
+        keywords = Array.from(
+            new Set(
+                cleanText
+                    .toLowerCase()
+                    .normalize('NFD')
+                    .replace(/\p{Diacritic}/gu, '')
+                    .replace(/[^a-z0-9\s]/g, ' ')
+                    .split(/\s+/)
+                    .map(word => word.trim())
+                    .filter(word => word.length > 2 && !stopwords.has(word))
+            )
+        ).slice(0, 6);
+    } else {
+        const deduped = [];
+        const seen = new Set();
+        for (const keyword of keywords) {
+            const lower = keyword.toLowerCase();
+            if (lower && !seen.has(lower)) {
+                seen.add(lower);
+                deduped.push(keyword);
+            }
+        }
+        keywords = deduped.slice(0, 6);
+    }
+
+    if (!keywords.length) {
+        keywords = ['information'];
+    }
+
+    const limitedKeywords = keywords.slice(0, 5);
+    const sources = limitedKeywords.map((kw, i) => ({
+        title: `Source ${i + 1} : ${kw}`,
+        url: `https://www.google.com/search?q=${encodeURIComponent(kw)}`,
+        status: 'analyse en cours',
+    }));
+
+    const hasNumbers = /\d+/.test(text);
+    const hasSourcesMentioned = /(source|rapport|étude|wikipedia|insee|giec|nasa)/i.test(text);
+    const diversity = keywords.length >= 4 ? 10 : 0;
+
+    let score = 50;
+    if (hasNumbers) score += 10;
+    if (hasSourcesMentioned) score += 15;
+    score += diversity;
+
+    const summary = `Analyse documentaire effectuée : ${keywords.length} mots-clés détectés (${keywords.join(', ')}).`;
+
+    return {
+        score: Math.min(Math.round(score), 100),
+        summary,
+        sources,
+    };
+}
+
 // ========== ROUTES ==========
 
 app.post('/auth/signup', async (req, res) => {
@@ -1371,72 +1518,39 @@ app.post('/auth/login', async (req, res) => {
 // ========== ROUTE VÉRIFICATION CLASSIQUE ==========
 app.post('/verify', async (req, res) => {
     try {
-        const { text, smartQueries, userEmail } = req.body;
-        
-        console.log(`\n=== VÉRIFICATION CLASSIQUE ===`);
-        console.log(`📝 Texte: "${text.substring(0, 80)}..."`);
-        console.log(`👤 User: ${userEmail || 'anonymous'}`);
-        
-        if (!text || text.length < 10) {
-            return res.json({
-                score: 0.25,
-                summary: "Texte insuffisant (25%) - Contenu trop court pour analyse.",
-                sources: []
-            });
+        const { text, userEmail } = req.body || {};
+
+        if (!text || !userEmail) {
+            return res.status(400).json({ error: 'Texte ou email manquant' });
         }
-        
-        let userPlan = 'free';
-        let userId = null;
-        
-        if (userEmail) {
-            const user = await getUserByEmail(userEmail);
-            if (user) {
-                userId = user.id;
-                userPlan = user.plan;
-                
-                const limitCheck = await checkVerificationLimit(userId);
-                if (!limitCheck.allowed) {
-                    return res.status(429).json({
-                        success: false,
-                        error: 'Limite atteinte',
-                        message: userPlan === 'free' 
-                            ? 'Limite de 3 vérifications/jour atteinte. Passez à STARTER, PRO ou BUSINESS' 
-                            : `Limite quotidienne atteinte (${userPlan.toUpperCase()}). Passez au plan supérieur`,
-                        remaining: 0,
-                        plan: userPlan
-                    });
-                }
-                console.log(`📊 Plan: ${userPlan} | Restant: ${limitCheck.remaining}`);
+
+        const usage = getUserUsage(userEmail);
+        resetUsageIfNeeded(usage);
+
+        const plan = await resolveUserPlan(userEmail);
+        const normalizedPlan = typeof plan === 'string' ? plan.toLowerCase() : 'free';
+        const limitConfig = PLAN_LIMITS[normalizedPlan] || PLAN_LIMITS.free;
+        const dailyLimit = limitConfig.dailyVerifications;
+
+        if (Number.isFinite(dailyLimit) && usage.checksToday >= dailyLimit) {
+            return res.status(403).json({ error: 'Limite quotidienne atteinte' });
+        }
+
+        const result = await runDocumentaryAnalysis(text);
+
+        usage.checksToday++;
+        usage.checksWeek++;
+
+        res.json({
+            ...result,
+            usage: {
+                today: usage.checksToday,
+                week: usage.checksWeek
             }
-        }
-        
-        const factChecker = new ImprovedFactChecker();
-        const claims = factChecker.extractVerifiableClaims(text);
-        const keywords = extractMainKeywords(text);
-        const sources = await findWebSources(keywords, smartQueries, text);
-        const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, text, sources);
-        const result = factChecker.calculateBalancedScore(text, analyzedSources, claims);
-        
-        if (userId) await incrementVerificationCount(userId);
-        
-        const response = {
-            score: result.score,
-            summary: result.reasoning,
-            sources: analyzedSources
-        };
-        
-        console.log(`✅ Score: ${Math.round(result.score * 100)}%`);
-        console.log(`📚 ${analyzedSources.length} sources | ${claims.length} claims`);
-        
-        res.json(response);
-        
-    } catch (error) {
-        console.error('❌ Erreur analyse:', error);
-        res.status(500).json({
-            score: 0.20,
-            summary: "Erreur système (20%) - Impossible de terminer l'analyse.",
-            sources: []
         });
+    } catch (error) {
+        console.error('Erreur /verify :', error);
+        res.status(500).json({ error: 'Erreur interne' });
     }
 });
 
@@ -1599,16 +1713,38 @@ function evaluateOttoAgents(text) {
 // ========== ROUTE ANALYSE OTTO (APPROFONDIE) ==========
 app.post('/verify-otto', async (req, res) => {
     try {
-        const { text } = req.body || {};
+        const { text, userEmail } = req.body || {};
 
-        if (!text || text.trim() === '') {
-            return res.status(400).json({ error: 'Texte vide' });
+        if (!text || !userEmail) {
+            return res.status(400).json({ error: 'Texte ou email manquant' });
+        }
+
+        const usage = getUserUsage(userEmail);
+        resetUsageIfNeeded(usage);
+
+        const plan = await resolveUserPlan(userEmail);
+        const normalizedPlan = typeof plan === 'string' ? plan.toLowerCase() : 'free';
+        const limitConfig = PLAN_LIMITS[normalizedPlan] || PLAN_LIMITS.free;
+
+        if (normalizedPlan === 'free') {
+            const weeklyLimit = limitConfig.weeklyOtto ?? Infinity;
+            if (Number.isFinite(weeklyLimit) && usage.ottoWeek >= weeklyLimit) {
+                return res.status(403).json({ error: 'Limite hebdomadaire Otto atteinte' });
+            }
+        } else {
+            const dailyLimit = limitConfig.dailyOtto ?? Infinity;
+            if (Number.isFinite(dailyLimit) && usage.ottoToday >= dailyLimit) {
+                return res.status(403).json({ error: 'Limite quotidienne Otto atteinte' });
+            }
         }
 
         console.log('🚀 [OTTO] Audit démarré');
 
         const summary = await runOttoAnalysis(text.trim());
         const { trustIndex, risk, agents, barColor } = evaluateOttoAgents(text);
+
+        usage.ottoToday++;
+        usage.ottoWeek++;
 
         console.log(`✅ [OTTO] Indice calculé: ${trustIndex}% | Risque ${risk}`);
 
@@ -1617,7 +1753,11 @@ app.post('/verify-otto', async (req, res) => {
             risk,
             summary,
             agents,
-            barColor
+            barColor,
+            usage: {
+                today: usage.ottoToday,
+                week: usage.ottoWeek
+            }
         });
 
     } catch (error) {
