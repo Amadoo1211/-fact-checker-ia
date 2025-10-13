@@ -1378,12 +1378,10 @@ app.post('/verify', async (req, res) => {
         console.log(`👤 User: ${userEmail || 'anonymous'}`);
         
         if (!text || text.length < 10) {
-            return res.json({ 
+            return res.json({
                 overallConfidence: 0.25,
-                scoringExplanation: "Texte insuffisant (25%) - Contenu trop court pour analyse.", 
-                keywords: [],
-                sources: [],
-                methodology: "Analyse équilibrée avec détection contextuelle"
+                summary: "Texte insuffisant (25%) - Contenu trop court pour analyse.",
+                sources: []
             });
         }
         
@@ -1423,14 +1421,8 @@ app.post('/verify', async (req, res) => {
         
         const response = {
             overallConfidence: result.score,
-            confidence: result.confidence,
-            scoringExplanation: result.reasoning,
-            sources: analyzedSources,
-            keywords: keywords,
-            claimsAnalyzed: claims,
-            details: result.details,
-            methodology: "Analyse équilibrée avec détection contextuelle intelligente",
-            userPlan: userPlan
+            summary: result.reasoning,
+            sources: analyzedSources
         };
         
         console.log(`✅ Score: ${Math.round(result.score * 100)}%`);
@@ -1440,10 +1432,9 @@ app.post('/verify', async (req, res) => {
         
     } catch (error) {
         console.error('❌ Erreur analyse:', error);
-        res.status(500).json({ 
+        res.status(500).json({
             overallConfidence: 0.20,
-            scoringExplanation: "Erreur système (20%) - Impossible de terminer l'analyse.",
-            keywords: [],
+            summary: "Erreur système (20%) - Impossible de terminer l'analyse.",
             sources: []
         });
     }
