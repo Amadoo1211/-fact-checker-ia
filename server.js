@@ -1474,92 +1474,100 @@ app.post('/fetch-source', async (req, res) => {
 });
 
 // ========== ROUTE ANALYSE OTTO (APPROFONDIE) ==========
-app.post("/verify-otto", async (req, res) => {
-  console.log("=========== ANALYSE OTTO ===========");
-  const { text, lang } = req.body;
-  const openAIApiKey = process.env.OPENAI_API_KEY;
-
-  if (!text || text.trim() === "") {
-    return res.status(400).json({ error: "Texte manquant pour Otto." });
-  }
-
-  if (!openAIApiKey) {
-    console.warn("⚠️ OPENAI_API_KEY manquant pour Otto");
-    return res.json({
-      trustIndex: 0,
-      risk: "INCONNU",
-      message: "Aucune clé OpenAI disponible"
-    });
-  }
-
-  try {
-    console.log("🚀 [OTTO] Début de l’analyse pour :", text.slice(0, 80) + "...");
-
-    const systemPrompt = "Tu es Otto, un moteur d’analyse de fiabilité. Donne un score de confiance (0-100%) et un niveau de risque : FAIBLE, MOYEN, ÉLEVÉ.";
-    const userPrompt = `Analyse cette affirmation : "${text}" et retourne uniquement un résumé court avec le pourcentage de fiabilité et le niveau de risque.`;
-
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${openAIApiKey}`
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt }
-        ],
-        temperature: 0.3,
-        max_tokens: 900
-      })
-    });
-
-    const rawText = await response.text();
-    console.log("🔍 [OTTO RAW RESPONSE]", rawText.slice(0, 300));
-
-    if (!response.ok) {
-      throw new Error(`OpenAI API error ${response.status}: ${rawText}`);
-    }
-
-    let data;
+app.post('/verify-otto', async (req, res) => {
     try {
-      data = JSON.parse(rawText);
-    } catch (err) {
-      console.error("❌ JSON parse error:", err);
-      throw new Error("Invalid JSON from OpenAI");
+        const { text } = req.body || {};
+
+        if (!text || text.trim() === '') {
+            return res.status(400).json({ error: 'Texte vide' });
+        }
+
+        console.log('🚀 [OTTO] Analyse complète démarrée...');
+
+        const agents = new AIAgentsService();
+        const factChecker = new ImprovedFactChecker();
+
+        const keywords = extractMainKeywords(text);
+        const sources = await findWebSources(keywords, [], text);
+        const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, text, sources);
+
+        const claims = factChecker.extractVerifiableClaims(text);
+        const improvedAssessment = factChecker.calculateBalancedScore(text, analyzedSources, claims);
+
+        const results = await agents.runAllAgents(text, analyzedSources);
+
+        if (results?.fact_checker) {
+            results.fact_checker.improved_analysis = {
+                balancedScore: improvedAssessment,
+                claims
+            };
+        }
+
+        const factCheckerScore = Math.round(results?.fact_checker?.score ?? 0);
+        const sourceAnalystScore = Math.round(results?.source_analyst?.score ?? 0);
+        const contextGuardianScoreRaw = 100 - (results?.context_guardian?.context_score ?? 100);
+        const contextGuardianScore = Math.max(0, Math.min(100, Math.round(contextGuardianScoreRaw)));
+        const freshnessScore = Math.round(results?.freshness_detector?.freshness_score ?? 0);
+
+        const trustIndex = Math.round((
+            (results?.fact_checker?.score || 0) * 0.4 +
+            (results?.source_analyst?.score || 0) * 0.2 +
+            (100 - (results?.context_guardian?.context_score ?? 100)) * 0.2 +
+            (results?.freshness_detector?.freshness_score || 0) * 0.2
+        ));
+
+        const agentsReport = [
+            {
+                name: 'Fact Checker',
+                score: factCheckerScore,
+                comment: results?.fact_checker?.summary || 'Analyse des faits terminée.'
+            },
+            {
+                name: 'Source Analyst',
+                score: sourceAnalystScore,
+                comment: results?.source_analyst?.summary || 'Analyse des sources finalisée.'
+            },
+            {
+                name: 'Context Guardian',
+                score: contextGuardianScore,
+                comment: results?.context_guardian?.summary || 'Évaluation du contexte réalisée.'
+            },
+            {
+                name: 'Freshness Detector',
+                score: freshnessScore,
+                comment: results?.freshness_detector?.summary || 'Analyse de fraîcheur effectuée.'
+            }
+        ];
+
+        const risk = trustIndex >= 75 ? 'Faible' : trustIndex >= 50 ? 'Moyen' : 'Élevé';
+
+        const summary = [
+            results?.fact_checker?.summary,
+            results?.source_analyst?.summary,
+            results?.context_guardian?.summary,
+            results?.freshness_detector?.summary
+        ].filter(Boolean).join(' ');
+
+        console.log('✅ Otto terminé: TrustIndex=', trustIndex);
+
+        return res.json({
+            trustIndex,
+            risk,
+            summary: summary || 'Analyse Otto complète réussie.',
+            agents: agentsReport,
+            details: results,
+            sources: analyzedSources,
+            keywords
+        });
+
+    } catch (error) {
+        console.error('❌ Erreur Otto complète:', error);
+        return res.status(500).json({
+            trustIndex: 0,
+            risk: 'Erreur',
+            message: 'Analyse Otto échouée'
+        });
     }
-
-    const rawContent = data?.choices?.[0]?.message?.content;
-    if (!rawContent || typeof rawContent !== "string") {
-      throw new Error("Empty Otto response");
-    }
-
-    // Extraction du score
-    const trustMatch = rawContent.match(/(\d{1,3})\s*%/);
-    const trustIndex = trustMatch ? parseInt(trustMatch[1], 10) : 50;
-    const riskLevel =
-      trustIndex >= 75 ? "FAIBLE" :
-      trustIndex >= 40 ? "MOYEN" : "ÉLEVÉ";
-
-    console.log(`✅ Otto terminé: Langue=${lang} | TrustIndex=${trustIndex} | Risque=${riskLevel}`);
-
-    return res.json({
-      trustIndex,
-      risk: riskLevel,
-      message: "Analyse Otto réussie",
-      raw: rawContent
-    });
-
-  } catch (err) {
-    console.error("❌ Erreur OpenAI Otto:", err);
-    return res.status(500).json({
-      trustIndex: 0,
-      risk: "ERREUR",
-      message: "Analyse Otto échouée",
-      error: err.message
-    });
-  }
 });
 
 // ========== AUTRES ROUTES ==========
