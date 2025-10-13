@@ -1,3 +1,21 @@
+// --- Polyfill pour Node < 20 (Railway + Codex compat) ---
+try {
+    const { Blob, File } = require('buffer');
+    const { fetch, FormData, Headers, Request, Response } = require('undici');
+
+    if (!globalThis.fetch) globalThis.fetch = fetch;
+    if (!globalThis.Headers) globalThis.Headers = Headers;
+    if (!globalThis.Request) globalThis.Request = Request;
+    if (!globalThis.Response) globalThis.Response = Response;
+    if (!globalThis.FormData) globalThis.FormData = FormData;
+    if (!globalThis.Blob) globalThis.Blob = Blob;
+    if (!globalThis.File) globalThis.File = File;
+
+    console.log('✅ Polyfills Blob/FormData/Fetch chargés pour Node < 20');
+} catch (err) {
+    console.warn('⚠️ Échec du polyfill Node < 20:', err.message);
+}
+
 // --- Polyfill for ReadableStream on Node < 20 ---
 if (typeof ReadableStream === 'undefined') {
     global.ReadableStream = require('stream/web').ReadableStream;
