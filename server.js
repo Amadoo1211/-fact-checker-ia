@@ -146,14 +146,45 @@ const stripe = STRIPE_SECRET_KEY ? require('stripe')(STRIPE_SECRET_KEY) : null;
 
 // LIMITES SELON PLANS
 const plans = {
-    free: { dailyLimit: 3, weeklyOttoLimit: 1 },
-    pro: { dailyLimit: 50, weeklyOttoLimit: 100 },
-    admin: { dailyLimit: Infinity, weeklyOttoLimit: Infinity },
+    free: {
+        factCheckDailyLimit: 3,
+        ottoDailyLimit: 1,
+        ottoWeeklyLimit: 1,
+    },
+    starter: {
+        factCheckDailyLimit: 10,
+        ottoDailyLimit: 5,
+        ottoWeeklyLimit: 35,
+    },
+    pro: {
+        factCheckDailyLimit: 30,
+        ottoDailyLimit: Infinity,
+        ottoWeeklyLimit: Infinity,
+    },
+    business: {
+        factCheckDailyLimit: Infinity,
+        ottoDailyLimit: Infinity,
+        ottoWeeklyLimit: Infinity,
+    },
+    admin: {
+        factCheckDailyLimit: Infinity,
+        ottoDailyLimit: Infinity,
+        ottoWeeklyLimit: Infinity,
+    },
 };
 
-const getPlanKey = (role) => {
-    const normalized = (role || 'free').toLowerCase();
-    return plans[normalized] ? normalized : 'free';
+const getPlanKey = (user) => {
+    if (!user) return 'free';
+
+    const role = (user.role || '').toLowerCase();
+    if (role === 'admin') return 'admin';
+
+    const planValue = (user.plan || '').toLowerCase();
+    if (planValue && plans[planValue]) return planValue;
+
+    if (role && plans[role]) return role;
+
+    return 'free';
 };
 
 const getPlanLimits = (planKey) => plans[planKey] || plans.free;
@@ -1274,7 +1305,7 @@ async function refreshUserCounters(user) {
 }
 
 function buildDailyUsagePayload(dailyUsed, dailyLimit) {
-    const isUnlimited = dailyLimit === Infinity;
+    const isUnlimited = !Number.isFinite(dailyLimit);
     return {
         dailyUsed,
         dailyLimit: isUnlimited ? null : dailyLimit,
@@ -1283,15 +1314,17 @@ function buildDailyUsagePayload(dailyUsed, dailyLimit) {
 }
 
 function buildOttoUsagePayload(dailyUsed, weeklyUsed, limits) {
-    const isDailyUnlimited = limits.dailyLimit === Infinity;
-    const isWeeklyUnlimited = limits.weeklyOttoLimit === Infinity;
+    const dailyLimit = limits.ottoDailyLimit;
+    const weeklyLimit = limits.ottoWeeklyLimit;
+    const isDailyUnlimited = !Number.isFinite(dailyLimit);
+    const isWeeklyUnlimited = !Number.isFinite(weeklyLimit);
     return {
         dailyUsed,
-        dailyLimit: isDailyUnlimited ? null : limits.dailyLimit,
-        dailyRemaining: isDailyUnlimited ? null : Math.max(limits.dailyLimit - dailyUsed, 0),
+        dailyLimit: isDailyUnlimited ? null : dailyLimit,
+        dailyRemaining: isDailyUnlimited ? null : Math.max(dailyLimit - dailyUsed, 0),
         weeklyUsed,
-        weeklyLimit: isWeeklyUnlimited ? null : limits.weeklyOttoLimit,
-        weeklyRemaining: isWeeklyUnlimited ? null : Math.max(limits.weeklyOttoLimit - weeklyUsed, 0),
+        weeklyLimit: isWeeklyUnlimited ? null : weeklyLimit,
+        weeklyRemaining: isWeeklyUnlimited ? null : Math.max(weeklyLimit - weeklyUsed, 0),
     };
 }
 
@@ -1479,10 +1512,11 @@ app.post('/verify', async (req, res) => {
         }
 
         const refreshedUser = await refreshUserCounters(user);
-        const planKey = getPlanKey(refreshedUser.role);
+        const planKey = getPlanKey(refreshedUser);
         const limits = getPlanLimits(planKey);
 
-        if (limits.dailyLimit !== Infinity && refreshedUser.daily_checks_used >= limits.dailyLimit) {
+        if (Number.isFinite(limits.factCheckDailyLimit) &&
+            refreshedUser.daily_checks_used >= limits.factCheckDailyLimit) {
             console.log(`⛔️ Limite quotidienne atteinte pour ${refreshedUser.email} (${planKey})`);
             return res.status(429).json({ error: 'Quota atteint' });
         }
@@ -1495,7 +1529,10 @@ app.post('/verify', async (req, res) => {
         );
 
         const updatedDailyUsed = (refreshedUser.daily_checks_used || 0) + 1;
-        const usagePayload = buildDailyUsagePayload(updatedDailyUsed, limits.dailyLimit);
+        const usagePayload = buildDailyUsagePayload(updatedDailyUsed, limits.factCheckDailyLimit);
+
+        const trustIndex = result.score;
+        const risk = getRiskLevel(trustIndex);
 
         console.log(`✅ Score documentaire: ${result.score}`);
         console.log(`📚 Sources proposées: ${result.sources.length}`);
@@ -1503,7 +1540,10 @@ app.post('/verify', async (req, res) => {
         res.json({
             status: 'ok',
             plan: planKey.toUpperCase(),
-            ...result,
+            trustIndex,
+            risk,
+            summary: result.summary,
+            sources: result.sources,
             ...usagePayload,
         });
 
@@ -1548,6 +1588,12 @@ const getOttoBarColor = (trustIndex) => {
         return '#f97316';
     }
     return '#ef4444';
+};
+
+const getRiskLevel = (trustIndex) => {
+    if (trustIndex >= 75) return 'Faible';
+    if (trustIndex >= 50) return 'Moyen';
+    return 'Élevé';
 };
 
 async function runOttoAnalysis(text) {
@@ -1663,7 +1709,7 @@ function evaluateOttoAgents(text) {
         agents[3].score * 0.1
     );
 
-    const risk = trustIndex >= 75 ? 'Faible' : trustIndex >= 50 ? 'Moyen' : 'Élevé';
+    const risk = getRiskLevel(trustIndex);
     const barColor = getOttoBarColor(trustIndex);
 
     return { trustIndex, risk, agents, barColor };
@@ -1684,15 +1730,17 @@ app.post('/verify-otto', async (req, res) => {
         }
 
         const refreshedUser = await refreshUserCounters(user);
-        const planKey = getPlanKey(refreshedUser.role);
+        const planKey = getPlanKey(refreshedUser);
         const limits = getPlanLimits(planKey);
 
-        if (limits.dailyLimit !== Infinity && refreshedUser.daily_otto_analysis >= limits.dailyLimit) {
+        if (Number.isFinite(limits.ottoDailyLimit) &&
+            refreshedUser.daily_otto_analysis >= limits.ottoDailyLimit) {
             console.log(`⛔️ Limite quotidienne OTTO atteinte pour ${refreshedUser.email} (${planKey})`);
             return res.status(429).json({ error: 'Quota atteint' });
         }
 
-        if (limits.weeklyOttoLimit !== Infinity && refreshedUser.weekly_otto_analysis >= limits.weeklyOttoLimit) {
+        if (Number.isFinite(limits.ottoWeeklyLimit) &&
+            refreshedUser.weekly_otto_analysis >= limits.ottoWeeklyLimit) {
             console.log(`⛔️ Limite hebdomadaire OTTO atteinte pour ${refreshedUser.email} (${planKey})`);
             return res.status(429).json({ error: 'Quota atteint' });
         }
