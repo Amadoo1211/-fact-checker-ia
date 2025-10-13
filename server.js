@@ -58,6 +58,28 @@ const pool = new Pool({
     ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
+const scheduleDailyAndWeeklyResets = () => {
+    schedule.scheduleJob('0 0 * * *', async () => {
+        try {
+            await pool.query('UPDATE users SET daily_checks_used = 0, last_check_date = CURRENT_DATE');
+            console.log('✅ Reset quotidien exécuté');
+        } catch (error) {
+            console.error('❌ Échec du reset quotidien:', error.message);
+        }
+    });
+
+    schedule.scheduleJob('0 0 * * 1', async () => {
+        try {
+            await pool.query('UPDATE users SET weekly_otto_analysis = 0, weekly_reset_date = CURRENT_DATE');
+            console.log('✅ Reset hebdomadaire exécuté');
+        } catch (error) {
+            console.error('❌ Échec du reset hebdomadaire:', error.message);
+        }
+    });
+};
+
+scheduleDailyAndWeeklyResets();
+
 const TRUSTED_DOMAINS = [
     'oecd.org',
     'imf.org',
@@ -1244,88 +1266,87 @@ async function getUserById(id) {
     }
 }
 
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
-const getUtcDateOnly = (value = new Date()) => {
-    const date = value instanceof Date ? value : new Date(value);
+const toIsoDateString = (value) => {
+    if (!value) return null;
+    if (typeof value === 'string') return value.slice(0, 10);
+    const date = new Date(value);
     if (Number.isNaN(date.getTime())) return null;
-    return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+    return date.toISOString().slice(0, 10);
 };
 
-const toIsoDate = (date) => (date ? date.toISOString().slice(0, 10) : null);
+const getTodayIso = () => {
+    const now = new Date();
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+        .toISOString()
+        .slice(0, 10);
+};
+
+const getCurrentWeekStartIso = () => {
+    const now = new Date();
+    const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const day = startOfDay.getUTCDay();
+    const diffToMonday = (day + 6) % 7;
+    startOfDay.setUTCDate(startOfDay.getUTCDate() - diffToMonday);
+    return startOfDay.toISOString().slice(0, 10);
+};
+
+async function persistUserUsageCounters(user) {
+    await pool.query(
+        `UPDATE users
+         SET daily_checks_used = $1,
+             weekly_otto_analysis = $2,
+             last_check_date = $3,
+             weekly_reset_date = $4,
+             updated_at = NOW()
+         WHERE id = $5`,
+        [
+            user.daily_checks_used,
+            user.weekly_otto_analysis,
+            user.last_check_date,
+            user.weekly_reset_date,
+            user.id,
+        ]
+    );
+}
 
 async function refreshUserCounters(user) {
     if (!user) return null;
 
-    const todayDate = getUtcDateOnly();
-    const todayIso = toIsoDate(todayDate);
+    const todayIso = getTodayIso();
+    const weekStartIso = getCurrentWeekStartIso();
 
-    const lastCheckDate = user.last_check_date ? getUtcDateOnly(new Date(user.last_check_date)) : null;
-    const weeklyResetDate = user.weekly_reset_date ? getUtcDateOnly(new Date(user.weekly_reset_date)) : null;
+    const lastCheckIso = toIsoDateString(user.last_check_date);
+    const weeklyResetIso = toIsoDateString(user.weekly_reset_date);
 
-    const needsDailyReset = !lastCheckDate || lastCheckDate.getTime() !== todayDate.getTime();
+    let dailyChecksUsed = Number(user.daily_checks_used) || 0;
+    let weeklyOttoAnalysis = Number(user.weekly_otto_analysis) || 0;
 
-    let needsWeeklyReset = false;
-    if (!weeklyResetDate) {
-        needsWeeklyReset = true;
-    } else {
-        const diffDays = Math.floor((todayDate.getTime() - weeklyResetDate.getTime()) / MS_PER_DAY);
-        if (diffDays >= 7) {
-            needsWeeklyReset = true;
-        }
-    }
+    let hasUpdates = false;
 
-    const updateFragments = [];
-    const values = [];
-    let index = 1;
-
-    if (needsDailyReset) {
-        updateFragments.push('daily_checks_used = 0', 'daily_otto_analysis = 0', `last_check_date = $${index++}`);
-        values.push(todayIso);
-        user.daily_checks_used = 0;
-        user.daily_otto_analysis = 0;
+    if (!lastCheckIso || lastCheckIso < todayIso) {
+        dailyChecksUsed = 0;
         user.last_check_date = todayIso;
+        hasUpdates = true;
+    } else {
+        user.last_check_date = lastCheckIso;
     }
 
-    if (needsWeeklyReset) {
-        updateFragments.push('weekly_otto_analysis = 0', `weekly_reset_date = $${index++}`);
-        values.push(todayIso);
-        user.weekly_otto_analysis = 0;
-        user.weekly_reset_date = todayIso;
+    if (!weeklyResetIso || weeklyResetIso < weekStartIso) {
+        weeklyOttoAnalysis = 0;
+        user.weekly_reset_date = weekStartIso;
+        hasUpdates = true;
+    } else {
+        user.weekly_reset_date = weeklyResetIso;
     }
 
-    if (updateFragments.length) {
-        updateFragments.push('updated_at = NOW()');
-        const setClause = updateFragments.join(', ');
-        values.push(user.id);
-        await pool.query(`UPDATE users SET ${setClause} WHERE id = $${index}`, values);
+    user.daily_checks_used = dailyChecksUsed;
+    user.weekly_otto_analysis = weeklyOttoAnalysis;
+
+    if (hasUpdates) {
+        await persistUserUsageCounters(user);
     }
 
     return user;
-}
-
-function buildDailyUsagePayload(dailyUsed, dailyLimit) {
-    const isUnlimited = !Number.isFinite(dailyLimit);
-    return {
-        dailyUsed,
-        dailyLimit: isUnlimited ? null : dailyLimit,
-        dailyRemaining: isUnlimited ? null : Math.max(dailyLimit - dailyUsed, 0),
-    };
-}
-
-function buildOttoUsagePayload(dailyUsed, weeklyUsed, limits) {
-    const dailyLimit = limits.ottoDailyLimit;
-    const weeklyLimit = limits.ottoWeeklyLimit;
-    const isDailyUnlimited = !Number.isFinite(dailyLimit);
-    const isWeeklyUnlimited = !Number.isFinite(weeklyLimit);
-    return {
-        dailyUsed,
-        dailyLimit: isDailyUnlimited ? null : dailyLimit,
-        dailyRemaining: isDailyUnlimited ? null : Math.max(dailyLimit - dailyUsed, 0),
-        weeklyUsed,
-        weeklyLimit: isWeeklyUnlimited ? null : weeklyLimit,
-        weeklyRemaining: isWeeklyUnlimited ? null : Math.max(weeklyLimit - weeklyUsed, 0),
-    };
 }
 
 async function resetAllCounters() {
@@ -1334,10 +1355,9 @@ async function resetAllCounters() {
         await client.query(`
             UPDATE users
             SET daily_checks_used = 0,
-                daily_otto_analysis = 0,
                 weekly_otto_analysis = 0,
                 last_check_date = CURRENT_DATE,
-                weekly_reset_date = CURRENT_DATE,
+                weekly_reset_date = DATE_TRUNC('week', CURRENT_DATE)::date,
                 updated_at = NOW()
         `);
         console.log('✅ Tous les compteurs ont été remis à zéro !');
@@ -1514,22 +1534,25 @@ app.post('/verify', async (req, res) => {
         const refreshedUser = await refreshUserCounters(user);
         const planKey = getPlanKey(refreshedUser);
         const limits = getPlanLimits(planKey);
+        const dailyLimit = Number.isFinite(limits.factCheckDailyLimit) ? limits.factCheckDailyLimit : Infinity;
 
-        if (Number.isFinite(limits.factCheckDailyLimit) &&
-            refreshedUser.daily_checks_used >= limits.factCheckDailyLimit) {
+        if (dailyLimit !== Infinity && refreshedUser.daily_checks_used >= dailyLimit) {
             console.log(`⛔️ Limite quotidienne atteinte pour ${refreshedUser.email} (${planKey})`);
-            return res.status(429).json({ error: 'Quota atteint' });
+            const statusCode = planKey === 'free' ? 403 : 429;
+            const message = planKey === 'free' ? 'Limite quotidienne atteinte' : 'Quota quotidien atteint';
+            return res.status(statusCode).json({
+                error: message,
+                usage: {
+                    daily_checks_used: refreshedUser.daily_checks_used,
+                    weekly_otto_analysis: refreshedUser.weekly_otto_analysis,
+                },
+            });
         }
 
         const result = await runDocumentaryAnalysis(text);
 
-        await pool.query(
-            'UPDATE users SET daily_checks_used = daily_checks_used + 1, updated_at = NOW() WHERE id = $1',
-            [refreshedUser.id]
-        );
-
-        const updatedDailyUsed = (refreshedUser.daily_checks_used || 0) + 1;
-        const usagePayload = buildDailyUsagePayload(updatedDailyUsed, limits.factCheckDailyLimit);
+        refreshedUser.daily_checks_used += 1;
+        await persistUserUsageCounters(refreshedUser);
 
         const trustIndex = result.score;
         const risk = getRiskLevel(trustIndex);
@@ -1544,7 +1567,10 @@ app.post('/verify', async (req, res) => {
             risk,
             summary: result.summary,
             sources: result.sources,
-            ...usagePayload,
+            usage: {
+                daily_checks_used: refreshedUser.daily_checks_used,
+                weekly_otto_analysis: refreshedUser.weekly_otto_analysis,
+            },
         });
 
     } catch (error) {
@@ -1732,17 +1758,19 @@ app.post('/verify-otto', async (req, res) => {
         const refreshedUser = await refreshUserCounters(user);
         const planKey = getPlanKey(refreshedUser);
         const limits = getPlanLimits(planKey);
+        const weeklyLimit = Number.isFinite(limits.ottoWeeklyLimit) ? limits.ottoWeeklyLimit : Infinity;
 
-        if (Number.isFinite(limits.ottoDailyLimit) &&
-            refreshedUser.daily_otto_analysis >= limits.ottoDailyLimit) {
-            console.log(`⛔️ Limite quotidienne OTTO atteinte pour ${refreshedUser.email} (${planKey})`);
-            return res.status(429).json({ error: 'Quota atteint' });
-        }
-
-        if (Number.isFinite(limits.ottoWeeklyLimit) &&
-            refreshedUser.weekly_otto_analysis >= limits.ottoWeeklyLimit) {
+        if (weeklyLimit !== Infinity && refreshedUser.weekly_otto_analysis >= weeklyLimit) {
             console.log(`⛔️ Limite hebdomadaire OTTO atteinte pour ${refreshedUser.email} (${planKey})`);
-            return res.status(429).json({ error: 'Quota atteint' });
+            const statusCode = planKey === 'free' ? 403 : 429;
+            const message = planKey === 'free' ? 'Limite hebdomadaire atteinte' : 'Quota hebdomadaire atteint';
+            return res.status(statusCode).json({
+                error: message,
+                usage: {
+                    daily_checks_used: refreshedUser.daily_checks_used,
+                    weekly_otto_analysis: refreshedUser.weekly_otto_analysis,
+                },
+            });
         }
 
         console.log('🚀 [OTTO] Audit démarré');
@@ -1750,18 +1778,8 @@ app.post('/verify-otto', async (req, res) => {
         const summary = await runOttoAnalysis(text.trim());
         const { trustIndex, risk, agents, barColor } = evaluateOttoAgents(text);
 
-        await pool.query(
-            `UPDATE users
-             SET daily_otto_analysis = daily_otto_analysis + 1,
-                 weekly_otto_analysis = weekly_otto_analysis + 1,
-                 updated_at = NOW()
-             WHERE id = $1`,
-            [refreshedUser.id]
-        );
-
-        const updatedDaily = (refreshedUser.daily_otto_analysis || 0) + 1;
-        const updatedWeekly = (refreshedUser.weekly_otto_analysis || 0) + 1;
-        const usagePayload = buildOttoUsagePayload(updatedDaily, updatedWeekly, limits);
+        refreshedUser.weekly_otto_analysis += 1;
+        await persistUserUsageCounters(refreshedUser);
 
         console.log(`✅ [OTTO] Indice calculé: ${trustIndex}% | Risque ${risk}`);
 
@@ -1773,7 +1791,10 @@ app.post('/verify-otto', async (req, res) => {
             summary,
             agents,
             barColor,
-            ...usagePayload,
+            usage: {
+                daily_checks_used: refreshedUser.daily_checks_used,
+                weekly_otto_analysis: refreshedUser.weekly_otto_analysis,
+            },
         });
 
     } catch (error) {
