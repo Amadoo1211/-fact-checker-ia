@@ -1544,60 +1544,137 @@ function computeOttoBarColor(trustIndex) {
     return trustIndex >= 75 ? 'green' : trustIndex >= 50 ? 'orange' : 'red';
 }
 
-function evaluateOttoAgents(text) {
+function evaluateOttoAgents(text, { analyzedSources = [], claims = [] } = {}) {
     const normalized = text.toLowerCase();
     const sourceKeywords = ['giec', 'nasa', 'noaa', 'unesco', 'mckinsey', 'rapport', 'étude', 'source', 'publication', 'journal'];
     const riskKeywords = ['rumeur', 'controversé', 'non confirmé', 'hoax'];
     const claimKeywords = ['affirme', 'déclare', 'selon', 'prétend', 'annonce', 'indique'];
-    const recencyIndicators = ['2020', '2021', '2022', '2023', '2024', '2025', 'récent', 'récente', 'nouveau', 'nouvelle étude'];
+    const recencyIndicators = ['2020', '2021', '2022', '2023', '2024', '2025', 'récent', 'récente', 'nouveau', 'nouvelle étude', 'dernière étude'];
     const temporalIndicators = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre', '202', '20'];
+    const methodologyIndicators = ['méthodologie', 'échantillon', 'données', 'analyse', 'rapport', 'étude', 'source officielle'];
 
     const sourceMatches = sourceKeywords.reduce((count, keyword) => count + (normalized.includes(keyword) ? 1 : 0), 0);
-    const hasSources = sourceMatches > 0;
-    const hasMultipleSources = sourceMatches > 2;
+    const hasSourcesMentioned = sourceMatches > 0;
     const hasClaims = claimKeywords.some(keyword => normalized.includes(keyword));
     const hasNumbers = /(\d+\s?%|\d{4})/.test(text);
-    const hasRecency = recencyIndicators.some(keyword => normalized.includes(keyword));
+    const hasRecencyText = recencyIndicators.some(keyword => normalized.includes(keyword));
     const hasContextualDetails = text.length > 220 || temporalIndicators.some(keyword => normalized.includes(keyword));
+    const hasMethodologyHints = methodologyIndicators.some(keyword => normalized.includes(keyword));
     const hasWarnings = riskKeywords.some(keyword => normalized.includes(keyword));
 
-    const factCheckerScore = clamp(65 + (hasSources ? 15 : 0) + (hasClaims ? 0 : 5) + (hasWarnings ? -20 : 0) + (hasNumbers && !hasSources ? -10 : 0), 25, 95);
-    const sourceAnalystScore = clamp(55 + (hasSources ? 20 : -10) + (hasMultipleSources ? 10 : 0) + (hasWarnings ? -15 : 0), 20, 92);
-    const contextGuardianScore = clamp(60 + (hasContextualDetails ? 10 : -15) + (hasSources ? 5 : 0) + (hasClaims && !hasContextualDetails ? -10 : 0), 25, 90);
-    const freshnessDetectorScore = clamp(58 + (hasRecency ? 20 : -8) + (hasNumbers ? 5 : 0), 20, 95);
+    const totalSources = analyzedSources.length;
+    const credibleSources = analyzedSources.filter(source => (source.credibilityMultiplier || 0) >= 0.7);
+    const supportingSources = analyzedSources.filter(source => source.actuallySupports);
+    const contradictorySources = analyzedSources.filter(source => source.contradicts);
+    const highRelevanceSources = analyzedSources.filter(source => (source.semanticRelevance || 0) >= 0.2);
+
+    const credibleRatio = totalSources ? credibleSources.length / totalSources : 0;
+    const supportCoverage = claims.length
+        ? supportingSources.length / Math.max(1, claims.length)
+        : supportingSources.length > 0
+            ? Math.min(1, supportingSources.length / 2)
+            : 0;
+
+    const avgRelevance = highRelevanceSources.length
+        ? highRelevanceSources.reduce((sum, source) => sum + (source.semanticRelevance || 0), 0) / highRelevanceSources.length
+        : 0;
+
+    const snippetRecency = analyzedSources.some(source => {
+        const combined = `${source.title || ''} ${source.snippet || ''}`;
+        return /(202[0-5]|202\d|récente|récent|nouvelle étude)/i.test(combined);
+    });
+
+    const domainSet = new Set();
+    for (const source of credibleSources) {
+        try {
+            const parsed = new URL(source.url || '');
+            domainSet.add(parsed.hostname);
+        } catch (error) {
+            // Ignore parsing errors for malformed URLs.
+        }
+    }
+
+    const hasSourceDiversity = domainSet.size >= 2;
+
+    const factCheckerScore = clamp(
+        60
+        + supportCoverage * 35
+        + credibleRatio * 15
+        - (hasWarnings ? 15 : 0)
+        - (contradictorySources.length > 0 ? 15 : 0)
+        + (claims.length === 0 ? -8 : 0)
+        + (supportingSources.length >= 2 ? 5 : 0),
+        25,
+        95
+    );
+
+    const sourceAnalystScore = clamp(
+        52
+        + (totalSources > 0 ? 8 : -15)
+        + credibleRatio * 35
+        + (hasSourceDiversity ? 8 : totalSources > 1 ? 0 : -6)
+        - (contradictorySources.length > 0 ? 8 : 0)
+        + (hasSourcesMentioned ? 4 : -6),
+        20,
+        92
+    );
+
+    const contextGuardianScore = clamp(
+        58
+        + (hasContextualDetails ? 10 : -12)
+        + (hasMethodologyHints ? 6 : -4)
+        + (claims.length > 0 ? 4 : -4)
+        + (supportCoverage > 0.5 ? 4 : 0)
+        - (contradictorySources.length > 0 ? 5 : 0),
+        25,
+        90
+    );
+
+    const freshnessDetectorScore = clamp(
+        56
+        + (hasRecencyText ? 14 : -8)
+        + (snippetRecency ? 10 : 0)
+        + (hasNumbers ? 4 : 0),
+        20,
+        95
+    );
 
     const agents = [
         {
             name: 'Fact Checker',
             score: factCheckerScore,
-            comment: hasSources
-                ? 'Les affirmations sont cohérentes avec des faits connus. Ajouter des chiffres précis ou des liens directs renforcerait la vérifiabilité.'
-                : hasClaims
-                    ? 'Des affirmations sont présentes mais manquent d’appuis vérifiables. Fournir les études ou sources améliorerait la crédibilité.'
-                    : 'Le texte reste prudent et offre peu de faits vérifiables. Ajouter des éléments concrets permettrait de mieux évaluer les allégations.'
+            comment: supportCoverage >= 0.6
+                ? `Les affirmations sont largement corroborées par ${supportingSources.length} source(s) cohérente(s). Ajouter des données chiffrées ou préciser la méthode de vérification conforterait la fiabilité.`
+                : supportCoverage >= 0.3
+                    ? `Certaines affirmations disposent d’appuis partiels (${supportingSources.length} source(s) pertinente(s)). Documenter les points restants ou citer les passages exacts réduirait les zones d’ombre.`
+                    : contradictorySources.length > 0
+                        ? `Plusieurs passages sont contestés par ${contradictorySources.length} source(s) contradictoire(s). Identifier les divergences et vérifier chaque chiffre annoncé est recommandé.`
+                        : 'Les affirmations manquent de confirmations externes vérifiables. Ajouter des références directes ou des preuves factuelles renforcerait l’argumentaire.'
         },
         {
             name: 'Source Analyst',
             score: sourceAnalystScore,
-            comment: hasSources
-                ? hasMultipleSources
-                    ? 'Les sources mentionnées sont réputées et soutiennent les affirmations. Indiquer les dates ou rapports précis renforcerait la traçabilité.'
-                    : 'Des sources sont citées mais restent limitées en diversité. Ajouter d’autres références fiables équilibrerait la perspective.'
-                : 'Aucune source explicite n’a été trouvée dans le texte. Ajouter des références renforcerait la fiabilité de l’analyse.'
+            comment: totalSources === 0
+                ? 'Aucune source exploitable n’a été détectée pour étayer le texte. Mentionner des références identifiées permettrait d’évaluer la crédibilité des citations.'
+                : credibleRatio >= 0.6
+                    ? `Les références disponibles sont majoritairement crédibles et variées${hasSourceDiversity ? '' : ', mais peu diversifiées'}. Indiquer les publications exactes ou les dates de diffusion renforcerait la traçabilité.`
+                    : 'Les sources évoquées restent limitées ou peu fiables pour soutenir les déclarations. Ajouter des liens vérifiables et diversifiés améliorerait la solidité documentaire.'
         },
         {
             name: 'Context Guardian',
             score: contextGuardianScore,
-            comment: hasContextualDetails
-                ? 'Le contexte fourni est globalement cohérent avec le sujet. Mentionner le cadre temporel ou méthodologique rendrait l’analyse plus complète.'
-                : 'Le contexte est limité et ne permet pas d’évaluer les nuances. Fournir plus de détails clarifierait la portée des affirmations.'
+            comment: hasContextualDetails && hasMethodologyHints
+                ? 'Le texte offre un contexte global avec des indices méthodologiques utiles. Préciser la période ou le périmètre étudié assurerait une compréhension complète.'
+                : hasContextualDetails
+                    ? 'Le contexte général est présent mais reste partiel sur certains aspects. Ajouter des repères temporels ou géographiques clarifierait les limites de l’analyse.'
+                    : 'Le texte manque de contexte pour situer les affirmations. Décrire le cadre, la période ou les sources consultées aiderait à comprendre les enjeux.'
         },
         {
             name: 'Freshness Detector',
             score: freshnessDetectorScore,
-            comment: hasRecency
-                ? 'Les informations semblent récentes et alignées sur des données actuelles. Préciser la date exacte des études renforcerait la rigueur.'
-                : 'Le texte ne mentionne pas de période récente. Ajouter une référence temporelle aiderait à vérifier la pertinence de l’information.'
+            comment: hasRecencyText || snippetRecency
+                ? 'Les informations comportent des repères temporels récents ou des études mises à jour. Mentionner la date de publication exacte garantirait la perception d’actualité.'
+                : 'Aucun indice ne confirme la fraîcheur des données présentées. Ajouter des dates ou des événements récents permettrait d’évaluer la pertinence actuelle.'
         }
     ];
 
@@ -1610,7 +1687,22 @@ function evaluateOttoAgents(text) {
 
     const risk = trustIndex >= 75 ? 'Faible' : trustIndex >= 50 ? 'Moyen' : 'Élevé';
 
-    return { trustIndex, risk, agents };
+    const breakdown = {
+        totalSources,
+        credibleSources: credibleSources.length,
+        supportingSources: supportingSources.length,
+        contradictorySources: contradictorySources.length,
+        claimCount: claims.length,
+        supportCoverage: Number(supportCoverage.toFixed(2)),
+        credibleRatio: Number(credibleRatio.toFixed(2)),
+        hasSourceDiversity,
+        avgRelevance: Number(avgRelevance.toFixed(2)),
+        recencySignals: hasRecencyText || snippetRecency,
+        contextSignals: hasContextualDetails,
+        methodologySignals: hasMethodologyHints
+    };
+
+    return { trustIndex, risk, agents, breakdown };
 }
 
 // ========== ROUTE ANALYSE OTTO (APPROFONDIE) ==========
@@ -1626,7 +1718,23 @@ app.post('/verify-otto', async (req, res) => {
 
         const trimmedText = text.trim();
         const summary = await runOttoAnalysis(trimmedText);
-        const { trustIndex, risk, agents } = evaluateOttoAgents(trimmedText);
+
+        const keywords = extractMainKeywords(trimmedText);
+        const factChecker = new ImprovedFactChecker();
+        const claims = factChecker.extractVerifiableClaims(trimmedText);
+
+        let analyzedSources = [];
+        try {
+            const discoveredSources = await findWebSources(keywords, [], trimmedText);
+            analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, trimmedText, discoveredSources);
+        } catch (sourceError) {
+            console.warn('⚠️ [OTTO] Récupération des sources impossible :', sourceError.message || sourceError);
+        }
+
+        const { trustIndex, risk, agents, breakdown } = evaluateOttoAgents(trimmedText, {
+            analyzedSources,
+            claims
+        });
         const barColor = computeOttoBarColor(trustIndex);
 
         console.log(`✅ [OTTO] Indice calculé: ${trustIndex}% | Risque ${risk}`);
@@ -1637,7 +1745,13 @@ app.post('/verify-otto', async (req, res) => {
             summary,
             barColor,
             agents,
-            uiHint: 'showTrustBar'
+            uiHint: 'showTrustBar',
+            keywords,
+            sources: analyzedSources,
+            details: {
+                claims,
+                heuristics: breakdown
+            }
         });
 
     } catch (error) {
