@@ -3,6 +3,9 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
 const { Pool } = require('pg');
+const pdfParse = require('pdf-parse');
+const cheerio = require('cheerio');
+const multer = require('multer');
 const app = express();
 
 app.use(cors({ 
@@ -12,10 +15,98 @@ app.use(cors({
 app.use(express.json({ limit: '5mb' }));
 app.use('/stripe/webhook', express.raw({ type: 'application/json' }));
 
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+        fileSize: 25 * 1024 * 1024 // 25 MB
+    }
+});
+
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
+
+const TRUSTED_DOMAINS = [
+    'oecd.org',
+    'imf.org',
+    'worldbank.org',
+    'who.int',
+    'un.org',
+    'ilo.org',
+    'weforum.org',
+    'banquemondiale.org',
+    'data.gov',
+    'europa.eu',
+    'gouvernement.fr'
+];
+
+const MAX_SOURCE_CHARACTERS = 15000;
+const MAX_PROMPT_SOURCES = 3;
+const SOURCE_PROMPT_EXCERPT_LENGTH = 2000;
+
+const parseUrlSafely = (value) => {
+    try {
+        return new URL(value);
+    } catch (error) {
+        return null;
+    }
+};
+
+const isTrustedDomain = (value) => {
+    const parsed = parseUrlSafely(value);
+    if (!parsed) return false;
+    const hostname = parsed.hostname.toLowerCase();
+    return TRUSTED_DOMAINS.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`));
+};
+
+const cleanExtractedText = (text = '') => text.replace(/\s+/g, ' ').trim();
+
+const extractTrustedSourceContent = async (targetUrl) => {
+    const parsedUrl = parseUrlSafely(targetUrl);
+    const hostname = parsedUrl?.hostname?.toLowerCase() || 'invalid-domain';
+    console.log(`🔗 Source fetch attempt: ${hostname}`);
+
+    if (!parsedUrl) {
+        const error = new Error('invalid url');
+        error.code = 'INVALID_URL';
+        throw error;
+    }
+
+    if (!isTrustedDomain(targetUrl)) {
+        const error = new Error('untrusted domain');
+        error.code = 'UNTRUSTED_DOMAIN';
+        throw error;
+    }
+
+    const response = await fetch(targetUrl);
+    if (!response.ok) {
+        const error = new Error(`failed to fetch: ${response.status}`);
+        error.code = 'FETCH_FAILED';
+        throw error;
+    }
+
+    const pathname = parsedUrl.pathname.toLowerCase();
+    let textContent = '';
+
+    if (pathname.endsWith('.pdf')) {
+        const buffer = Buffer.from(await response.arrayBuffer());
+        const parsedPdf = await pdfParse(buffer);
+        textContent = parsedPdf.text || '';
+    } else {
+        const html = await response.text();
+        const $ = cheerio.load(html);
+        $('script, style, noscript, iframe').remove();
+        textContent = $('body').text();
+    }
+
+    const cleanedContent = cleanExtractedText(textContent).substring(0, MAX_SOURCE_CHARACTERS);
+
+    return {
+        domain: hostname,
+        content: cleanedContent
+    };
+};
 
 const ADMIN_EMAIL = 'nory.benali89@gmail.com';
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
@@ -1336,17 +1427,65 @@ app.post('/verify', async (req, res) => {
     }
 });
 
-// ========== ROUTE ANALYSE OTTO (APPROFONDIE) ==========
-app.post('/verify-otto', async (req, res) => {
-    try {
-        const { text, userEmail } = req.body || {};
+// ========== ROUTE RÉCUPÉRATION SOURCES FIABLES ==========
+app.post('/fetch-source', async (req, res) => {
+    const { url } = req.body || {};
 
-        const preview = typeof text === 'string' ? text.substring(0, 80) : '';
+    if (!url || typeof url !== 'string') {
+        return res.status(400).json({ error: 'invalid url' });
+    }
+
+    try {
+        const { content } = await extractTrustedSourceContent(url.trim());
+        return res.json({ content });
+    } catch (error) {
+        if (error.code === 'UNTRUSTED_DOMAIN') {
+            return res.status(400).json({ error: 'untrusted domain' });
+        }
+        if (error.code === 'INVALID_URL') {
+            return res.status(400).json({ error: 'invalid url' });
+        }
+
+        console.error('❌ Erreur récupération source:', error.message || error);
+        return res.status(500).json({ error: 'failed to fetch source' });
+    }
+});
+
+// ========== ROUTE ANALYSE OTTO (APPROFONDIE) ==========
+app.post('/verify-otto', upload.single('file'), async (req, res) => {
+    try {
+        const { userEmail } = req.body || {};
+        let analysisText = '';
+
+        if (req.file) {
+            try {
+                const pdfBuffer = req.file.buffer;
+                const parsedPdf = await pdfParse(pdfBuffer);
+                const extractedText = cleanExtractedText(parsedPdf.text || '');
+                analysisText = extractedText.substring(0, 20000);
+                const fileName = req.file.originalname || 'uploaded.pdf';
+                console.log(`PDF received for Otto analysis: ${fileName} (${analysisText.length} chars)`);
+            } catch (pdfError) {
+                console.error('❌ Erreur lecture PDF Otto:', pdfError);
+                return res.status(400).json({
+                    success: false,
+                    error: 'Impossible de lire le PDF fourni pour Otto'
+                });
+            }
+        } else if (typeof req.body?.text === 'string') {
+            analysisText = req.body.text.trim();
+        }
+
+        if (!analysisText && !req.file) {
+            return res.status(400).json({ error: 'No input provided' });
+        }
+
+        const sanitizedText = (analysisText || '').trim();
+        const preview = sanitizedText.substring(0, 80);
         console.log(`\n=== ANALYSE OTTO ===`);
         console.log(`📝 Texte: "${preview}..."`);
         console.log(`👤 User: ${userEmail || 'anonymous'}`);
 
-        const sanitizedText = typeof text === 'string' ? text.trim() : '';
         if (!sanitizedText || sanitizedText.length < 50) {
             return res.status(400).json({
                 success: false,
@@ -1414,95 +1553,109 @@ app.post('/verify-otto', async (req, res) => {
         const outputLanguage = isFrench ? 'French' : 'English';
         const languageCode = isFrench ? 'fr' : 'en';
 
+        const urlRegex = /https?:\/\/[^\s)>'"\]}]+/gi;
+        const rawUrls = sanitizedText.match(urlRegex) || [];
+        const cleanedUrls = Array.from(new Set(rawUrls.map((link) => link.replace(/[),.;]+$/, ''))));
+
+        const trustedSourceContents = [];
+        for (const candidate of cleanedUrls) {
+            if (!candidate) continue;
+            if (!isTrustedDomain(candidate)) {
+                const skippedHost = parseUrlSafely(candidate)?.hostname;
+                if (skippedHost) {
+                    console.log(`⛔ Domaine non fiable ignoré: ${skippedHost.toLowerCase()}`);
+                }
+                continue;
+            }
+
+            if (trustedSourceContents.length >= MAX_PROMPT_SOURCES) {
+                break;
+            }
+
+            try {
+                const sourceData = await extractTrustedSourceContent(candidate);
+                if (sourceData.content) {
+                    trustedSourceContents.push({
+                        url: candidate,
+                        domain: sourceData.domain,
+                        content: sourceData.content
+                    });
+                }
+            } catch (err) {
+                console.error(`⚠️ Échec source (${candidate}):`, err.message || err);
+            }
+        }
+
+        const sourceExcerptsPrompt = trustedSourceContents.length
+            ? trustedSourceContents.map((source, index) => {
+                const excerpt = source.content.substring(0, SOURCE_PROMPT_EXCERPT_LENGTH);
+                return `Source ${index + 1}: ${source.url}\nDomaine: ${source.domain}\nExtrait:\n${excerpt}`;
+            }).join('\n\n-----\n\n')
+            : (isFrench ? 'Aucune source fiable extraite.' : 'No trusted source excerpts available.');
+
         const systemPrompt = `You are OTTO, a senior AI audit consultant for enterprise governance teams. Produce rigorous reliability audits of AI-generated content.
 
-Respond strictly in valid JSON (no markdown). Use ${outputLanguage} for every textual field. Maintain a concise, neutral consulting tone.
+Respond strictly in valid JSON (no markdown). Use ${outputLanguage} for all text fields and maintain a concise, neutral consulting tone.
 
-The JSON schema is:
+Return JSON with the following structure:
 {
-  "success": true,
-  "otto": {
-    "globalScore": 0-100 integer,
-    "riskLevel": ${isFrench ? '"ÉLEVÉ" | "MOYEN" | "FAIBLE"' : '"HIGH" | "MEDIUM" | "LOW"'},
-    "message": string,
-    "summary": string,
-    "key_points": [string, ...]
-  },
+  "trust_index": integer 0-100,
+  "risk_level": ${isFrench ? '"ÉLEVÉ" | "MOYEN" | "FAIBLE"' : '"HIGH" | "MEDIUM" | "LOW"'},
+  "ai_likelihood": integer 0-100,
+  "summary": string,
+  "hallucinations_detected": boolean,
   "agents": {
     "fact_checker": {
-      "score": 0-100 integer,
+      "score": integer 0-100,
       "summary": string,
+      "verified_claims": [{"claim": string, "evidence": string}],
       "unverified_claims": [{"claim": string, "reason": string}]
     },
     "source_analyst": {
-      "score": 0-100 integer,
+      "score": integer 0-100,
       "summary": string,
+      "supporting_sources": [{"citation": string, "relevance": string}],
       "fake_sources": [{"citation": string, "reason": string}]
     },
     "context_guardian": {
-      "context_score": 0-100 integer,
+      "context_score": integer 0-100,
       "summary": string,
       "manipulation_detected": boolean,
       "omissions": [{"description": string, "importance": string}]
     },
     "freshness_detector": {
-      "freshness_score": 0-100 integer,
+      "freshness_score": integer 0-100,
       "summary": string,
-      "outdated_data": [{"detail": string}]
+      "outdated_data": [{"detail": string, "age": string}]
     }
   }
 }
 
-Explain findings with enterprise-level insight. Highlight AI-generation patterns, factual reliability, sourcing gaps, contextual omissions, and data freshness. Reference specific sections of the text where possible. Ensure riskLevel aligns with the global score thresholds (0-39 high risk, 40-69 medium risk, 70-100 low risk).`;
+Responsibilities:
+1. Analyse factual claims from the user's text against the trusted source excerpts provided.
+2. Reward claims that align with the trusted evidence by increasing trust_index and relevant agent scores.
+3. Penalise claims that contradict or lack support by decreasing trust_index, marking hallucinations when necessary.
+4. Reference the trusted excerpts in agent summaries when explaining matches or contradictions.
+5. Align risk_level with the trust_index (${isFrench ? 'ÉLEVÉ < 40, MOYEN 40-69, FAIBLE ≥ 70' : 'HIGH < 40, MEDIUM 40-69, LOW ≥ 70'}).
+6. Estimate ai_likelihood (0-100) based on stylistic cues and factual consistency.
+
+Return ONLY the JSON object.`;
 
         const truncatedText = sanitizedText.substring(0, 6000);
         const userPrompt = `Audit language: ${outputLanguage}.
 User email (for context): ${userEmail}.
-Evaluate the following document for AI-generated content reliability, referencing factual accuracy, sourcing quality, contextual completeness, and data recency. Return only the JSON object described.
+Evaluate the following document for AI-generated content reliability, referencing factual accuracy, sourcing quality, contextual completeness, and data recency. Compare every verifiable claim with the trusted source excerpts. Return only the JSON object described.
 
 TEXT START
 ${truncatedText}
-TEXT END`;
+TEXT END
+
+TRUSTED SOURCE EXCERPTS
+${sourceExcerptsPrompt}`;
 
         const openAIApiKey = process.env.OPENAI_API_KEY;
 
-        const buildFallbackResponse = () => {
-            const defaultScore = 50;
-            const riskLevel = defaultScore < 40 ? (isFrench ? 'ÉLEVÉ' : 'HIGH') : defaultScore < 70 ? (isFrench ? 'MOYEN' : 'MEDIUM') : (isFrench ? 'FAIBLE' : 'LOW');
-            return {
-                success: true,
-                otto: {
-                    globalScore: defaultScore,
-                    riskLevel,
-                    message: isFrench ? 'Service temporairement indisponible' : 'Service temporarily unavailable',
-                    summary: isFrench ? 'Analyse Otto indisponible pour le moment.' : 'Otto audit unavailable at this time.',
-                    key_points: []
-                },
-                agents: {
-                    fact_checker: {
-                        score: defaultScore,
-                        summary: isFrench ? 'Analyse indisponible.' : 'Analysis unavailable.',
-                        unverified_claims: []
-                    },
-                    source_analyst: {
-                        score: defaultScore,
-                        summary: isFrench ? 'Analyse indisponible.' : 'Analysis unavailable.',
-                        fake_sources: []
-                    },
-                    context_guardian: {
-                        context_score: defaultScore,
-                        summary: isFrench ? 'Analyse indisponible.' : 'Analysis unavailable.',
-                        manipulation_detected: false,
-                        omissions: []
-                    },
-                    freshness_detector: {
-                        freshness_score: defaultScore,
-                        summary: isFrench ? 'Analyse indisponible.' : 'Analysis unavailable.',
-                        outdated_data: []
-                    }
-                }
-            };
-        };
+        
 
         const clampScore = (value, defaultValue = 50) => {
             const num = Number(value);
@@ -1522,14 +1675,27 @@ TEXT END`;
 
         const ensureArray = (value) => Array.isArray(value) ? value : [];
 
+        const ensureBoolean = (value, fallback = false) => {
+            if (typeof value === 'boolean') {
+                return value;
+            }
+            if (value === undefined) {
+                return fallback;
+            }
+            return Boolean(value);
+        };
+
         const normaliseAgentArray = (value, allowedKeys) => {
             return ensureArray(value).map(item => {
                 if (!item || typeof item !== 'object') return null;
                 const cleaned = {};
                 allowedKeys.forEach(key => {
-                    if (item[key] !== undefined) cleaned[key] = item[key];
+                    if (item[key] !== undefined) {
+                        const fieldValue = item[key];
+                        cleaned[key] = typeof fieldValue === 'string' ? fieldValue.trim() : fieldValue;
+                    }
                 });
-                return cleaned;
+                return Object.keys(cleaned).length ? cleaned : null;
             }).filter(Boolean);
         };
 
@@ -1541,6 +1707,42 @@ TEXT END`;
                 return isFrench ? 'MOYEN' : 'MEDIUM';
             }
             return isFrench ? 'FAIBLE' : 'LOW';
+        };
+
+        const buildFallbackResponse = () => {
+            const defaultScore = 50;
+            return {
+                trust_index: defaultScore,
+                risk_level: computeRiskLabel(defaultScore),
+                ai_likelihood: defaultScore,
+                summary: isFrench ? 'Analyse Otto indisponible pour le moment.' : 'Otto audit unavailable at this time.',
+                hallucinations_detected: false,
+                agents: {
+                    fact_checker: {
+                        score: defaultScore,
+                        summary: isFrench ? 'Analyse indisponible.' : 'Analysis unavailable.',
+                        verified_claims: [],
+                        unverified_claims: []
+                    },
+                    source_analyst: {
+                        score: defaultScore,
+                        summary: isFrench ? 'Analyse indisponible.' : 'Analysis unavailable.',
+                        supporting_sources: [],
+                        fake_sources: []
+                    },
+                    context_guardian: {
+                        context_score: defaultScore,
+                        summary: isFrench ? 'Analyse indisponible.' : 'Analysis unavailable.',
+                        manipulation_detected: false,
+                        omissions: []
+                    },
+                    freshness_detector: {
+                        freshness_score: defaultScore,
+                        summary: isFrench ? 'Analyse indisponible.' : 'Analysis unavailable.',
+                        outdated_data: []
+                    }
+                }
+            };
         };
 
         let parsedAudit = null;
@@ -1608,43 +1810,45 @@ TEXT END`;
             const cgScore = clampScore(contextGuardian.context_score);
             const fdScore = clampScore(freshnessDetector.freshness_score);
 
-            const computedGlobal = Math.round(
+            const compositeScore = Math.round(
                 fcScore * 0.35 +
                 saScore * 0.30 +
                 cgScore * 0.20 +
                 fdScore * 0.15
             );
 
+            const trustIndex = clampScore(auditPayload?.trust_index, compositeScore);
+            const aiLikelihood = clampScore(auditPayload?.ai_likelihood);
+
             return {
-                success: true,
-                otto: {
-                    globalScore: computedGlobal,
-                    riskLevel: computeRiskLabel(computedGlobal),
-                    message: ensureString(auditPayload?.otto?.message, isFrench ? 'Aucun message fourni.' : 'No message provided.'),
-                    summary: ensureString(auditPayload?.otto?.summary, isFrench ? 'Résumé non fourni.' : 'Summary not provided.'),
-                    key_points: ensureArray(auditPayload?.otto?.key_points).map(point => ensureString(point)).filter(Boolean)
-                },
+                trust_index: trustIndex,
+                risk_level: computeRiskLabel(trustIndex),
+                ai_likelihood: aiLikelihood,
+                summary: ensureString(auditPayload?.summary, isFrench ? 'Résumé non fourni.' : 'Summary not provided.'),
+                hallucinations_detected: ensureBoolean(auditPayload?.hallucinations_detected),
                 agents: {
                     fact_checker: {
                         score: fcScore,
                         summary: ensureString(factChecker.summary, isFrench ? 'Analyse manquante.' : 'Analysis unavailable.'),
+                        verified_claims: normaliseAgentArray(factChecker.verified_claims, ['claim', 'evidence']),
                         unverified_claims: normaliseAgentArray(factChecker.unverified_claims, ['claim', 'reason'])
                     },
                     source_analyst: {
                         score: saScore,
                         summary: ensureString(sourceAnalyst.summary, isFrench ? 'Analyse manquante.' : 'Analysis unavailable.'),
+                        supporting_sources: normaliseAgentArray(sourceAnalyst.supporting_sources, ['citation', 'relevance']),
                         fake_sources: normaliseAgentArray(sourceAnalyst.fake_sources, ['citation', 'reason'])
                     },
                     context_guardian: {
                         context_score: cgScore,
                         summary: ensureString(contextGuardian.summary, isFrench ? 'Analyse manquante.' : 'Analysis unavailable.'),
-                        manipulation_detected: Boolean(contextGuardian.manipulation_detected),
+                        manipulation_detected: ensureBoolean(contextGuardian.manipulation_detected),
                         omissions: normaliseAgentArray(contextGuardian.omissions, ['description', 'importance'])
                     },
                     freshness_detector: {
                         freshness_score: fdScore,
                         summary: ensureString(freshnessDetector.summary, isFrench ? 'Analyse manquante.' : 'Analysis unavailable.'),
-                        outdated_data: normaliseAgentArray(freshnessDetector.outdated_data, ['detail', 'reason'])
+                        outdated_data: normaliseAgentArray(freshnessDetector.outdated_data, ['detail', 'age'])
                     }
                 }
             };
@@ -1654,15 +1858,43 @@ TEXT END`;
 
         await incrementOttoCount(user.id, user.plan);
 
-        console.log(`✅ Otto terminé: Langue=${languageCode} | Score=${finalResponse.otto.globalScore} | Risque=${finalResponse.otto.riskLevel}`);
+        console.log(`✅ Otto terminé: Langue=${languageCode} | TrustIndex=${finalResponse.trust_index} | Risque=${finalResponse.risk_level}`);
 
         return res.json(finalResponse);
 
     } catch (error) {
         console.error('❌ Erreur analyse Otto:', error);
         res.status(500).json({
-            success: false,
-            error: "Erreur système lors de l'analyse Otto"
+            trust_index: 0,
+            risk_level: 'HIGH',
+            ai_likelihood: 50,
+            summary: "Otto analysis unavailable due to a system error.",
+            hallucinations_detected: false,
+            agents: {
+                fact_checker: {
+                    score: 0,
+                    summary: 'Agent unavailable because of an error.',
+                    verified_claims: [],
+                    unverified_claims: []
+                },
+                source_analyst: {
+                    score: 0,
+                    summary: 'Agent unavailable because of an error.',
+                    supporting_sources: [],
+                    fake_sources: []
+                },
+                context_guardian: {
+                    context_score: 0,
+                    summary: 'Agent unavailable because of an error.',
+                    manipulation_detected: false,
+                    omissions: []
+                },
+                freshness_detector: {
+                    freshness_score: 0,
+                    summary: 'Agent unavailable because of an error.',
+                    outdated_data: []
+                }
+            }
         });
     }
 });
