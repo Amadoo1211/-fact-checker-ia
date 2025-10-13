@@ -1552,33 +1552,33 @@ function evaluateOttoAgents(text) {
             name: 'Fact Checker',
             score: factCheckerScore,
             comment: hasSources
-                ? 'Les affirmations sont étayées par des éléments vérifiables.'
+                ? 'Contexte: Le texte cite des références identifiées ou des données précises. Ce que l’agent constate: la plupart des affirmations semblent alignées avec les éléments fournis. Ce que l’agent suggère pour améliorer la fiabilité: ajouter les passages exacts ou les chiffres clés des sources pour verrouiller la vérification.'
                 : hasClaims
-                    ? 'Des affirmations sont présentes mais nécessitent des preuves explicites.'
-                    : 'Le texte reste prudent mais peu de faits concrets sont fournis.'
+                    ? 'Contexte: Plusieurs affirmations structurent le discours mais elles ne s’appuient pas sur des preuves explicites. Ce que l’agent constate: ces déclarations restent difficiles à corroborer sans trace citée. Ce que l’agent suggère pour améliorer la fiabilité: inclure des références vérifiables ou des chiffres précis pour chaque affirmation sensible.'
+                    : 'Contexte: Le texte demeure général et évite les faits chiffrés ou engagements fermes. Ce que l’agent constate: il y a peu d’éléments susceptibles d’être validés objectivement. Ce que l’agent suggère pour améliorer la fiabilité: introduire quelques données vérifiables ou indiquer les sources d’origine lorsque c’est pertinent.'
         },
         {
             name: 'Source Analyst',
             score: sourceAnalystScore,
             comment: hasSources
                 ? hasMultipleSources
-                    ? 'Plusieurs sources crédibles sont citées et renforcent la fiabilité.'
-                    : 'Des sources sont citées mais un complément de diversité serait utile.'
-                : 'Aucune source explicite n’est mentionnée, la crédibilité reste à confirmer.'
+                    ? 'Contexte: Le texte mobilise plusieurs références externes distinctes. Ce que l’agent constate: la diversité des sources réduit le risque de biais et renforce la cohérence générale. Ce que l’agent suggère pour améliorer la fiabilité: conserver cette pluralité et ajouter, si possible, les liens directs ou références bibliographiques complètes.'
+                    : 'Contexte: Une source principale est citée pour appuyer l’argumentation. Ce que l’agent constate: la fiabilité dépend fortement de cette référence unique. Ce que l’agent suggère pour améliorer la fiabilité: croiser l’information avec au moins une seconde source indépendante ou plus spécialisée.'
+                : 'Contexte: Aucun renvoi explicite vers une publication ou un organisme n’est mentionné. Ce que l’agent constate: l’origine de l’information reste opaque et difficile à évaluer. Ce que l’agent suggère pour améliorer la fiabilité: indiquer clairement les rapports, études ou médias consultés afin d’ouvrir la vérification.'
         },
         {
             name: 'Context Guardian',
             score: contextGuardianScore,
             comment: hasContextualDetails
-                ? 'Le contexte fourni permet de comprendre les conditions et les limites.'
-                : 'Le texte manque de détails sur le contexte ou la méthodologie.'
+                ? 'Contexte: Le texte intègre des détails méthodologiques, géographiques ou temporels suffisants. Ce que l’agent constate: les conditions d’application sont claires et réduisent les interprétations abusives. Ce que l’agent suggère pour améliorer la fiabilité: rappeler explicitement les limites ou hypothèses clés pour compléter ce cadrage déjà solide.'
+                : 'Contexte: Les indications sur la période, le lieu ou la méthode sont limitées ou absentes. Ce que l’agent constate: le lecteur doit supposer plusieurs paramètres implicites. Ce que l’agent suggère pour améliorer la fiabilité: préciser les dates, périmètres ou conditions de collecte afin de situer correctement l’information.'
         },
         {
             name: 'Freshness Detector',
             score: freshnessDetectorScore,
             comment: hasRecency
-                ? 'Les informations mentionnées sont récentes ou clairement datées.'
-                : 'Peu d’indices temporels récents sont présents dans le texte.'
+                ? 'Contexte: Le texte évoque des données ou événements récents et identifiables. Ce que l’agent constate: les repères temporels suggèrent une information encore d’actualité. Ce que l’agent suggère pour améliorer la fiabilité: préciser la date de publication des sources citées pour confirmer la fraîcheur.'
+                : 'Contexte: Les éléments cités ne fournissent pas de repère temporel clair. Ce que l’agent constate: certaines données pourraient être dépassées sans que cela soit signalé. Ce que l’agent suggère pour améliorer la fiabilité: indiquer explicitement l’année ou la période de référence et vérifier si des mises à jour existent.'
         }
     ];
 
