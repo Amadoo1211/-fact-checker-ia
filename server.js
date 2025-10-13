@@ -1883,16 +1883,28 @@ ${sourceExcerptsPrompt}`;
 
         console.log(`✅ Otto terminé: Langue=${languageCode} | TrustIndex=${finalResponse.trust_index} | Risque=${finalResponse.risk_level}`);
 
-        return res.json(finalResponse);
+        const responsePayload = {
+            ...finalResponse,
+            trustIndex: finalResponse.trust_index,
+            riskLevel: finalResponse.risk_level,
+            aiLikelihood: finalResponse.ai_likelihood,
+            hallucinationsDetected: finalResponse.hallucinations_detected
+        };
+
+        return res.json(responsePayload);
 
     } catch (error) {
         console.error('❌ Erreur analyse Otto:', error);
         res.status(500).json({
             trust_index: 0,
+            trustIndex: 0,
             risk_level: 'HIGH',
+            riskLevel: 'HIGH',
             ai_likelihood: 50,
+            aiLikelihood: 50,
             summary: "Otto analysis unavailable due to a system error.",
             hallucinations_detected: false,
+            hallucinationsDetected: false,
             agents: {
                 fact_checker: {
                     score: 0,
