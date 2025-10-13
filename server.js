@@ -1265,6 +1265,22 @@ async function getUserById(id) {
     }
 }
 
+async function fetchUserUsageById(id) {
+    if (!id) return null;
+    const client = await pool.connect();
+    try {
+        const result = await client.query(
+            `SELECT id, email, plan, role, daily_checks_used, daily_otto_analysis, weekly_otto_analysis, last_check_date, weekly_reset_date
+             FROM users
+             WHERE id = $1`,
+            [id]
+        );
+        return result.rows[0] || null;
+    } finally {
+        client.release();
+    }
+}
+
 const toIsoDateString = (value) => {
     if (!value) return null;
     if (typeof value === 'string') return value.slice(0, 10);
@@ -1314,47 +1330,53 @@ async function persistUserUsageCounters(user) {
 async function refreshUserCounters(user) {
     if (!user) return null;
 
+    const freshUser = await fetchUserUsageById(user.id) || { ...user };
+
     const todayIso = getTodayIso();
     const weekStartIso = getCurrentWeekStartIso();
 
-    const lastCheckIso = toIsoDateString(user.last_check_date);
-    const weeklyResetIso = toIsoDateString(user.weekly_reset_date);
+    const lastCheckIso = toIsoDateString(freshUser.last_check_date);
+    const weeklyResetIso = toIsoDateString(freshUser.weekly_reset_date);
 
-    let dailyChecksUsed = Number(user.daily_checks_used) || 0;
-    let weeklyOttoAnalysis = Number(user.weekly_otto_analysis) || 0;
+    let dailyChecksUsed = Number(freshUser.daily_checks_used) || 0;
+    let weeklyOttoAnalysis = Number(freshUser.weekly_otto_analysis) || 0;
+
+    const updatedUser = {
+        ...freshUser,
+    };
 
     let hasUpdates = false;
 
     if (!lastCheckIso || lastCheckIso < todayIso) {
         dailyChecksUsed = 0;
-        user.last_check_date = todayIso;
+        updatedUser.last_check_date = todayIso;
         hasUpdates = true;
     } else {
-        user.last_check_date = lastCheckIso;
+        updatedUser.last_check_date = lastCheckIso;
     }
 
     if (!weeklyResetIso || weeklyResetIso < weekStartIso) {
         weeklyOttoAnalysis = 0;
-        user.weekly_reset_date = weekStartIso;
+        updatedUser.weekly_reset_date = weekStartIso;
         hasUpdates = true;
     } else {
-        user.weekly_reset_date = weeklyResetIso;
+        updatedUser.weekly_reset_date = weeklyResetIso;
     }
 
-    user.daily_checks_used = dailyChecksUsed;
-    user.weekly_otto_analysis = weeklyOttoAnalysis;
+    updatedUser.daily_checks_used = dailyChecksUsed;
+    updatedUser.weekly_otto_analysis = weeklyOttoAnalysis;
 
     if (hasUpdates) {
-        const persisted = await persistUserUsageCounters(user);
+        const persisted = await persistUserUsageCounters(updatedUser);
         if (persisted) {
-            user.daily_checks_used = Number(persisted.daily_checks_used) || 0;
-            user.weekly_otto_analysis = Number(persisted.weekly_otto_analysis) || 0;
-            user.last_check_date = toIsoDateString(persisted.last_check_date) || user.last_check_date;
-            user.weekly_reset_date = toIsoDateString(persisted.weekly_reset_date) || user.weekly_reset_date;
+            updatedUser.daily_checks_used = Number(persisted.daily_checks_used) || 0;
+            updatedUser.weekly_otto_analysis = Number(persisted.weekly_otto_analysis) || 0;
+            updatedUser.last_check_date = toIsoDateString(persisted.last_check_date) || updatedUser.last_check_date;
+            updatedUser.weekly_reset_date = toIsoDateString(persisted.weekly_reset_date) || updatedUser.weekly_reset_date;
         }
     }
 
-    return user;
+    return updatedUser;
 }
 
 const buildUsageSnapshot = (primary, fallback = {}) => ({
@@ -1562,10 +1584,11 @@ app.post('/verify', async (req, res) => {
         const result = await runDocumentaryAnalysis(text);
 
         refreshedUser.daily_checks_used += 1;
-        const persistedUsage = await persistUserUsageCounters(refreshedUser);
-        const usageSnapshot = buildUsageSnapshot(persistedUsage, refreshedUser);
+        await persistUserUsageCounters(refreshedUser);
+        const confirmedUsage = await fetchUserUsageById(refreshedUser.id);
+        const usageSnapshot = buildUsageSnapshot(confirmedUsage, refreshedUser);
 
-        if (persistedUsage) {
+        if (confirmedUsage) {
             refreshedUser.daily_checks_used = usageSnapshot.daily_checks_used;
             refreshedUser.weekly_otto_analysis = usageSnapshot.weekly_otto_analysis;
         }
@@ -1788,11 +1811,19 @@ app.post('/verify-otto', async (req, res) => {
         const summary = await runOttoAnalysis(text.trim());
         const { trustIndex, risk, agents, barColor } = evaluateOttoAgents(text);
 
-        refreshedUser.weekly_otto_analysis += 1;
-        const persistedUsage = await persistUserUsageCounters(refreshedUser);
-        const usageSnapshot = buildUsageSnapshot(persistedUsage, refreshedUser);
+        const usageBeforeUpdate = await fetchUserUsageById(refreshedUser.id);
+        const beforeWeeklyOtto = Number(usageBeforeUpdate?.weekly_otto_analysis ?? refreshedUser.weekly_otto_analysis ?? 0) || 0;
+        console.log(`🧮 [OTTO][USAGE] ${refreshedUser.email} - weekly_otto_analysis before update: ${beforeWeeklyOtto}`);
 
-        if (persistedUsage) {
+        refreshedUser.weekly_otto_analysis = beforeWeeklyOtto + 1;
+        await persistUserUsageCounters(refreshedUser);
+        const confirmedUsage = await fetchUserUsageById(refreshedUser.id);
+        const afterWeeklyOtto = Number(confirmedUsage?.weekly_otto_analysis ?? refreshedUser.weekly_otto_analysis ?? 0) || 0;
+        console.log(`🧮 [OTTO][USAGE] ${refreshedUser.email} - weekly_otto_analysis after update: ${afterWeeklyOtto}`);
+
+        const usageSnapshot = buildUsageSnapshot(confirmedUsage, refreshedUser);
+
+        if (confirmedUsage) {
             refreshedUser.daily_checks_used = usageSnapshot.daily_checks_used;
             refreshedUser.weekly_otto_analysis = usageSnapshot.weekly_otto_analysis;
         }
