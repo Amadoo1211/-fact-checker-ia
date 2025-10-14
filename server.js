@@ -159,31 +159,26 @@ const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const stripe = STRIPE_SECRET_KEY ? require('stripe')(STRIPE_SECRET_KEY) : null;
 
 // LIMITES SELON PLANS
-const plans = {
+const PLAN_LIMITS = {
     free: {
-        factCheckDailyLimit: 3,
-        ottoDailyLimit: 1,
-        ottoWeeklyLimit: 1,
+        dailyVerifications: 3,
+        dailyOtto: 1,
     },
     starter: {
-        factCheckDailyLimit: 10,
-        ottoDailyLimit: 5,
-        ottoWeeklyLimit: 35,
+        dailyVerifications: 10,
+        dailyOtto: 5,
     },
     pro: {
-        factCheckDailyLimit: 30,
-        ottoDailyLimit: Infinity,
-        ottoWeeklyLimit: Infinity,
+        dailyVerifications: 30,
+        dailyOtto: Infinity,
     },
     business: {
-        factCheckDailyLimit: Infinity,
-        ottoDailyLimit: Infinity,
-        ottoWeeklyLimit: Infinity,
+        dailyVerifications: Infinity,
+        dailyOtto: Infinity,
     },
     admin: {
-        factCheckDailyLimit: Infinity,
-        ottoDailyLimit: Infinity,
-        ottoWeeklyLimit: Infinity,
+        dailyVerifications: Infinity,
+        dailyOtto: Infinity,
     },
 };
 
@@ -194,14 +189,30 @@ const getPlanKey = (user) => {
     if (role === 'admin') return 'admin';
 
     const planValue = (user.plan || '').toLowerCase();
-    if (planValue && plans[planValue]) return planValue;
+    if (planValue && PLAN_LIMITS[planValue]) return planValue;
 
-    if (role && plans[role]) return role;
+    if (role && PLAN_LIMITS[role]) return role;
 
     return 'free';
 };
 
-const getPlanLimits = (planKey) => plans[planKey] || plans.free;
+const getPlanLimits = (planKey) => PLAN_LIMITS[planKey] || PLAN_LIMITS.free;
+
+const checkOttoLimit = (user, planKey = getPlanKey(user), limits = getPlanLimits(planKey)) => {
+    const dailyUsage = Number(user?.daily_otto_analysis || 0);
+    const dailyLimit = limits.dailyOtto;
+    const allowed = !Number.isFinite(dailyLimit) || dailyUsage < dailyLimit;
+    const remaining = !Number.isFinite(dailyLimit)
+        ? Infinity
+        : Math.max(dailyLimit - dailyUsage, 0);
+
+    return {
+        allowed,
+        remaining,
+        plan: planKey,
+        resetType: 'daily',
+    };
+};
 
 // ========== 4 AGENTS IA (OTTO) ==========
 
@@ -1340,32 +1351,47 @@ async function findWebSources(keywords, smartQueries, originalText) {
     return uniqueSources;
 }
 
-function calculateRelevance(item, originalText) {
+function calculateRelevance(item, originalText = '') {
     const title = (item.title || '').toLowerCase();
     const snippet = (item.snippet || '').toLowerCase();
     const url = (item.link || '').toLowerCase();
-    const original = originalText.toLowerCase();
-    
-    let score = 0.3;
-    
-    const originalWords = original.split(/\s+/).filter(w => w.length > 3).slice(0, 8);
-    let commonWords = 0;
-    
-    for (const word of originalWords) {
-        if (title.includes(word) || snippet.includes(word)) {
-            commonWords++;
+    const original = (originalText || '').toLowerCase();
+
+    let score = 0.25;
+
+    const originalWords = original
+        .split(/\s+/)
+        .filter(word => word.length > 3)
+        .slice(0, 12);
+
+    if (originalWords.length > 0) {
+        let titleMatches = 0;
+        let snippetMatches = 0;
+
+        for (const word of originalWords) {
+            if (title.includes(word)) titleMatches++;
+            if (snippet.includes(word)) snippetMatches++;
         }
+
+        score += (titleMatches / originalWords.length) * 0.35;
+        score += (snippetMatches / originalWords.length) * 0.25;
     }
-    
-    score += (commonWords / Math.max(originalWords.length, 1)) * 0.4;
-    
-    if (url.includes('wikipedia')) score += 0.25;
-    else if (url.includes('.edu') || url.includes('.gov')) score += 0.2;
-    else if (url.includes('britannica') || url.includes('nature.com')) score += 0.15;
-    
-    if (url.includes('reddit') || url.includes('forum')) score -= 0.15;
-    
-    return Math.max(0.1, Math.min(1.0, score));
+
+    if (url.includes('insee.fr') || url.includes('gouv.fr') || url.includes('vie-publique.fr')) {
+        score += 0.35;
+    } else if (url.includes('.edu') || url.includes('.gov')) {
+        score += 0.25;
+    } else if (url.includes('bbc.com') || url.includes('reuters.com') || url.includes('lemonde.fr') || url.includes('nytimes.com')) {
+        score += 0.20;
+    } else if (url.includes('wikipedia') || url.includes('britannica')) {
+        score += 0.10;
+    }
+
+    if (url.includes('reddit') || url.includes('forum')) {
+        score -= 0.30;
+    }
+
+    return Math.max(0.05, Math.min(1.0, score));
 }
 
 // ========== GESTION UTILISATEURS ==========
@@ -1673,7 +1699,8 @@ app.post('/verify', async (req, res) => {
         const refreshedUser = await refreshUserCounters(user);
         const planKey = getPlanKey(refreshedUser);
         const limits = getPlanLimits(planKey);
-        const dailyLimit = Number.isFinite(limits.factCheckDailyLimit) ? limits.factCheckDailyLimit : Infinity;
+        const dailyLimit = Number.isFinite(limits.dailyVerifications) ? limits.dailyVerifications : Infinity;
+        console.log(`[AUTO] Verification used: ${refreshedUser.daily_checks_used}/${limits.dailyVerifications}`);
 
         if (dailyLimit !== Infinity && refreshedUser.daily_checks_used >= dailyLimit) {
             console.log(`⛔️ Limite quotidienne atteinte pour ${refreshedUser.email} (${planKey})`);
@@ -1817,26 +1844,17 @@ app.post('/verify-otto', async (req, res) => {
         const refreshedUser = await refreshUserCounters(user);
         const planKey = getPlanKey(refreshedUser);
         const limits = getPlanLimits(planKey);
-        const dailyLimit = Number.isFinite(limits.ottoDailyLimit) ? limits.ottoDailyLimit : Infinity;
-        const weeklyLimit = Number.isFinite(limits.ottoWeeklyLimit) ? limits.ottoWeeklyLimit : Infinity;
+        const ottoLimitStatus = checkOttoLimit(refreshedUser, planKey, limits);
+        console.log(`[OTTO] Analysis used: ${refreshedUser.daily_otto_analysis}/${limits.dailyOtto}`);
 
-        if (dailyLimit !== Infinity && refreshedUser.daily_otto_analysis >= dailyLimit) {
+        if (!ottoLimitStatus.allowed) {
             console.log(`⛔️ Limite quotidienne OTTO atteinte pour ${refreshedUser.email} (${planKey})`);
             const statusCode = planKey === 'free' ? 403 : 429;
             const message = planKey === 'free' ? 'Limite quotidienne atteinte' : 'Quota quotidien atteint';
             return res.status(statusCode).json({
                 error: message,
                 usage: buildUsageSnapshot(refreshedUser),
-            });
-        }
-
-        if (weeklyLimit !== Infinity && refreshedUser.weekly_otto_analysis >= weeklyLimit) {
-            console.log(`⛔️ Limite hebdomadaire OTTO atteinte pour ${refreshedUser.email} (${planKey})`);
-            const statusCode = planKey === 'free' ? 403 : 429;
-            const message = planKey === 'free' ? 'Limite hebdomadaire atteinte' : 'Quota hebdomadaire atteint';
-            return res.status(statusCode).json({
-                error: message,
-                usage: buildUsageSnapshot(refreshedUser),
+                limit: ottoLimitStatus,
             });
         }
 
