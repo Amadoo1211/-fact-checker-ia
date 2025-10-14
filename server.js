@@ -203,6 +203,46 @@ const getPlanKey = (user) => {
 
 const getPlanLimits = (planKey) => plans[planKey] || plans.free;
 
+const resolveDomainFromUrl = (value) => {
+    if (!value || typeof value !== 'string') return null;
+    try {
+        const parsed = new URL(value.startsWith('http') ? value : `https://${value}`);
+        return parsed.hostname.toLowerCase();
+    } catch (error) {
+        return null;
+    }
+};
+
+const unlimitedLabel = 'unlimited';
+
+const formatQuotaBucket = (used, limit) => {
+    const usedSafe = Math.max(0, Number(used) || 0);
+    if (!Number.isFinite(limit)) {
+        return {
+            used: usedSafe,
+            limit: unlimitedLabel,
+            remaining: unlimitedLabel,
+        };
+    }
+
+    const remaining = Math.max(0, limit - usedSafe);
+    return {
+        used: usedSafe,
+        limit,
+        remaining,
+    };
+};
+
+const buildQuotaDetails = (planKey, limits, usageSnapshot) => {
+    return {
+        plan: planKey,
+        quota: {
+            auto: formatQuotaBucket(usageSnapshot.daily_checks_used, limits.factCheckDailyLimit),
+            otto: formatQuotaBucket(usageSnapshot.daily_otto_analysis, limits.ottoDailyLimit),
+        },
+    };
+};
+
 // ========== 4 AGENTS IA (OTTO) ==========
 
 class AIAgentsService {
@@ -1262,14 +1302,16 @@ async function findWebSources(keywords, smartQueries, originalText) {
                 url: "https://fr.wikipedia.org/wiki/Main_Page",
                 snippet: "Information encyclopédique vérifiée",
                 query_used: "mock",
-                relevance: 0.8
+                relevance: 78,
+                domain: 'wikipedia.org'
             },
             {
                 title: "Source officielle",
                 url: "https://www.insee.fr",
                 snippet: "Données officielles et statistiques",
                 query_used: "mock",
-                relevance: 0.9
+                relevance: 92,
+                domain: 'insee.fr'
             }
         ];
     }
@@ -1289,7 +1331,8 @@ async function findWebSources(keywords, smartQueries, originalText) {
                         url: item.link || '',
                         snippet: item.snippet || 'Pas de description',
                         query_used: query,
-                        relevance: calculateRelevance(item, originalText)
+                        relevance: calculateRelevance(item, originalText),
+                        domain: resolveDomainFromUrl(item.link || '')
                     }));
                     allSources.push(...sources);
                 }
@@ -1315,7 +1358,8 @@ async function findWebSources(keywords, smartQueries, originalText) {
                     url: item.link || '',
                     snippet: item.snippet || 'Pas de description',
                     query_used: fallbackQuery,
-                    relevance: calculateRelevance(item, originalText)
+                    relevance: calculateRelevance(item, originalText),
+                    domain: resolveDomainFromUrl(item.link || '')
                 }));
                 allSources.push(...sources);
             }
@@ -1344,28 +1388,109 @@ function calculateRelevance(item, originalText) {
     const title = (item.title || '').toLowerCase();
     const snippet = (item.snippet || '').toLowerCase();
     const url = (item.link || '').toLowerCase();
-    const original = originalText.toLowerCase();
-    
-    let score = 0.3;
-    
-    const originalWords = original.split(/\s+/).filter(w => w.length > 3).slice(0, 8);
-    let commonWords = 0;
-    
-    for (const word of originalWords) {
+    const original = (originalText || '').toLowerCase();
+
+    const domain = resolveDomainFromUrl(item.link || '') || '';
+
+    const cleanedOriginalWords = original
+        .replace(/[^\w\sàâäéèêëïîôöùûüÿç-]/g, ' ')
+        .split(/\s+/)
+        .filter(word => word.length > 4)
+        .slice(0, 14);
+
+    let semanticMatches = 0;
+    for (const word of cleanedOriginalWords) {
         if (title.includes(word) || snippet.includes(word)) {
-            commonWords++;
+            semanticMatches++;
         }
     }
-    
-    score += (commonWords / Math.max(originalWords.length, 1)) * 0.4;
-    
-    if (url.includes('wikipedia')) score += 0.25;
-    else if (url.includes('.edu') || url.includes('.gov')) score += 0.2;
-    else if (url.includes('britannica') || url.includes('nature.com')) score += 0.15;
-    
-    if (url.includes('reddit') || url.includes('forum')) score -= 0.15;
-    
-    return Math.max(0.1, Math.min(1.0, score));
+
+    const semanticRatio = cleanedOriginalWords.length > 0
+        ? semanticMatches / cleanedOriginalWords.length
+        : 0;
+
+    let score = 30 + Math.min(1, semanticRatio) * 40;
+
+    const positiveDomainWeights = [
+        { domains: ['gouv.fr', 'insee.fr', 'vie-publique.fr'], weight: 0.35 },
+        { domains: ['reuters.com', 'bbc.com', 'lemonde.fr', 'nytimes.com'], weight: 0.20 },
+        { domains: ['wikipedia.org', 'britannica.com'], weight: 0.10 },
+    ];
+
+    const tldWeights = [
+        { suffix: '.gov', weight: 0.25 },
+        { suffix: '.edu', weight: 0.25 },
+    ];
+
+    for (const { domains, weight } of positiveDomainWeights) {
+        if (domains.some(target => domain?.endsWith(target))) {
+            score += weight * 100;
+            break;
+        }
+    }
+
+    for (const { suffix, weight } of tldWeights) {
+        if (domain?.endsWith(suffix)) {
+            score += weight * 100;
+            break;
+        }
+    }
+
+    const negativeIndicators = ['reddit', 'quora', 'forum'];
+    if (negativeIndicators.some(indicator => domain?.includes(indicator))) {
+        score += -0.30 * 100;
+    }
+
+    const potentialDates = [];
+    const metaTags = item?.pagemap?.metatags || [];
+    metaTags.forEach(tag => {
+        for (const key of Object.keys(tag || {})) {
+            if (key.toLowerCase().includes('date')) {
+                potentialDates.push(tag[key]);
+            }
+        }
+    });
+
+    const parseDateValue = (value) => {
+        if (!value || typeof value !== 'string') return null;
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return null;
+        return date;
+    };
+
+    let mostRecentDate = null;
+    for (const dateCandidate of potentialDates) {
+        const parsed = parseDateValue(dateCandidate);
+        if (!parsed) continue;
+        if (!mostRecentDate || parsed > mostRecentDate) {
+            mostRecentDate = parsed;
+        }
+    }
+
+    if (!mostRecentDate) {
+        const snippetYearMatch = snippet.match(/(20\d{2}|19\d{2})/);
+        if (snippetYearMatch) {
+            const year = Number(snippetYearMatch[1]);
+            if (year) {
+                const fallbackDate = new Date(Date.UTC(year, 0, 1));
+                mostRecentDate = fallbackDate;
+            }
+        }
+    }
+
+    if (mostRecentDate) {
+        const now = new Date();
+        const diffDays = (now - mostRecentDate) / (1000 * 60 * 60 * 24);
+        if (diffDays <= 90) {
+            score += 15;
+        } else if (diffDays <= 365) {
+            score += 10;
+        } else if (diffDays <= 730) {
+            score += 5;
+        }
+    }
+
+    return Math.max(0, Math.min(100, Math.round(score)));
 }
 
 // ========== GESTION UTILISATEURS ==========
@@ -1456,10 +1581,19 @@ async function persistUserUsageCounters(user) {
     return result.rows[0] || null;
 }
 
-async function refreshUserCounters(user) {
-    if (!user) return null;
+async function refreshUserQuota(userOrEmail) {
+    if (!userOrEmail) return null;
 
-    const freshUser = await fetchUserUsageById(user.id) || { ...user };
+    let baseUser = null;
+    if (typeof userOrEmail === 'string') {
+        baseUser = await getUserByEmail(userOrEmail);
+    } else if (userOrEmail?.id) {
+        baseUser = userOrEmail;
+    }
+
+    if (!baseUser) return null;
+
+    const freshUser = await fetchUserUsageById(baseUser.id) || { ...baseUser };
 
     const todayIso = getTodayIso();
     const weekStartIso = getCurrentWeekStartIso();
@@ -1575,11 +1709,17 @@ async function runAutoVerification(text) {
                 return null;
             }
 
+            const domain = source.domain || resolveDomainFromUrl(normalizedUrl);
+            const relevanceScore = Number.isFinite(source.relevance)
+                ? source.relevance
+                : Math.round((source.semanticRelevance || 0) * 100);
+
             return {
                 title: source.title || 'Source',
                 url: normalizedUrl,
+                domain: domain || null,
                 snippet: source.snippet || '',
-                relevance: source.semanticRelevance || 0,
+                relevance: Math.max(0, Math.min(100, relevanceScore)),
                 supports: !!source.actuallySupports,
                 contradicts: !!source.contradicts,
             };
@@ -1670,10 +1810,12 @@ app.post('/verify', async (req, res) => {
             return res.status(404).json({ error: 'Utilisateur introuvable' });
         }
 
-        const refreshedUser = await refreshUserCounters(user);
+        const refreshedUser = await refreshUserQuota(user);
         const planKey = getPlanKey(refreshedUser);
         const limits = getPlanLimits(planKey);
         const dailyLimit = Number.isFinite(limits.factCheckDailyLimit) ? limits.factCheckDailyLimit : Infinity;
+        const currentUsageSnapshot = buildUsageSnapshot(refreshedUser);
+        const currentQuotaDetails = buildQuotaDetails(planKey, limits, currentUsageSnapshot);
 
         if (dailyLimit !== Infinity && refreshedUser.daily_checks_used >= dailyLimit) {
             console.log(`⛔️ Limite quotidienne atteinte pour ${refreshedUser.email} (${planKey})`);
@@ -1681,7 +1823,8 @@ app.post('/verify', async (req, res) => {
             const message = planKey === 'free' ? 'Limite quotidienne atteinte' : 'Quota quotidien atteint';
             return res.status(statusCode).json({
                 error: message,
-                usage: buildUsageSnapshot(refreshedUser),
+                ...currentQuotaDetails,
+                usage: currentUsageSnapshot,
             });
         }
 
@@ -1691,6 +1834,7 @@ app.post('/verify', async (req, res) => {
         refreshedUser.last_check_date = getTodayIso();
         const persistedUsage = await persistUserUsageCounters(refreshedUser);
         const usageSnapshot = buildUsageSnapshot(persistedUsage, refreshedUser);
+        const quotaDetails = buildQuotaDetails(planKey, limits, usageSnapshot);
 
         if (persistedUsage) {
             refreshedUser.daily_checks_used = usageSnapshot.daily_checks_used;
@@ -1709,11 +1853,15 @@ app.post('/verify', async (req, res) => {
         console.log(`✅ Score automatique: ${autoResult.score}%`);
         console.log(`📚 Sources AUTO: ${autoResult.sources.length}`);
 
+        const overallConfidence = Number((autoResult.score / 100).toFixed(2));
+
         res.json({
             status: 'ok',
             mode: 'AUTO',
-            plan: planKey.toUpperCase(),
+            plan: quotaDetails.plan,
+            quota: quotaDetails.quota,
             confidence: autoResult.score,
+            overallConfidence,
             risk,
             summary: autoResult.summary,
             keywords: autoResult.keywords,
@@ -1814,11 +1962,13 @@ app.post('/verify-otto', async (req, res) => {
             return res.status(404).json({ error: 'Utilisateur introuvable' });
         }
 
-        const refreshedUser = await refreshUserCounters(user);
+        const refreshedUser = await refreshUserQuota(user);
         const planKey = getPlanKey(refreshedUser);
         const limits = getPlanLimits(planKey);
         const dailyLimit = Number.isFinite(limits.ottoDailyLimit) ? limits.ottoDailyLimit : Infinity;
         const weeklyLimit = Number.isFinite(limits.ottoWeeklyLimit) ? limits.ottoWeeklyLimit : Infinity;
+        const currentUsageSnapshot = buildUsageSnapshot(refreshedUser);
+        const currentQuotaDetails = buildQuotaDetails(planKey, limits, currentUsageSnapshot);
 
         if (dailyLimit !== Infinity && refreshedUser.daily_otto_analysis >= dailyLimit) {
             console.log(`⛔️ Limite quotidienne OTTO atteinte pour ${refreshedUser.email} (${planKey})`);
@@ -1826,7 +1976,8 @@ app.post('/verify-otto', async (req, res) => {
             const message = planKey === 'free' ? 'Limite quotidienne atteinte' : 'Quota quotidien atteint';
             return res.status(statusCode).json({
                 error: message,
-                usage: buildUsageSnapshot(refreshedUser),
+                ...currentQuotaDetails,
+                usage: currentUsageSnapshot,
             });
         }
 
@@ -1836,7 +1987,8 @@ app.post('/verify-otto', async (req, res) => {
             const message = planKey === 'free' ? 'Limite hebdomadaire atteinte' : 'Quota hebdomadaire atteint';
             return res.status(statusCode).json({
                 error: message,
-                usage: buildUsageSnapshot(refreshedUser),
+                ...currentQuotaDetails,
+                usage: currentUsageSnapshot,
             });
         }
 
@@ -1857,11 +2009,16 @@ app.post('/verify-otto', async (req, res) => {
             .map(source => {
                 const safeUrl = ensureHttpUrl(source.url);
                 if (!safeUrl) return null;
+                const domain = source.domain || resolveDomainFromUrl(safeUrl);
+                const relevanceScore = Number.isFinite(source.relevance)
+                    ? source.relevance
+                    : Math.round((source.semanticRelevance || 0) * 100);
                 return {
                     title: source.title || 'Source',
                     url: safeUrl,
+                    domain: domain || null,
                     snippet: source.snippet || '',
-                    relevance: source.relevance || 0,
+                    relevance: Math.max(0, Math.min(100, relevanceScore)),
                     query: source.query_used || null,
                 };
             })
@@ -1877,6 +2034,7 @@ app.post('/verify-otto', async (req, res) => {
         refreshedUser.last_check_date = getTodayIso();
         const persistedUsage = await persistUserUsageCounters(refreshedUser);
         const usageSnapshot = buildUsageSnapshot(persistedUsage, refreshedUser);
+        const quotaDetails = buildQuotaDetails(planKey, limits, usageSnapshot);
         const afterDailyOtto = usageSnapshot.daily_otto_analysis;
         const afterWeeklyOtto = usageSnapshot.weekly_otto_analysis;
         console.log(`🧮 [OTTO][USAGE] ${refreshedUser.email} - daily after: ${afterDailyOtto} | weekly after: ${afterWeeklyOtto}`);
@@ -1898,7 +2056,8 @@ app.post('/verify-otto', async (req, res) => {
         return res.json({
             status: 'ok',
             mode: 'OTTO',
-            plan: planKey.toUpperCase(),
+            plan: quotaDetails.plan,
+            quota: quotaDetails.quota,
             summary,
             globalReliability,
             risk,
