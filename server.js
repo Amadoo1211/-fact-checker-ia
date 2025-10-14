@@ -1877,6 +1877,45 @@ app.post('/quota', async (req, res) => {
     }
 });
 
+app.post('/reset-quota', async (req, res) => {
+    try {
+        const { userEmail } = req.body || {};
+
+        if (!userEmail) {
+            return res.status(400).json({ success: false, error: 'missing_user_email' });
+        }
+
+        const user = await getUserByEmail(userEmail);
+        if (!user) {
+            return res.status(404).json({ success: false, error: 'user_not_found' });
+        }
+
+        const client = await pool.connect();
+        try {
+            const result = await client.query(
+                `UPDATE users
+                 SET daily_checks_used = 0,
+                     daily_otto_analysis = 0,
+                     last_check_date = CURRENT_DATE,
+                     updated_at = NOW()
+                 WHERE id = $1
+                 RETURNING *`,
+                [user.id]
+            );
+
+            const refreshedUser = result.rows[0] || user;
+            const quota = buildQuotaPayload(refreshedUser);
+
+            return res.json({ success: true, quota });
+        } finally {
+            client.release();
+        }
+    } catch (error) {
+        console.error('reset quota failed', error);
+        return res.status(500).json({ success: false, error: 'server_error' });
+    }
+});
+
 // ========== ROUTE RÉCUPÉRATION SOURCES FIABLES ==========
 app.post('/fetch-source', async (req, res) => {
     const { url } = req.body || {};
