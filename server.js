@@ -31,15 +31,7 @@ const schedule = require('node-schedule');
 const pool = require('./db');
 const app = express();
 
-let openai = null;
-try {
-    const OpenAI = require('openai');
-    openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-} catch (error) {
-    console.warn('⚠️ Client OpenAI non initialisé pour l\'analyse documentaire:', error.message);
-}
-
-app.use(cors({ 
+app.use(cors({
     origin:'*',
     credentials: true
 }));
@@ -58,6 +50,7 @@ schedule.scheduleJob('0 0 * * *', async () => {
         await pool.query(`
       UPDATE users
       SET daily_checks_used = 0,
+          daily_otto_analysis = 0,
           last_check_date = CURRENT_DATE;
     `);
         console.log('✅ Reset quotidien exécuté');
@@ -1045,6 +1038,9 @@ class ImprovedFactChecker {
     }
 }
 
+const aiAgentsService = new AIAgentsService();
+const autoFactChecker = new ImprovedFactChecker();
+
 async function analyzeSourcesWithImprovedLogic(factChecker, originalText, sources) {
     const analyzedSources = [];
     
@@ -1121,6 +1117,137 @@ function extractMainKeywords(text) {
         console.error('❌ Erreur extraction keywords:', e.message);
         return [];
     }
+}
+
+function buildAutoSearchQueries(originalText, claims, keywords) {
+    const queries = [];
+
+    for (const claim of (claims || []).slice(0, 4)) {
+        if (claim?.text) {
+            const normalized = claim.text.replace(/\s+/g, ' ').trim();
+            if (normalized.length > 10) {
+                queries.push(normalized.slice(0, 120));
+            }
+        }
+    }
+
+    if (keywords && keywords.length > 0) {
+        const primaryKeywords = keywords.slice(0, 4).join(' ');
+        if (primaryKeywords.length > 3) {
+            queries.push(primaryKeywords);
+        }
+    }
+
+    if (originalText && originalText.length > 0) {
+        const excerpt = originalText.replace(/\s+/g, ' ').slice(0, 140);
+        if (excerpt.length > 20) {
+            queries.push(excerpt);
+        }
+    }
+
+    return Array.from(new Set(queries)).filter(Boolean).slice(0, 5);
+}
+
+function selectTopAutoSources(analyzedSources = []) {
+    const sorted = [...analyzedSources].sort((a, b) => {
+        const supportWeightA = (a.actuallySupports ? 1 : 0) - (a.contradicts ? 1 : 0);
+        const supportWeightB = (b.actuallySupports ? 1 : 0) - (b.contradicts ? 1 : 0);
+
+        if (supportWeightB !== supportWeightA) {
+            return supportWeightB - supportWeightA;
+        }
+
+        return (b.semanticRelevance || 0) - (a.semanticRelevance || 0);
+    });
+
+    return sorted.slice(0, 5);
+}
+
+function summarizeAutoAssessment(balancedScore, claims = [], analyzedSources = []) {
+    const claimCount = claims.length;
+    const supporting = analyzedSources.filter(source => source.actuallySupports).length;
+    const contradicting = analyzedSources.filter(source => source.contradicts).length;
+
+    const parts = [];
+
+    if (claimCount > 0) {
+        parts.push(`${claimCount} affirmation${claimCount > 1 ? 's' : ''} vérifiables identifiée${claimCount > 1 ? 's' : ''}.`);
+    } else {
+        parts.push('Aucune affirmation chiffrée claire détectée.');
+    }
+
+    if (supporting > 0) {
+        parts.push(`${supporting} source${supporting > 1 ? 's' : ''} concordante${supporting > 1 ? 's' : ''} trouvée${supporting > 1 ? 's' : ''}.`);
+    }
+
+    if (contradicting > 0) {
+        parts.push(`${contradicting} source${contradicting > 1 ? 's' : ''} présente${contradicting > 1 ? 's' : ''} des contradictions.`);
+    }
+
+    if (balancedScore?.reasoning) {
+        parts.push(balancedScore.reasoning.trim());
+    }
+
+    return parts.join(' ');
+}
+
+function buildOttoSearchQueries(originalText, keywords = []) {
+    const queries = [];
+
+    if (keywords.length > 0) {
+        queries.push(keywords.slice(0, 5).join(' '));
+    }
+
+    if (originalText && originalText.length > 0) {
+        const excerpt = originalText.replace(/\s+/g, ' ').slice(0, 160);
+        if (excerpt.length > 20) {
+            queries.push(excerpt);
+        }
+    }
+
+    return Array.from(new Set(queries.filter(Boolean))).slice(0, 5);
+}
+
+function buildOttoSummary(agentsResult = {}) {
+    const segments = [];
+
+    if (agentsResult.fact_checker?.summary) {
+        segments.push(`Fact-checker: ${agentsResult.fact_checker.summary}`);
+    }
+
+    if (agentsResult.source_analyst?.summary) {
+        segments.push(`Sources: ${agentsResult.source_analyst.summary}`);
+    }
+
+    if (agentsResult.context_guardian?.summary) {
+        segments.push(`Contexte: ${agentsResult.context_guardian.summary}`);
+    }
+
+    if (agentsResult.freshness_detector?.summary) {
+        segments.push(`Actualité: ${agentsResult.freshness_detector.summary}`);
+    }
+
+    return segments.join(' ');
+}
+
+function computeOttoGlobalReliability(agentsResult = {}) {
+    const rawScores = [
+        agentsResult.fact_checker?.score,
+        agentsResult.source_analyst?.source_score,
+        agentsResult.context_guardian?.context_score,
+        agentsResult.freshness_detector?.freshness_score,
+    ];
+
+    const numericScores = rawScores
+        .map(value => (typeof value === 'number' && Number.isFinite(value) ? value : null))
+        .filter(value => value !== null);
+
+    if (numericScores.length === 0) {
+        return 50;
+    }
+
+    const sum = numericScores.reduce((acc, value) => acc + value, 0);
+    return Math.round(sum / numericScores.length);
 }
 
 async function findWebSources(keywords, smartQueries, originalText) {
@@ -1309,14 +1436,16 @@ async function persistUserUsageCounters(user) {
     const result = await pool.query(
         `UPDATE users
          SET daily_checks_used = $1,
-             weekly_otto_analysis = $2,
-             last_check_date = $3,
-             weekly_reset_date = $4,
+             daily_otto_analysis = $2,
+             weekly_otto_analysis = $3,
+             last_check_date = $4,
+             weekly_reset_date = $5,
              updated_at = NOW()
-         WHERE id = $5
-         RETURNING id, email, plan, role, daily_checks_used, weekly_otto_analysis, last_check_date, weekly_reset_date`,
+         WHERE id = $6
+         RETURNING id, email, plan, role, daily_checks_used, daily_otto_analysis, weekly_otto_analysis, last_check_date, weekly_reset_date`,
         [
             user.daily_checks_used,
+            user.daily_otto_analysis,
             user.weekly_otto_analysis,
             user.last_check_date,
             user.weekly_reset_date,
@@ -1339,6 +1468,7 @@ async function refreshUserCounters(user) {
     const weeklyResetIso = toIsoDateString(freshUser.weekly_reset_date);
 
     let dailyChecksUsed = Number(freshUser.daily_checks_used) || 0;
+    let dailyOttoAnalysis = Number(freshUser.daily_otto_analysis) || 0;
     let weeklyOttoAnalysis = Number(freshUser.weekly_otto_analysis) || 0;
 
     const updatedUser = {
@@ -1349,6 +1479,7 @@ async function refreshUserCounters(user) {
 
     if (!lastCheckIso || lastCheckIso < todayIso) {
         dailyChecksUsed = 0;
+        dailyOttoAnalysis = 0;
         updatedUser.last_check_date = todayIso;
         hasUpdates = true;
     } else {
@@ -1364,12 +1495,14 @@ async function refreshUserCounters(user) {
     }
 
     updatedUser.daily_checks_used = dailyChecksUsed;
+    updatedUser.daily_otto_analysis = dailyOttoAnalysis;
     updatedUser.weekly_otto_analysis = weeklyOttoAnalysis;
 
     if (hasUpdates) {
         const persisted = await persistUserUsageCounters(updatedUser);
         if (persisted) {
             updatedUser.daily_checks_used = Number(persisted.daily_checks_used) || 0;
+            updatedUser.daily_otto_analysis = Number(persisted.daily_otto_analysis) || 0;
             updatedUser.weekly_otto_analysis = Number(persisted.weekly_otto_analysis) || 0;
             updatedUser.last_check_date = toIsoDateString(persisted.last_check_date) || updatedUser.last_check_date;
             updatedUser.weekly_reset_date = toIsoDateString(persisted.weekly_reset_date) || updatedUser.weekly_reset_date;
@@ -1381,6 +1514,7 @@ async function refreshUserCounters(user) {
 
 const buildUsageSnapshot = (primary, fallback = {}) => ({
     daily_checks_used: Number(primary?.daily_checks_used ?? fallback.daily_checks_used ?? 0) || 0,
+    daily_otto_analysis: Number(primary?.daily_otto_analysis ?? fallback.daily_otto_analysis ?? 0) || 0,
     weekly_otto_analysis: Number(primary?.weekly_otto_analysis ?? fallback.weekly_otto_analysis ?? 0) || 0,
 });
 
@@ -1390,6 +1524,7 @@ async function resetAllCounters() {
         await client.query(`
             UPDATE users
             SET daily_checks_used = 0,
+                daily_otto_analysis = 0,
                 weekly_otto_analysis = 0,
                 last_check_date = CURRENT_DATE,
                 weekly_reset_date = DATE_TRUNC('week', CURRENT_DATE)::date,
@@ -1404,93 +1539,62 @@ async function resetAllCounters() {
     }
 }
 
-async function runDocumentaryAnalysis(text) {
-    const cleanText = text.trim().slice(0, 1000);
+async function runAutoVerification(text) {
+    const sanitizedText = sanitizeInput(text);
+    const claims = autoFactChecker.extractVerifiableClaims(sanitizedText);
+    const keywords = extractMainKeywords(sanitizedText);
+    const smartQueries = buildAutoSearchQueries(sanitizedText, claims, keywords);
 
-    const keywordPrompt = `
-  Extrait les 3 à 6 mots-clés essentiels du texte suivant pour une recherche documentaire :
-  """${cleanText}"""
-  Retourne uniquement les mots-clés, séparés par des virgules.
-  `;
+    const webSources = await findWebSources(keywords, smartQueries, sanitizedText);
+    const analyzedSources = await analyzeSourcesWithImprovedLogic(autoFactChecker, sanitizedText, webSources);
+    const balancedScore = autoFactChecker.calculateBalancedScore(sanitizedText, analyzedSources, claims);
 
-    let keywords = [];
+    const percentScore = Math.round(Math.max(0, Math.min(1, balancedScore.score || 0)) * 100);
+    const primarySources = selectTopAutoSources(analyzedSources);
 
-    if (openai?.chat?.completions?.create) {
+    const normalizeUrl = (value) => {
+        if (!value || typeof value !== 'string') return null;
+        const trimmed = value.trim();
+        if (!trimmed) return null;
+
         try {
-            const keywordResponse = await openai.chat.completions.create({
-                model: 'gpt-4o-mini',
-                messages: [{ role: 'user', content: keywordPrompt }],
-            });
-
-            const rawKeywords = keywordResponse?.choices?.[0]?.message?.content || '';
-            keywords = rawKeywords
-                .split(',')
-                .map(k => k.trim())
-                .filter(k => k.length > 2)
-                .slice(0, 6);
-        } catch (error) {
-            console.warn('⚠️ Erreur OpenAI (analyse documentaire):', error.message);
-        }
-    }
-
-    if (!keywords.length) {
-        const stopwords = new Set([
-            'la', 'le', 'les', 'un', 'une', 'des', 'du', 'de', 'et', 'ou', 'en', 'au', 'aux', 'dans', 'par', 'pour', 'sur',
-            'avec', 'sans', 'plus', 'moins', 'entre', 'selon', 'que', 'qui', 'quoi', 'dont', 'est', 'sont', 'ete', 'etre',
-            'fait', 'faire', 'cette', 'ces', 'son', 'sa', 'ses', 'leur', 'leurs'
-        ]);
-
-        keywords = Array.from(
-            new Set(
-                cleanText
-                    .toLowerCase()
-                    .normalize('NFD')
-                    .replace(/\p{Diacritic}/gu, '')
-                    .replace(/[^a-z0-9\s]/g, ' ')
-                    .split(/\s+/)
-                    .map(word => word.trim())
-                    .filter(word => word.length > 2 && !stopwords.has(word))
-            )
-        ).slice(0, 6);
-    } else {
-        const deduped = [];
-        const seen = new Set();
-        for (const keyword of keywords) {
-            const lower = keyword.toLowerCase();
-            if (lower && !seen.has(lower)) {
-                seen.add(lower);
-                deduped.push(keyword);
+            const parsed = new URL(trimmed.startsWith('http') ? trimmed : `https://${trimmed}`);
+            if (!['http:', 'https:'].includes(parsed.protocol)) {
+                return null;
             }
+            return parsed.toString();
+        } catch (error) {
+            return null;
         }
-        keywords = deduped.slice(0, 6);
-    }
+    };
 
-    if (!keywords.length) {
-        keywords = ['information'];
-    }
+    const formattedSources = primarySources
+        .map(source => {
+            const normalizedUrl = normalizeUrl(source.url);
+            if (!normalizedUrl) {
+                return null;
+            }
 
-    const limitedKeywords = keywords.slice(0, 5);
-    const sources = limitedKeywords.map((kw, i) => ({
-        title: `Source ${i + 1} : ${kw}`,
-        url: `https://www.google.com/search?q=${encodeURIComponent(kw)}`,
-        status: 'analyse en cours',
-    }));
-
-    const hasNumbers = /\d+/.test(text);
-    const hasSourcesMentioned = /(source|rapport|étude|wikipedia|insee|giec|nasa)/i.test(text);
-    const diversity = keywords.length >= 4 ? 10 : 0;
-
-    let score = 50;
-    if (hasNumbers) score += 10;
-    if (hasSourcesMentioned) score += 15;
-    score += diversity;
-
-    const summary = `Analyse documentaire effectuée : ${keywords.length} mots-clés détectés (${keywords.join(', ')}).`;
+            return {
+                title: source.title || 'Source',
+                url: normalizedUrl,
+                snippet: source.snippet || '',
+                relevance: source.semanticRelevance || 0,
+                supports: !!source.actuallySupports,
+                contradicts: !!source.contradicts,
+            };
+        })
+        .filter(Boolean);
 
     return {
-        score: Math.min(Math.round(score), 100),
-        summary,
-        sources,
+        score: percentScore,
+        summary: summarizeAutoAssessment(balancedScore, claims, analyzedSources),
+        reasoning: balancedScore.reasoning,
+        claims,
+        keywords,
+        queries: smartQueries,
+        sources: formattedSources,
+        analyzedSources,
     };
 }
 
@@ -1551,7 +1655,7 @@ app.post('/verify', async (req, res) => {
     try {
         const { text, userEmail, userId } = req.body || {};
 
-        console.log(`\n=== ANALYSE DOCUMENTAIRE AUTO ===`);
+        console.log(`\n=== AUTO verification ===`);
         if (typeof text === 'string') {
             console.log(`📝 Texte: "${text.substring(0, 80)}..."`);
         }
@@ -1581,7 +1685,7 @@ app.post('/verify', async (req, res) => {
             });
         }
 
-        const result = await runDocumentaryAnalysis(text);
+        const autoResult = await runAutoVerification(text);
 
         refreshedUser.daily_checks_used = Number(refreshedUser.daily_checks_used || 0) + 1;
         refreshedUser.last_check_date = getTodayIso();
@@ -1590,27 +1694,32 @@ app.post('/verify', async (req, res) => {
 
         if (persistedUsage) {
             refreshedUser.daily_checks_used = usageSnapshot.daily_checks_used;
+            refreshedUser.daily_otto_analysis = usageSnapshot.daily_otto_analysis;
             refreshedUser.weekly_otto_analysis = usageSnapshot.weekly_otto_analysis;
         }
 
         const usageCounters = {
             dailyChecksUsed: usageSnapshot.daily_checks_used,
+            dailyOttoAnalysis: usageSnapshot.daily_otto_analysis,
             weeklyOttoAnalysis: usageSnapshot.weekly_otto_analysis,
         };
 
-        const trustIndex = result.score;
-        const risk = getRiskLevel(trustIndex);
+        const risk = getRiskLevel(autoResult.score);
 
-        console.log(`✅ Score documentaire: ${result.score}`);
-        console.log(`📚 Sources proposées: ${result.sources.length}`);
+        console.log(`✅ Score automatique: ${autoResult.score}%`);
+        console.log(`📚 Sources AUTO: ${autoResult.sources.length}`);
 
         res.json({
             status: 'ok',
+            mode: 'AUTO',
             plan: planKey.toUpperCase(),
-            trustIndex,
+            confidence: autoResult.score,
             risk,
-            summary: result.summary,
-            sources: result.sources,
+            summary: autoResult.summary,
+            keywords: autoResult.keywords,
+            queries: autoResult.queries,
+            claims: autoResult.claims,
+            sources: autoResult.sources,
             usage: usageSnapshot,
             ...usageCounters,
         });
@@ -1664,13 +1773,6 @@ const getRiskLevel = (trustIndex) => {
     return 'Élevé';
 };
 
-const escapeHtml = (value = '') => value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-
 const ensureHttpUrl = (value) => {
     if (!value || typeof value !== 'string') return null;
     const trimmed = value.trim();
@@ -1693,264 +1795,16 @@ const ensureHttpUrl = (value) => {
     return normalize(`https://${withoutProtocol}`);
 };
 
-const capitalizeFirstLetter = (value = '') => {
-    if (!value) return '';
-    return value.charAt(0).toUpperCase() + value.slice(1);
-};
 
-const buildFallbackOttoSources = (text, limit = 5) => {
-    const stopwords = new Set([
-        'la', 'le', 'les', 'un', 'une', 'des', 'du', 'de', 'et', 'ou', 'en', 'au', 'aux', 'dans', 'par', 'pour', 'sur',
-        'avec', 'sans', 'plus', 'moins', 'entre', 'selon', 'que', 'qui', 'quoi', 'dont', 'est', 'sont', 'ete', 'etre',
-        'fait', 'faire', 'cette', 'ces', 'son', 'sa', 'ses', 'leur', 'leurs', 'ainsi', 'donc', 'car', 'mais', 'comme',
-    ]);
 
-    const cleanedTokens = (text || '')
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/\p{Diacritic}/gu, '')
-        .replace(/[^a-z0-9\s]/g, ' ')
-        .split(/\s+/)
-        .map(word => word.trim())
-        .filter(word => word.length > 2 && !stopwords.has(word));
 
-    const keywords = [];
-    for (const token of cleanedTokens) {
-        if (!keywords.includes(token)) {
-            keywords.push(token);
-        }
-        if (keywords.length >= limit) break;
-    }
-
-    if (!keywords.length) {
-        keywords.push('analyse', 'fiabilite', 'information');
-    }
-
-    return keywords.slice(0, limit).map((keyword, index) => {
-        const displayTitle = `Recherche ${capitalizeFirstLetter(keyword)}`;
-        const href = `https://www.google.com/search?q=${encodeURIComponent(`${keyword} source fiable`)}`;
-        const anchor = `<a href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(displayTitle)}</a>`;
-        return {
-            title: displayTitle,
-            url: anchor,
-        };
-    });
-};
-
-const stripJsonCodeFence = (value = '') => {
-    if (!value.trim().startsWith('```')) {
-        return value;
-    }
-
-    return value
-        .replace(/^```json/i, '')
-        .replace(/^```/i, '')
-        .replace(/```$/i, '')
-        .trim();
-};
-
-const parseOttoAnalysisPayload = (rawContent) => {
-    if (!rawContent || typeof rawContent !== 'string') return null;
-
-    let cleaned = stripJsonCodeFence(rawContent).trim();
-    if (!cleaned) return null;
-
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-        cleaned = jsonMatch[0];
-    }
-
-    try {
-        return JSON.parse(cleaned);
-    } catch (error) {
-        return null;
-    }
-};
-
-const normalizeOttoAnalysisPayload = (rawPayload, fallback) => {
-    const summary = typeof rawPayload?.summary === 'string' && rawPayload.summary.trim()
-        ? rawPayload.summary.trim()
-        : fallback.summary;
-
-    const normalizedSources = Array.isArray(rawPayload?.sources)
-        ? rawPayload.sources
-            .map((source, index) => {
-                if (!source) return null;
-
-                const title = typeof source.title === 'string' && source.title.trim()
-                    ? source.title.trim()
-                    : `Source ${index + 1}`;
-
-                const rawUrlCandidate =
-                    (typeof source.url === 'string' && source.url.trim()) ||
-                    (typeof source.href === 'string' && source.href.trim()) ||
-                    (typeof source.link === 'string' && source.link.trim()) ||
-                    '';
-
-                const href = ensureHttpUrl(rawUrlCandidate);
-                if (!href) return null;
-
-                const safeTitle = title.slice(0, 180);
-                const anchor = `<a href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(safeTitle)}</a>`;
-
-                return {
-                    title: safeTitle,
-                    url: anchor,
-                };
-            })
-            .filter(Boolean)
-            .slice(0, 5)
-        : [];
-
-    return {
-        summary,
-        sources: normalizedSources.length ? normalizedSources : fallback.sources,
-    };
-};
-
-async function runOttoAnalysis(text) {
-    const apiKey = process.env.OPENAI_API_KEY;
-    const fallback = {
-        summary: 'Analyse Otto indisponible pour le moment. Réessayez plus tard.',
-        sources: buildFallbackOttoSources(text),
-    };
-
-    if (!apiKey) {
-        console.warn('⚠️ OPENAI_API_KEY manquant - analyse Otto dégradée.');
-        return fallback;
-    }
-
-    const prompt = `Tu es Otto, un auditeur d'information.
-Ton rôle est d'évaluer la fiabilité d’un texte en analysant :
-1️⃣ La véracité des faits.
-2️⃣ La crédibilité et la diversité des sources citées.
-3️⃣ La clarté du contexte et des méthodologies.
-4️⃣ La fraîcheur et l’actualité des informations.
-
-Analyse le texte suivant :
-"""${text}"""
-
-Réponds UNIQUEMENT en JSON valide avec la structure suivante :
-{
-  "summary": "Synthèse neutre en français (3 à 5 phrases).",
-  "sources": [
-    { "title": "Titre court de la source", "url": "https://adresse-fiable.com" }
-  ]
-}
-
-- Fournis jusqu'à 5 sources fiables maximum.
-- Les URL doivent commencer par https://.
-- Si aucune source n'est disponible, renvoie un tableau vide.`;
-
-    try {
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`
-            },
-            body: JSON.stringify({
-                model: 'gpt-4o-mini',
-                messages: [{ role: 'user', content: prompt }],
-                temperature: 0.2,
-                max_tokens: 550
-            })
-        });
-
-        if (!response.ok) {
-            throw new Error(`OpenAI API error: ${response.status}`);
-        }
-
-        const data = await response.json();
-        const rawContent = data?.choices?.[0]?.message?.content || '';
-        const parsed = parseOttoAnalysisPayload(rawContent);
-        if (!parsed) {
-            console.warn('⚠️ Réponse Otto non structurée, utilisation du fallback.');
-            return fallback;
-        }
-
-        return normalizeOttoAnalysisPayload(parsed, fallback);
-    } catch (error) {
-        console.error('❌ Erreur OpenAI Otto:', error.message || error);
-        return fallback;
-    }
-}
-
-function evaluateOttoAgents(text) {
-    const normalized = text.toLowerCase();
-    const sourceKeywords = ['giec', 'nasa', 'noaa', 'unesco', 'mckinsey', 'rapport', 'étude', 'source', 'publication', 'journal'];
-    const riskKeywords = ['rumeur', 'controversé', 'non confirmé', 'hoax'];
-    const claimKeywords = ['affirme', 'déclare', 'selon', 'prétend', 'annonce', 'indique'];
-    const recencyIndicators = ['2020', '2021', '2022', '2023', '2024', '2025', 'récent', 'récente', 'nouveau', 'nouvelle étude'];
-    const temporalIndicators = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre', '202', '20'];
-
-    const sourceMatches = sourceKeywords.reduce((count, keyword) => count + (normalized.includes(keyword) ? 1 : 0), 0);
-    const hasSources = sourceMatches > 0;
-    const hasMultipleSources = sourceMatches > 2;
-    const hasClaims = claimKeywords.some(keyword => normalized.includes(keyword));
-    const hasNumbers = /(\d+\s?%|\d{4})/.test(text);
-    const hasRecency = recencyIndicators.some(keyword => normalized.includes(keyword));
-    const hasContextualDetails = text.length > 220 || temporalIndicators.some(keyword => normalized.includes(keyword));
-    const hasWarnings = riskKeywords.some(keyword => normalized.includes(keyword));
-
-    const factCheckerScore = clamp(65 + (hasSources ? 15 : 0) + (hasClaims ? 0 : 5) + (hasWarnings ? -20 : 0) + (hasNumbers && !hasSources ? -10 : 0), 25, 95);
-    const sourceAnalystScore = clamp(55 + (hasSources ? 20 : -10) + (hasMultipleSources ? 10 : 0) + (hasWarnings ? -15 : 0), 20, 92);
-    const contextGuardianScore = clamp(60 + (hasContextualDetails ? 10 : -15) + (hasSources ? 5 : 0) + (hasClaims && !hasContextualDetails ? -10 : 0), 25, 90);
-    const freshnessDetectorScore = clamp(58 + (hasRecency ? 20 : -8) + (hasNumbers ? 5 : 0), 20, 95);
-
-    const agents = [
-        {
-            name: 'Fact Checker',
-            score: factCheckerScore,
-            comment: hasSources
-                ? 'Contexte: Le texte cite des références identifiées ou des données précises. Ce que l’agent constate: la plupart des affirmations semblent alignées avec les éléments fournis. Ce que l’agent suggère pour améliorer la fiabilité: ajouter les passages exacts ou les chiffres clés des sources pour verrouiller la vérification.'
-                : hasClaims
-                    ? 'Contexte: Plusieurs affirmations structurent le discours mais elles ne s’appuient pas sur des preuves explicites. Ce que l’agent constate: ces déclarations restent difficiles à corroborer sans trace citée. Ce que l’agent suggère pour améliorer la fiabilité: inclure des références vérifiables ou des chiffres précis pour chaque affirmation sensible.'
-                    : 'Contexte: Le texte demeure général et évite les faits chiffrés ou engagements fermes. Ce que l’agent constate: il y a peu d’éléments susceptibles d’être validés objectivement. Ce que l’agent suggère pour améliorer la fiabilité: introduire quelques données vérifiables ou indiquer les sources d’origine lorsque c’est pertinent.'
-        },
-        {
-            name: 'Source Analyst',
-            score: sourceAnalystScore,
-            comment: hasSources
-                ? hasMultipleSources
-                    ? 'Contexte: Le texte mobilise plusieurs références externes distinctes. Ce que l’agent constate: la diversité des sources réduit le risque de biais et renforce la cohérence générale. Ce que l’agent suggère pour améliorer la fiabilité: conserver cette pluralité et ajouter, si possible, les liens directs ou références bibliographiques complètes.'
-                    : 'Contexte: Une source principale est citée pour appuyer l’argumentation. Ce que l’agent constate: la fiabilité dépend fortement de cette référence unique. Ce que l’agent suggère pour améliorer la fiabilité: croiser l’information avec au moins une seconde source indépendante ou plus spécialisée.'
-                : 'Contexte: Aucun renvoi explicite vers une publication ou un organisme n’est mentionné. Ce que l’agent constate: l’origine de l’information reste opaque et difficile à évaluer. Ce que l’agent suggère pour améliorer la fiabilité: indiquer clairement les rapports, études ou médias consultés afin d’ouvrir la vérification.'
-        },
-        {
-            name: 'Context Guardian',
-            score: contextGuardianScore,
-            comment: hasContextualDetails
-                ? 'Contexte: Le texte intègre des détails méthodologiques, géographiques ou temporels suffisants. Ce que l’agent constate: les conditions d’application sont claires et réduisent les interprétations abusives. Ce que l’agent suggère pour améliorer la fiabilité: rappeler explicitement les limites ou hypothèses clés pour compléter ce cadrage déjà solide.'
-                : 'Contexte: Les indications sur la période, le lieu ou la méthode sont limitées ou absentes. Ce que l’agent constate: le lecteur doit supposer plusieurs paramètres implicites. Ce que l’agent suggère pour améliorer la fiabilité: préciser les dates, périmètres ou conditions de collecte afin de situer correctement l’information.'
-        },
-        {
-            name: 'Freshness Detector',
-            score: freshnessDetectorScore,
-            comment: hasRecency
-                ? 'Contexte: Le texte évoque des données ou événements récents et identifiables. Ce que l’agent constate: les repères temporels suggèrent une information encore d’actualité. Ce que l’agent suggère pour améliorer la fiabilité: préciser la date de publication des sources citées pour confirmer la fraîcheur.'
-                : 'Contexte: Les éléments cités ne fournissent pas de repère temporel clair. Ce que l’agent constate: certaines données pourraient être dépassées sans que cela soit signalé. Ce que l’agent suggère pour améliorer la fiabilité: indiquer explicitement l’année ou la période de référence et vérifier si des mises à jour existent.'
-        }
-    ];
-
-    const trustIndex = Math.round(
-        agents[0].score * 0.4 +
-        agents[1].score * 0.3 +
-        agents[2].score * 0.2 +
-        agents[3].score * 0.1
-    );
-
-    const risk = getRiskLevel(trustIndex);
-    const barColor = getOttoBarColor(trustIndex);
-
-    return { trustIndex, risk, agents, barColor };
-}
 
 // ========== ROUTE ANALYSE OTTO (APPROFONDIE) ==========
 app.post('/verify-otto', async (req, res) => {
     try {
         const { text, userEmail, userId } = req.body || {};
 
+        console.log(`\n=== OTTO deep analysis ===`);
         if (!text || text.trim() === '' || (!userEmail && !userId)) {
             return res.status(400).json({ error: 'Texte ou identifiant utilisateur manquant' });
         }
@@ -1963,7 +1817,18 @@ app.post('/verify-otto', async (req, res) => {
         const refreshedUser = await refreshUserCounters(user);
         const planKey = getPlanKey(refreshedUser);
         const limits = getPlanLimits(planKey);
+        const dailyLimit = Number.isFinite(limits.ottoDailyLimit) ? limits.ottoDailyLimit : Infinity;
         const weeklyLimit = Number.isFinite(limits.ottoWeeklyLimit) ? limits.ottoWeeklyLimit : Infinity;
+
+        if (dailyLimit !== Infinity && refreshedUser.daily_otto_analysis >= dailyLimit) {
+            console.log(`⛔️ Limite quotidienne OTTO atteinte pour ${refreshedUser.email} (${planKey})`);
+            const statusCode = planKey === 'free' ? 403 : 429;
+            const message = planKey === 'free' ? 'Limite quotidienne atteinte' : 'Quota quotidien atteint';
+            return res.status(statusCode).json({
+                error: message,
+                usage: buildUsageSnapshot(refreshedUser),
+            });
+        }
 
         if (weeklyLimit !== Infinity && refreshedUser.weekly_otto_analysis >= weeklyLimit) {
             console.log(`⛔️ Limite hebdomadaire OTTO atteinte pour ${refreshedUser.email} (${planKey})`);
@@ -1975,44 +1840,71 @@ app.post('/verify-otto', async (req, res) => {
             });
         }
 
-        console.log('🚀 [OTTO] Audit démarré');
+        console.log('🚀 [OTTO] Lancement des agents');
 
-        const analysis = await runOttoAnalysis(text.trim());
-        const { trustIndex, risk, agents, barColor } = evaluateOttoAgents(text);
+        const sanitizedText = sanitizeInput(text);
+        const keywords = extractMainKeywords(sanitizedText);
+        const queries = buildOttoSearchQueries(sanitizedText, keywords);
+        const contextualSourcesRaw = await findWebSources(keywords, queries, sanitizedText);
+        const agents = await aiAgentsService.runAllAgents(sanitizedText, contextualSourcesRaw);
 
+        const globalReliability = computeOttoGlobalReliability(agents);
+        const risk = getRiskLevel(globalReliability);
+        const barColor = getOttoBarColor(globalReliability);
+        const summary = buildOttoSummary(agents) || 'Analyse Otto indisponible pour le moment. Réessayez plus tard.';
+
+        const contextualSources = (contextualSourcesRaw || [])
+            .map(source => {
+                const safeUrl = ensureHttpUrl(source.url);
+                if (!safeUrl) return null;
+                return {
+                    title: source.title || 'Source',
+                    url: safeUrl,
+                    snippet: source.snippet || '',
+                    relevance: source.relevance || 0,
+                    query: source.query_used || null,
+                };
+            })
+            .filter(Boolean)
+            .slice(0, 5);
+
+        const beforeDailyOtto = Number(refreshedUser.daily_otto_analysis ?? 0) || 0;
         const beforeWeeklyOtto = Number(refreshedUser.weekly_otto_analysis ?? 0) || 0;
-        console.log(`🧮 [OTTO][USAGE] ${refreshedUser.email} - weekly_otto_analysis before update: ${beforeWeeklyOtto}`);
+        console.log(`🧮 [OTTO][USAGE] ${refreshedUser.email} - daily before: ${beforeDailyOtto} | weekly before: ${beforeWeeklyOtto}`);
 
+        refreshedUser.daily_otto_analysis = beforeDailyOtto + 1;
         refreshedUser.weekly_otto_analysis = beforeWeeklyOtto + 1;
         refreshedUser.last_check_date = getTodayIso();
         const persistedUsage = await persistUserUsageCounters(refreshedUser);
         const usageSnapshot = buildUsageSnapshot(persistedUsage, refreshedUser);
+        const afterDailyOtto = usageSnapshot.daily_otto_analysis;
         const afterWeeklyOtto = usageSnapshot.weekly_otto_analysis;
-        console.log(`🧮 [OTTO][USAGE] ${refreshedUser.email} - weekly_otto_analysis after update: ${afterWeeklyOtto}`);
+        console.log(`🧮 [OTTO][USAGE] ${refreshedUser.email} - daily after: ${afterDailyOtto} | weekly after: ${afterWeeklyOtto}`);
 
         if (persistedUsage) {
             refreshedUser.daily_checks_used = usageSnapshot.daily_checks_used;
+            refreshedUser.daily_otto_analysis = usageSnapshot.daily_otto_analysis;
             refreshedUser.weekly_otto_analysis = usageSnapshot.weekly_otto_analysis;
         }
 
         const usageCounters = {
             dailyChecksUsed: usageSnapshot.daily_checks_used,
+            dailyOttoAnalysis: usageSnapshot.daily_otto_analysis,
             weeklyOttoAnalysis: usageSnapshot.weekly_otto_analysis,
         };
 
-        console.log(`✅ [OTTO] Indice calculé: ${trustIndex}% | Risque ${risk}`);
+        console.log(`✅ [OTTO] Indice global: ${globalReliability}% | Risque ${risk}`);
 
         return res.json({
             status: 'ok',
+            mode: 'OTTO',
             plan: planKey.toUpperCase(),
-            trustIndex,
+            summary,
+            globalReliability,
             risk,
-            summary: analysis.summary,
-            analysis: {
-                summary: analysis.summary,
-                sources: analysis.sources,
-            },
-            sources: analysis.sources,
+            keywords,
+            queries,
+            contextualSources,
             agents,
             barColor,
             usage: usageSnapshot,
