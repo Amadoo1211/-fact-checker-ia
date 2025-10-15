@@ -9,6 +9,7 @@ const {
   runOttoLongAnalysis,
   computeOttoMetaResult,
   runAllAgents,
+  generateHumanSummary,
 } = require('../services/verificationService');
 const {
   PLAN_LIMITS,
@@ -108,7 +109,7 @@ router.post('/verify-otto', upload.single('file'), async (req, res) => {
     const requestedLang = (req.body?.userLang || user?.preferred_language || user?.language || user?.lang || 'fr')
       .toString()
       .toLowerCase();
-    const userLang = requestedLang === 'en' ? 'en' : 'fr';
+    const lang = requestedLang === 'en' ? 'en' : 'fr';
 
     const sanitizedText = sanitizeInput(inputText);
     if (!sanitizedText || sanitizedText.trim() === '') {
@@ -124,19 +125,25 @@ router.post('/verify-otto', upload.single('file'), async (req, res) => {
     let agentResults;
 
     if (requiresLongAnalysis) {
-      const longAnalysis = await runOttoLongAnalysis(sanitizedText, enrichedSources, userLang);
+      const longAnalysis = await runOttoLongAnalysis(sanitizedText, enrichedSources, lang);
       agentResults = longAnalysis?.agentResults || {};
     } else {
       agentResults = await runAllAgents(sanitizedText, enrichedSources);
     }
 
     const normalizedAgents = agentResults || {};
-    const metaResult = computeOttoMetaResult(normalizedAgents, userLang);
+    const metaResult = computeOttoMetaResult(normalizedAgents, lang);
+    const { reliability } = metaResult;
+    let keyPoints = Array.isArray(metaResult.keyPoints) ? metaResult.keyPoints : [];
+    if ((!keyPoints || keyPoints.length === 0) && keywords.length > 0) {
+      keyPoints = keywords.slice(0, 8);
+    }
+    const summaryLocalized = generateHumanSummary(lang, reliability, keyPoints);
 
     const ottoPayload = {
-      summaryLocalized: metaResult.summary,
-      keyPoints: metaResult.keyPoints,
-      reliability: metaResult.reliability,
+      reliability,
+      summaryLocalized,
+      keyPoints,
       rawAgents: metaResult.agentResults,
     };
 
@@ -147,17 +154,13 @@ router.post('/verify-otto', upload.single('file'), async (req, res) => {
       ottoPayload.segments = normalizedAgents.segments;
     }
 
-    if ((!ottoPayload.keyPoints || ottoPayload.keyPoints.length === 0) && keywords.length > 0) {
-      ottoPayload.keyPoints = keywords.slice(0, 8);
-    }
-
     const updatedUser = await incrementUsageCounters(user.id, { otto: 1 });
     const quotaUser = updatedUser || { ...user, daily_otto_analysis: usedOtto + 1 };
     const quota = buildQuotaPayload(quotaUser);
 
     return res.json({
       status: 'ok',
-      lang: userLang,
+      lang,
       ottoResult: ottoPayload,
       updatedQuota: quota,
     });
