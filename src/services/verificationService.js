@@ -10,7 +10,7 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
-function segmentLongText(text, maxChunkSize = 4000) {
+function segmentLongText(text, maxChunkSize = 7000) {
   if (!text || typeof text !== 'string') {
     return [];
   }
@@ -59,6 +59,51 @@ function segmentLongText(text, maxChunkSize = 4000) {
   pushCurrent();
 
   return segments;
+}
+
+function extractKeyTerms(agentResults = {}) {
+  const terms = new Set();
+
+  const claims = agentResults?.fact_checker?.verified_claims || [];
+  claims.forEach((claim) => {
+    if (claim && typeof claim.claim === 'string') {
+      const normalized = claim.claim.trim();
+      if (normalized) {
+        terms.add(normalized);
+      }
+    }
+  });
+
+  const realSources = agentResults?.source_analyst?.real_sources || [];
+  realSources.forEach((source) => {
+    const label = source?.title || source?.name || source?.citation;
+    if (label && typeof label === 'string') {
+      const normalized = label.trim();
+      if (normalized) {
+        terms.add(normalized);
+      }
+    }
+  });
+
+  if (terms.size === 0) {
+    const summaries = [
+      agentResults?.fact_checker?.summary,
+      agentResults?.source_analyst?.summary,
+      agentResults?.context_guardian?.summary,
+      agentResults?.freshness_detector?.summary,
+    ]
+      .filter((entry) => typeof entry === 'string')
+      .join(' ');
+
+    summaries
+      .split(/[,;\n\.]/)
+      .map((part) => part.trim())
+      .filter((part) => part.length > 3)
+      .slice(0, 5)
+      .forEach((part) => terms.add(part));
+  }
+
+  return Array.from(terms).slice(0, 8);
 }
 
 function aggregateAgentRuns(segmentAnalyses = []) {
@@ -354,9 +399,8 @@ async function runOttoLongAnalysis(text, sources = [], userLang = 'fr') {
   const segments = segmentLongText(text);
 
   if (segments.length === 0) {
-    const agents = await aiAgentsService.runAllAgents(text, sources);
-    const ottoResult = computeOttoGlobalResult(agents, text, { userLang });
-    return { ottoResult, agents };
+    const agentResults = await aiAgentsService.runAllAgents(text, sources);
+    return { agentResults };
   }
 
   const segmentAnalyses = [];
@@ -372,8 +416,45 @@ async function runOttoLongAnalysis(text, sources = [], userLang = 'fr') {
     aggregatedAgents.meta_summary = metaSummary;
   }
 
-  const ottoResult = computeOttoGlobalResult(aggregatedAgents, text, { userLang, metaSummary });
-  return { ottoResult, agents: aggregatedAgents, segments: segmentAnalyses };
+  return { agentResults: aggregatedAgents };
+}
+
+async function runAllAgents(text, sources = []) {
+  return aiAgentsService.runAllAgents(text, sources);
+}
+
+function computeOttoMetaResult(agentResults = {}, lang = 'fr') {
+  const normalizedLang = lang === 'en' ? 'en' : 'fr';
+
+  const factScore = clamp(agentResults?.fact_checker?.score ?? 50, 0, 100);
+  const sourceScore = clamp(agentResults?.source_analyst?.score ?? 50, 0, 100);
+  const contextScore = clamp(agentResults?.context_guardian?.context_score ?? 50, 0, 100);
+  const freshnessScore = clamp(agentResults?.freshness_detector?.freshness_score ?? 50, 0, 100);
+
+  const reliability = Math.round(
+    factScore * 0.4
+      + sourceScore * 0.3
+      + (100 - contextScore) * 0.2
+      + freshnessScore * 0.1,
+  );
+
+  const summary = normalizedLang === 'fr'
+    ? `Le texte obtient une fiabilité globale de ${reliability}/100 selon les critères d'exactitude, de fiabilité des sources, de contexte et de fraîcheur des données.`
+    : `The text achieves a global reliability score of ${reliability}/100 based on accuracy, source credibility, context, and data freshness.`;
+
+  const keyPoints = extractKeyTerms(agentResults);
+
+  return {
+    reliability,
+    summary,
+    keyPoints,
+    agentResults: {
+      fact_checker: agentResults?.fact_checker || {},
+      source_analyst: agentResults?.source_analyst || {},
+      context_guardian: agentResults?.context_guardian || {},
+      freshness_detector: agentResults?.freshness_detector || {},
+    },
+  };
 }
 
 function computeOttoGlobalResult(agentsResult, text, options = {}) {
@@ -443,4 +524,7 @@ module.exports = {
   computeOttoGlobalResult,
   segmentLongText,
   runOttoLongAnalysis,
+  runAllAgents,
+  computeOttoMetaResult,
+  extractKeyTerms,
 };
