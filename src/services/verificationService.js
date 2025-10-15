@@ -1,6 +1,253 @@
 const { sanitizeInput, extractMainKeywords } = require('../utils/textSanitizer');
 const { getRiskLevel } = require('../utils/scoring');
 const { findWebSources, mapSourcesForOutput } = require('./googleSearch');
+const aiAgentsService = require('./aiAgents');
+
+function clamp(value, min, max) {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  return Math.min(Math.max(value, min), max);
+}
+
+function segmentLongText(text, maxChunkSize = 4000) {
+  if (!text || typeof text !== 'string') {
+    return [];
+  }
+
+  const normalizedMax = Math.max(1000, maxChunkSize);
+  const paragraphs = text
+    .split(/\n\s*\n+/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+
+  if (paragraphs.length === 0) {
+    return [];
+  }
+
+  const segments = [];
+  let currentSegment = '';
+
+  const pushCurrent = () => {
+    if (currentSegment.trim().length > 0) {
+      segments.push(currentSegment.trim());
+    }
+    currentSegment = '';
+  };
+
+  for (const paragraph of paragraphs) {
+    if ((currentSegment + '\n\n' + paragraph).trim().length <= normalizedMax) {
+      currentSegment = currentSegment ? `${currentSegment}\n\n${paragraph}` : paragraph;
+      continue;
+    }
+
+    pushCurrent();
+
+    if (paragraph.length > normalizedMax) {
+      let start = 0;
+      while (start < paragraph.length) {
+        const chunk = paragraph.slice(start, start + normalizedMax);
+        segments.push(chunk.trim());
+        start += normalizedMax;
+      }
+      currentSegment = '';
+    } else {
+      currentSegment = paragraph;
+    }
+  }
+
+  pushCurrent();
+
+  return segments;
+}
+
+function aggregateAgentRuns(segmentAnalyses = []) {
+  if (!Array.isArray(segmentAnalyses) || segmentAnalyses.length === 0) {
+    return {
+      fact_checker: {},
+      source_analyst: {},
+      context_guardian: {},
+      freshness_detector: {},
+      segments: [],
+    };
+  }
+
+  const aggregates = {
+    fact_checker: {
+      scoreTotal: 0,
+      summaries: [],
+      verified_claims: [],
+      unverified_claims: [],
+    },
+    source_analyst: {
+      scoreTotal: 0,
+      summaries: [],
+      real_sources: [],
+      fake_sources: [],
+    },
+    context_guardian: {
+      scoreTotal: 0,
+      summaries: [],
+      omissions: [],
+      manipulation_detected: [],
+    },
+    freshness_detector: {
+      scoreTotal: 0,
+      summaries: [],
+      recent_data: [],
+      outdated_data: [],
+    },
+  };
+
+  segmentAnalyses.forEach((segment, index) => {
+    const { agents } = segment;
+    if (!agents) return;
+
+    const annotate = (items) => items.map((item) => ({ ...item, segment_index: index }));
+
+    if (agents.fact_checker) {
+      aggregates.fact_checker.scoreTotal += Number(agents.fact_checker.score) || 0;
+      aggregates.fact_checker.summaries.push(agents.fact_checker.summary);
+      aggregates.fact_checker.verified_claims.push(
+        ...annotate(agents.fact_checker.verified_claims || []),
+      );
+      aggregates.fact_checker.unverified_claims.push(
+        ...annotate(agents.fact_checker.unverified_claims || []),
+      );
+    }
+
+    if (agents.source_analyst) {
+      aggregates.source_analyst.scoreTotal += Number(agents.source_analyst.score) || 0;
+      aggregates.source_analyst.summaries.push(agents.source_analyst.summary);
+      aggregates.source_analyst.real_sources.push(
+        ...annotate(agents.source_analyst.real_sources || []),
+      );
+      aggregates.source_analyst.fake_sources.push(
+        ...annotate(agents.source_analyst.fake_sources || []),
+      );
+    }
+
+    if (agents.context_guardian) {
+      aggregates.context_guardian.scoreTotal += Number(agents.context_guardian.context_score) || 0;
+      aggregates.context_guardian.summaries.push(agents.context_guardian.summary);
+      aggregates.context_guardian.omissions.push(
+        ...annotate(agents.context_guardian.omissions || []),
+      );
+      if (agents.context_guardian.manipulation_detected !== undefined) {
+        aggregates.context_guardian.manipulation_detected.push({
+          segment_index: index,
+          value: Boolean(agents.context_guardian.manipulation_detected),
+        });
+      }
+    }
+
+    if (agents.freshness_detector) {
+      aggregates.freshness_detector.scoreTotal += Number(agents.freshness_detector.freshness_score) || 0;
+      aggregates.freshness_detector.summaries.push(agents.freshness_detector.summary);
+      aggregates.freshness_detector.recent_data.push(
+        ...annotate(agents.freshness_detector.recent_data || []),
+      );
+      aggregates.freshness_detector.outdated_data.push(
+        ...annotate(agents.freshness_detector.outdated_data || []),
+      );
+    }
+  });
+
+  const segmentCount = segmentAnalyses.length;
+
+  const buildSummary = (entries = []) => entries.filter(Boolean).join(' | ');
+
+  return {
+    fact_checker: {
+      score: segmentCount > 0 ? Math.round(aggregates.fact_checker.scoreTotal / segmentCount) : 50,
+      verified_claims: aggregates.fact_checker.verified_claims,
+      unverified_claims: aggregates.fact_checker.unverified_claims,
+      summary: buildSummary(aggregates.fact_checker.summaries),
+    },
+    source_analyst: {
+      score: segmentCount > 0 ? Math.round(aggregates.source_analyst.scoreTotal / segmentCount) : 50,
+      real_sources: aggregates.source_analyst.real_sources,
+      fake_sources: aggregates.source_analyst.fake_sources,
+      summary: buildSummary(aggregates.source_analyst.summaries),
+    },
+    context_guardian: {
+      context_score: segmentCount > 0
+        ? Math.round(aggregates.context_guardian.scoreTotal / segmentCount)
+        : 50,
+      omissions: aggregates.context_guardian.omissions,
+      manipulation_detected: aggregates.context_guardian.manipulation_detected,
+      summary: buildSummary(aggregates.context_guardian.summaries),
+    },
+    freshness_detector: {
+      freshness_score: segmentCount > 0
+        ? Math.round(aggregates.freshness_detector.scoreTotal / segmentCount)
+        : 50,
+      recent_data: aggregates.freshness_detector.recent_data,
+      outdated_data: aggregates.freshness_detector.outdated_data,
+      summary: buildSummary(aggregates.freshness_detector.summaries),
+    },
+    segments: segmentAnalyses,
+  };
+}
+
+async function buildMetaSummary(segmentAnalyses, aggregatedAgents, userLang = 'fr') {
+  if (!Array.isArray(segmentAnalyses) || segmentAnalyses.length === 0) {
+    return '';
+  }
+
+  if (!aiAgentsService || typeof aiAgentsService.callOpenAI !== 'function') {
+    return '';
+  }
+
+  const languageLabel = userLang === 'en' ? 'English' : 'French';
+  const prefix = userLang === 'en' ? 'Otto Summary:' : 'Synthèse Otto :';
+
+  const segmentDescriptions = segmentAnalyses
+    .map((segment) => {
+      const excerpt = segment.text.replace(/\s+/g, ' ').slice(0, 350);
+      const fc = segment.agents?.fact_checker;
+      const sa = segment.agents?.source_analyst;
+      const cg = segment.agents?.context_guardian;
+      const fd = segment.agents?.freshness_detector;
+      return [
+        `Segment ${segment.index + 1}:`,
+        `Excerpt: "${excerpt}"`,
+        `Fact-checker score ${fc?.score ?? 'n/a'} – ${fc?.summary || 'No summary'}`,
+        `Source analyst score ${sa?.score ?? 'n/a'} – ${sa?.summary || 'No summary'}`,
+        `Context guardian score ${cg?.context_score ?? 'n/a'} – ${cg?.summary || 'No summary'}`,
+        `Freshness detector score ${fd?.freshness_score ?? 'n/a'} – ${fd?.summary || 'No summary'}`,
+      ].join('\n');
+    })
+    .join('\n\n');
+
+  const globalOverview = `Global averages – Fact-checker: ${aggregatedAgents.fact_checker?.score ?? 'n/a'}, `
+    + `Source analyst: ${aggregatedAgents.source_analyst?.score ?? 'n/a'}, `
+    + `Context guardian: ${aggregatedAgents.context_guardian?.context_score ?? 'n/a'}, `
+    + `Freshness detector: ${aggregatedAgents.freshness_detector?.freshness_score ?? 'n/a'}.`;
+
+  const systemPrompt = userLang === 'en'
+    ? `You are Otto, an advanced reliability analyst. Produce a concise synthesis in ${languageLabel}. `
+      + `Always start with "${prefix}" and keep the answer under 250 words.`
+    : `Tu es Otto, un analyste de fiabilité. Rédige une synthèse finale en ${languageLabel}. `
+      + `Commence toujours par "${prefix}" et reste sous 250 mots.`;
+
+  const userPrompt = [
+    `We analysed a long document split into ${segmentAnalyses.length} segments.`,
+    globalOverview,
+    'Detailed segment insights:',
+    segmentDescriptions,
+    'Merge these findings into a coherent global synthesis highlighting convergence, contradictions, and level of reliability.',
+  ].join('\n\n');
+
+  try {
+    const response = await aiAgentsService.callOpenAI(systemPrompt, userPrompt, 1200);
+    return response ? response.trim() : '';
+  } catch (error) {
+    console.error('Meta-analysis error:', error);
+    return '';
+  }
+}
+
 
 function extractVerifiableClaims(text) {
   const cleaned = sanitizeInput(text);
@@ -103,40 +350,90 @@ async function runAutoVerification(text) {
   };
 }
 
-function computeOttoGlobalResult(agentsResult, text) {
-  const { fact_checker, source_analyst, context_guardian, freshness_detector } = agentsResult || {};
+async function runOttoLongAnalysis(text, sources = [], userLang = 'fr') {
+  const segments = segmentLongText(text);
 
-  const fact = fact_checker?.score || 50;
-  const source = source_analyst?.score || 50;
-  const context = 100 - (context_guardian?.context_score || 50);
-  const fresh = freshness_detector?.freshness_score || 50;
+  if (segments.length === 0) {
+    const agents = await aiAgentsService.runAllAgents(text, sources);
+    const ottoResult = computeOttoGlobalResult(agents, text, { userLang });
+    return { ottoResult, agents };
+  }
+
+  const segmentAnalyses = [];
+  for (let index = 0; index < segments.length; index += 1) {
+    const segmentText = segments[index];
+    const agents = await aiAgentsService.runAllAgents(segmentText, sources);
+    segmentAnalyses.push({ index, text: segmentText, agents });
+  }
+
+  const aggregatedAgents = aggregateAgentRuns(segmentAnalyses);
+  const metaSummary = await buildMetaSummary(segmentAnalyses, aggregatedAgents, userLang);
+  if (metaSummary) {
+    aggregatedAgents.meta_summary = metaSummary;
+  }
+
+  const ottoResult = computeOttoGlobalResult(aggregatedAgents, text, { userLang, metaSummary });
+  return { ottoResult, agents: aggregatedAgents, segments: segmentAnalyses };
+}
+
+function computeOttoGlobalResult(agentsResult, text, options = {}) {
+  const { userLang = 'fr', metaSummary } = options || {};
+  const prefix = userLang === 'en' ? 'Otto Summary:' : 'Synthèse Otto :';
+
+  const fact = clamp((agentsResult?.fact_checker?.score ?? 50), 0, 100);
+  const source = clamp((agentsResult?.source_analyst?.score ?? 50), 0, 100);
+  const contextScore = clamp((agentsResult?.context_guardian?.context_score ?? 50), 0, 100);
+  const fresh = clamp((agentsResult?.freshness_detector?.freshness_score ?? 50), 0, 100);
+
+  const contextReliability = clamp(100 - contextScore, 0, 100);
 
   const globalReliability = Math.round(
-    fact * 0.4 + source * 0.3 + context * 0.2 + fresh * 0.1,
+    fact * 0.4 + source * 0.3 + contextReliability * 0.2 + fresh * 0.1,
   );
 
-  const summary = [
-    fact_checker?.summary,
-    source_analyst?.summary,
-    context_guardian?.summary,
-    freshness_detector?.summary,
-  ]
-    .filter(Boolean)
-    .join(' | ');
+  let summary = (metaSummary || agentsResult?.meta_summary || '').trim();
+  if (!summary) {
+    const agentSummaries = [
+      agentsResult?.fact_checker?.summary,
+      agentsResult?.source_analyst?.summary,
+      agentsResult?.context_guardian?.summary,
+      agentsResult?.freshness_detector?.summary,
+    ].filter(Boolean);
 
-  const keyPoints = Array.from(
-    new Set(
-      (text?.match(/\b[A-Z][a-z]{3,}\b/g) || []).slice(0, 8),
-    ),
+    if (agentSummaries.length > 0) {
+      summary = `${prefix} ${agentSummaries.join(' | ')}`;
+    } else {
+      summary = `${prefix} ${userLang === 'en'
+        ? 'Analysis unavailable. Please try again later.'
+        : 'Analyse indisponible. Réessayez plus tard.'}`;
+    }
+  } else if (!summary.toLowerCase().startsWith(prefix.toLowerCase())) {
+    summary = `${prefix} ${summary}`;
+  }
+
+  const claimKeyPoints = (agentsResult?.fact_checker?.verified_claims || [])
+    .map((claim) => claim?.claim)
+    .filter(Boolean);
+
+  const fallbackKeyPoints = Array.from(
+    new Set((text?.match(/\b[A-Z][a-z]{3,}\b/g) || []).slice(0, 8)),
   );
+
+  const keyPoints = Array.from(new Set([...claimKeyPoints, ...fallbackKeyPoints])).slice(0, 8);
 
   return {
     status: 'ok',
     mode: 'OTTO',
     global_reliability: globalReliability,
-    summary: summary || 'Synthèse indisponible',
+    summary,
     key_points: keyPoints,
     agents: agentsResult,
+    breakdown: {
+      fact_checker: { weight: 0.4, score: fact },
+      source_analyst: { weight: 0.3, score: source },
+      context_guardian: { weight: 0.2, score: contextReliability, raw_score: contextScore },
+      freshness_detector: { weight: 0.1, score: fresh },
+    },
   };
 }
 
@@ -144,4 +441,6 @@ module.exports = {
   runAutoVerification,
   buildOttoSearchQueries,
   computeOttoGlobalResult,
+  segmentLongText,
+  runOttoLongAnalysis,
 };
