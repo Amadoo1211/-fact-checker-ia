@@ -15,9 +15,11 @@ const bcrypt = require('bcrypt');
         });
 
         const updates = [
-            { email: 'boud3285@gmail.com', password: 'Boud#2025!Xy' },
-            { email: 'Ziadtakedine@gmail.com', password: 'Ziad#2025!Xy' },
-        ];
+  { email: 'boud3285@gmail.com', password: 'Boud#2025!Xy' },
+  { email: 'Ziadtakedine@gmail.com', password: 'Ziad#2025!Xy' },
+  { email: 'Nory.benali89@gmail.com', password: 'Nory#2025!Xy' } // ✅ ajouté
+];
+
 
         const client = await pool.connect();
 
