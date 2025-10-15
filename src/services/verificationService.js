@@ -119,25 +119,29 @@ function aggregateAgentRuns(segmentAnalyses = []) {
 
   const aggregates = {
     fact_checker: {
-      scoreTotal: 0,
+      weightedScore: 0,
+      weight: 0,
       summaries: [],
       verified_claims: [],
       unverified_claims: [],
     },
     source_analyst: {
-      scoreTotal: 0,
+      weightedScore: 0,
+      weight: 0,
       summaries: [],
       real_sources: [],
       fake_sources: [],
     },
     context_guardian: {
-      scoreTotal: 0,
+      weightedScore: 0,
+      weight: 0,
       summaries: [],
       omissions: [],
       manipulation_detected: [],
     },
     freshness_detector: {
-      scoreTotal: 0,
+      weightedScore: 0,
+      weight: 0,
       summaries: [],
       recent_data: [],
       outdated_data: [],
@@ -148,10 +152,17 @@ function aggregateAgentRuns(segmentAnalyses = []) {
     const { agents } = segment;
     if (!agents) return;
 
+    const segmentLength = Math.max(1, segment.text?.length || 0);
+    segment.segment_length = segmentLength;
+
     const annotate = (items) => items.map((item) => ({ ...item, segment_index: index }));
 
     if (agents.fact_checker) {
-      aggregates.fact_checker.scoreTotal += Number(agents.fact_checker.score) || 0;
+      const score = Number(agents.fact_checker.score);
+      if (Number.isFinite(score)) {
+        aggregates.fact_checker.weightedScore += score * segmentLength;
+        aggregates.fact_checker.weight += segmentLength;
+      }
       aggregates.fact_checker.summaries.push(agents.fact_checker.summary);
       aggregates.fact_checker.verified_claims.push(
         ...annotate(agents.fact_checker.verified_claims || []),
@@ -162,7 +173,11 @@ function aggregateAgentRuns(segmentAnalyses = []) {
     }
 
     if (agents.source_analyst) {
-      aggregates.source_analyst.scoreTotal += Number(agents.source_analyst.score) || 0;
+      const score = Number(agents.source_analyst.score);
+      if (Number.isFinite(score)) {
+        aggregates.source_analyst.weightedScore += score * segmentLength;
+        aggregates.source_analyst.weight += segmentLength;
+      }
       aggregates.source_analyst.summaries.push(agents.source_analyst.summary);
       aggregates.source_analyst.real_sources.push(
         ...annotate(agents.source_analyst.real_sources || []),
@@ -173,7 +188,11 @@ function aggregateAgentRuns(segmentAnalyses = []) {
     }
 
     if (agents.context_guardian) {
-      aggregates.context_guardian.scoreTotal += Number(agents.context_guardian.context_score) || 0;
+      const score = Number(agents.context_guardian.context_score);
+      if (Number.isFinite(score)) {
+        aggregates.context_guardian.weightedScore += score * segmentLength;
+        aggregates.context_guardian.weight += segmentLength;
+      }
       aggregates.context_guardian.summaries.push(agents.context_guardian.summary);
       aggregates.context_guardian.omissions.push(
         ...annotate(agents.context_guardian.omissions || []),
@@ -187,7 +206,11 @@ function aggregateAgentRuns(segmentAnalyses = []) {
     }
 
     if (agents.freshness_detector) {
-      aggregates.freshness_detector.scoreTotal += Number(agents.freshness_detector.freshness_score) || 0;
+      const score = Number(agents.freshness_detector.freshness_score);
+      if (Number.isFinite(score)) {
+        aggregates.freshness_detector.weightedScore += score * segmentLength;
+        aggregates.freshness_detector.weight += segmentLength;
+      }
       aggregates.freshness_detector.summaries.push(agents.freshness_detector.summary);
       aggregates.freshness_detector.recent_data.push(
         ...annotate(agents.freshness_detector.recent_data || []),
@@ -202,31 +225,35 @@ function aggregateAgentRuns(segmentAnalyses = []) {
 
   const buildSummary = (entries = []) => entries.filter(Boolean).join(' | ');
 
+  const computeAverage = (bucket) => {
+    if (!bucket) return 50;
+    if (bucket.weight > 0) {
+      return Math.round(bucket.weightedScore / bucket.weight);
+    }
+    return 50;
+  };
+
   return {
     fact_checker: {
-      score: segmentCount > 0 ? Math.round(aggregates.fact_checker.scoreTotal / segmentCount) : 50,
+      score: computeAverage(aggregates.fact_checker),
       verified_claims: aggregates.fact_checker.verified_claims,
       unverified_claims: aggregates.fact_checker.unverified_claims,
       summary: buildSummary(aggregates.fact_checker.summaries),
     },
     source_analyst: {
-      score: segmentCount > 0 ? Math.round(aggregates.source_analyst.scoreTotal / segmentCount) : 50,
+      score: computeAverage(aggregates.source_analyst),
       real_sources: aggregates.source_analyst.real_sources,
       fake_sources: aggregates.source_analyst.fake_sources,
       summary: buildSummary(aggregates.source_analyst.summaries),
     },
     context_guardian: {
-      context_score: segmentCount > 0
-        ? Math.round(aggregates.context_guardian.scoreTotal / segmentCount)
-        : 50,
+      context_score: computeAverage(aggregates.context_guardian),
       omissions: aggregates.context_guardian.omissions,
       manipulation_detected: aggregates.context_guardian.manipulation_detected,
       summary: buildSummary(aggregates.context_guardian.summaries),
     },
     freshness_detector: {
-      freshness_score: segmentCount > 0
-        ? Math.round(aggregates.freshness_detector.scoreTotal / segmentCount)
-        : 50,
+      freshness_score: computeAverage(aggregates.freshness_detector),
       recent_data: aggregates.freshness_detector.recent_data,
       outdated_data: aggregates.freshness_detector.outdated_data,
       summary: buildSummary(aggregates.freshness_detector.summaries),
@@ -412,15 +439,51 @@ async function runOttoLongAnalysis(text, sources = [], userLang = 'fr') {
 
   const aggregatedAgents = aggregateAgentRuns(segmentAnalyses);
   const metaSummary = await buildMetaSummary(segmentAnalyses, aggregatedAgents, userLang);
-  if (metaSummary) {
-    aggregatedAgents.meta_summary = metaSummary;
-  }
+  const fallbackSummary = segmentAnalyses
+    .map((segment) => {
+      const summaries = [
+        segment.agents?.fact_checker?.summary,
+        segment.agents?.source_analyst?.summary,
+        segment.agents?.context_guardian?.summary,
+        segment.agents?.freshness_detector?.summary,
+      ].filter(Boolean);
+      if (summaries.length === 0) {
+        return '';
+      }
+      return `Segment ${segment.index + 1}: ${summaries.join(' ')}`;
+    })
+    .filter(Boolean)
+    .join(' ');
+
+  aggregatedAgents.meta_summary = (metaSummary && metaSummary.trim()) || fallbackSummary;
 
   return { agentResults: aggregatedAgents };
 }
 
 async function runAllAgents(text, sources = []) {
   return aiAgentsService.runAllAgents(text, sources);
+}
+
+function generateHumanSummary(lang, reliability, keyFindings) {
+  const list = keyFindings?.length ? keyFindings.join(', ') : '';
+
+  if (lang === 'fr') {
+    return `L'étude obtient une fiabilité globale de ${reliability}/100. ${
+      reliability > 85
+        ? 'Les résultats sont solides et bien étayés par des sources crédibles.'
+        : reliability > 65
+        ? "L'étude semble globalement fiable, mais certaines affirmations manquent de précisions méthodologiques."
+        : 'Les conclusions doivent être vérifiées, certaines données manquent de sources fiables.'
+    } ${list ? 'Points clés : ' + list + '.' : ''}`;
+  }
+
+  return `The study achieves a global reliability score of ${reliability}/100. ${
+    reliability > 85
+      ? 'The findings are well-supported by credible sources and solid data.'
+      : reliability > 65
+      ? 'The research appears mostly reliable, though some claims lack methodological details.'
+      : 'The conclusions need verification as some evidence appears weak or missing.'
+  } ${list ? 'Key findings: ' + list + '.' : ''}`;
 }
 
 function computeOttoMetaResult(agentResults = {}, lang = 'fr') {
@@ -444,16 +507,25 @@ function computeOttoMetaResult(agentResults = {}, lang = 'fr') {
 
   const keyPoints = extractKeyTerms(agentResults);
 
+  const agentPayload = {
+    fact_checker: agentResults?.fact_checker || {},
+    source_analyst: agentResults?.source_analyst || {},
+    context_guardian: agentResults?.context_guardian || {},
+    freshness_detector: agentResults?.freshness_detector || {},
+  };
+
+  if (agentResults?.meta_summary) {
+    agentPayload.meta_summary = agentResults.meta_summary;
+  }
+  if (Array.isArray(agentResults?.segments)) {
+    agentPayload.segments = agentResults.segments;
+  }
+
   return {
     reliability,
     summary,
     keyPoints,
-    agentResults: {
-      fact_checker: agentResults?.fact_checker || {},
-      source_analyst: agentResults?.source_analyst || {},
-      context_guardian: agentResults?.context_guardian || {},
-      freshness_detector: agentResults?.freshness_detector || {},
-    },
+    agentResults: agentPayload,
   };
 }
 
@@ -527,4 +599,5 @@ module.exports = {
   runAllAgents,
   computeOttoMetaResult,
   extractKeyTerms,
+  generateHumanSummary,
 };
