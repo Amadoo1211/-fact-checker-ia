@@ -1,6 +1,6 @@
 const express = require('express');
 const aiAgentsService = require('../services/aiAgents');
-const { buildOttoSearchQueries } = require('../services/verificationService');
+const { buildOttoSearchQueries, computeOttoGlobalResult } = require('../services/verificationService');
 const {
   PLAN_LIMITS,
   DEFAULT_PLAN,
@@ -11,7 +11,7 @@ const {
   normalizeUsageValue,
 } = require('../services/quotaService');
 const { extractMainKeywords, sanitizeInput } = require('../utils/textSanitizer');
-const { computeOttoGlobalReliability, buildOttoSummary, getOttoBarColor, getRiskLevel } = require('../utils/scoring');
+const { getOttoBarColor, getRiskLevel } = require('../utils/scoring');
 const { findWebSources, extractTrustedSourceContent, mapSourcesForOutput } = require('../services/googleSearch');
 const { getUserByEmail, getUserById } = require('../services/userService');
 
@@ -53,11 +53,12 @@ router.post('/verify-otto', async (req, res) => {
     const contextualSourcesRaw = await findWebSources(keywords, queries, sanitizedText);
     const enrichedSources = await extractTrustedSourceContent(contextualSourcesRaw);
     const agents = await aiAgentsService.runAllAgents(sanitizedText, enrichedSources);
+    const ottoResult = computeOttoGlobalResult(agents, text);
 
-    const globalReliability = computeOttoGlobalReliability(agents);
+    const globalReliability = ottoResult.global_reliability;
     const risk = getRiskLevel(globalReliability);
     const barColor = getOttoBarColor(globalReliability);
-    const summary = buildOttoSummary(agents) || 'Analyse Otto indisponible pour le moment. Réessayez plus tard.';
+    const summary = ottoResult.summary || 'Analyse Otto indisponible pour le moment. Réessayez plus tard.';
 
     const contextualSources = mapSourcesForOutput(enrichedSources.length > 0 ? enrichedSources : contextualSourcesRaw).slice(0, 5);
 
@@ -71,18 +72,19 @@ router.post('/verify-otto', async (req, res) => {
     };
 
     return res.json({
-      status: 'ok',
-      mode: 'OTTO',
+      ...ottoResult,
+      globalReliability,
+      summary,
+      risk,
+      barColor,
       plan: quota.plan,
       quota,
-      summary,
-      globalReliability,
-      risk,
+      userEmail: user.email,
       keywords,
       queries,
       contextualSources,
       agents,
-      barColor,
+      keyPoints: ottoResult.key_points,
       usage: usageSnapshot,
       dailyChecksUsed: usageSnapshot.daily_checks_used,
       dailyOttoAnalysis: usageSnapshot.daily_otto_analysis,
