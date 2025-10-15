@@ -1,15 +1,20 @@
 const express = require('express');
+const bcrypt = require('bcrypt');
 const pool = require('../services/db');
 const { resetAllCounters } = require('../services/quotaService');
 
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'nory.benali89@gmail.com';
+const ADMIN_RESET_SECRET = process.env.ADMIN_RESET_SECRET;
 
 const router = express.Router();
 
+function isAuthorized(secret) {
+  return ADMIN_RESET_SECRET && secret === ADMIN_RESET_SECRET;
+}
+
 router.get('/admin/users', async (req, res) => {
   try {
-    const { adminEmail } = req.query;
-    if (adminEmail !== ADMIN_EMAIL) {
+    const { adminSecret } = req.query;
+    if (!isAuthorized(adminSecret)) {
       return res.status(403).json({ error: 'Accès refusé' });
     }
 
@@ -37,8 +42,8 @@ router.get('/admin/users', async (req, res) => {
 
 router.post('/admin/upgrade-user', async (req, res) => {
   try {
-    const { adminEmail, userEmail, plan } = req.body;
-    if (adminEmail !== ADMIN_EMAIL) {
+    const { adminSecret, userEmail, plan } = req.body;
+    if (!isAuthorized(adminSecret)) {
       return res.status(403).json({ error: 'Accès refusé' });
     }
 
@@ -55,8 +60,8 @@ router.post('/admin/upgrade-user', async (req, res) => {
 
 router.delete('/admin/delete-user', async (req, res) => {
   try {
-    const { adminEmail, userEmail } = req.body;
-    if (adminEmail !== ADMIN_EMAIL) {
+    const { adminSecret, userEmail } = req.body;
+    if (!isAuthorized(adminSecret)) {
       return res.status(403).json({ error: 'Accès refusé' });
     }
 
@@ -72,8 +77,8 @@ router.delete('/admin/delete-user', async (req, res) => {
 });
 
 router.post('/admin/reset-counters', async (req, res) => {
-  const { adminEmail } = req.body;
-  if (adminEmail !== ADMIN_EMAIL) {
+  const { adminSecret } = req.body;
+  if (!isAuthorized(adminSecret)) {
     return res.status(403).json({ error: 'Accès refusé' });
   }
 
@@ -83,6 +88,35 @@ router.post('/admin/reset-counters', async (req, res) => {
   } catch (error) {
     console.error('Erreur reset counters:', error);
     return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+router.post('/admin/reset-password', async (req, res) => {
+  const { adminSecret, targetEmail, newPassword } = req.body || {};
+
+  if (!isAuthorized(adminSecret)) {
+    return res.status(403).json({ success: false, error: 'access_denied' });
+  }
+
+  if (!targetEmail || !newPassword) {
+    return res.status(400).json({ success: false, error: 'missing_parameters' });
+  }
+
+  try {
+    const hashed = await bcrypt.hash(newPassword, 10);
+    await pool.query(
+      'UPDATE users SET password_hash = $1, updated_at = NOW() WHERE LOWER(email) = LOWER($2)',
+      [hashed, targetEmail],
+    );
+
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`Mot de passe réinitialisé pour ${targetEmail}`);
+    }
+
+    return res.json({ success: true, message: 'Password reset' });
+  } catch (err) {
+    console.error('Erreur reset password admin:', err.message || err);
+    return res.status(500).json({ success: false, error: 'server_error' });
   }
 });
 
