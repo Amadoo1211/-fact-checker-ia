@@ -31,12 +31,34 @@ const upload = multer({
 });
 
 router.post('/verify-otto', upload.single('file'), async (req, res) => {
+  const requestedLangRaw =
+    req.body?.userLang || req.body?.lang || req.body?.language || 'fr';
+  const normalizedRequestedLang =
+    typeof requestedLangRaw === 'string' && requestedLangRaw.toLowerCase() === 'en'
+      ? 'en'
+      : 'fr';
+  let responseLang = normalizedRequestedLang;
+  const defaultDebugMessage = 'Otto verification request failed.';
+
+  const sendError = (statusCode, payload = {}) =>
+    res.status(statusCode).json({
+      status: 'error',
+      success: false,
+      lang: responseLang,
+      debugMessage: defaultDebugMessage,
+      ...payload,
+      ottoResult: null,
+    });
+
   try {
     const { userEmail, userId } = req.body || {};
     let inputText = typeof req.body?.text === 'string' ? req.body.text : '';
 
     if (!userEmail && !userId) {
-      return res.status(400).json({ success: false, error: 'missing_parameters' });
+      return sendError(400, {
+        error: 'missing_parameters',
+        debugMessage: 'Missing Otto user parameters.',
+      });
     }
 
     const fileUrl = typeof req.body?.fileUrl === 'string' ? req.body.fileUrl.trim() : '';
@@ -78,16 +100,27 @@ router.post('/verify-otto', upload.single('file'), async (req, res) => {
       const pdfCombined = pdfTextSegments.join('\n\n');
       inputText = inputText ? `${inputText}\n\n${pdfCombined}` : pdfCombined;
     } else if (pdfAttempted && (!inputText || inputText.trim() === '')) {
-      return res.status(400).json({ success: false, error: 'invalid_pdf' });
+      return sendError(400, {
+        error: 'invalid_pdf',
+        debugMessage: 'Unable to extract PDF text for Otto analysis.',
+      });
     }
 
+    console.log('[VerifyOtto] Input text length:', inputText?.length || 0);
+
     if (!inputText || inputText.trim() === '') {
-      return res.status(400).json({ success: false, error: 'missing_text' });
+      return sendError(400, {
+        error: 'missing_text',
+        debugMessage: 'No text provided for Otto verification.',
+      });
     }
 
     let user = userId ? await getUserById(userId) : await getUserByEmail(userEmail);
     if (!user) {
-      return res.status(404).json({ success: false, error: 'user_not_found' });
+      return sendError(404, {
+        error: 'user_not_found',
+        debugMessage: 'User record not found for Otto verification.',
+      });
     }
 
     user = await ensureDailyReset(user);
@@ -98,22 +131,32 @@ router.post('/verify-otto', upload.single('file'), async (req, res) => {
 
     if (Number.isFinite(ottoLimit) && usedOtto >= ottoLimit) {
       const quota = buildQuotaPayload(user);
-      return res.status(429).json({
-        success: false,
+      return sendError(429, {
         error: 'limit_reached',
         message: 'Daily Otto analysis limit reached',
         quota,
+        debugMessage: 'Daily Otto analysis limit reached.',
       });
     }
 
-    const requestedLang = (req.body?.userLang || user?.preferred_language || user?.language || user?.lang || 'fr')
+    const requestedLang = (
+      req.body?.userLang ||
+      user?.preferred_language ||
+      user?.language ||
+      user?.lang ||
+      'fr'
+    )
       .toString()
       .toLowerCase();
     const lang = requestedLang === 'en' ? 'en' : 'fr';
+    responseLang = lang;
 
     const sanitizedText = sanitizeInput(inputText);
     if (!sanitizedText || sanitizedText.trim() === '') {
-      return res.status(400).json({ success: false, error: 'invalid_text' });
+      return sendError(400, {
+        error: 'invalid_text',
+        debugMessage: 'Provided text is invalid after sanitization.',
+      });
     }
     const keywords = extractMainKeywords(sanitizedText);
     const queries = buildOttoSearchQueries(sanitizedText, keywords);
@@ -163,10 +206,18 @@ router.post('/verify-otto', upload.single('file'), async (req, res) => {
       lang,
       ottoResult: ottoPayload,
       updatedQuota: quota,
+      success: true,
     });
   } catch (error) {
-    console.error('Erreur Otto :', error);
-    return res.status(500).json({ success: false, error: 'server_error' });
+    console.error('❌ Otto error:', error);
+    if (!res.headersSent) {
+      return sendError(500, {
+        error: 'server_error',
+        message: 'Internal server error',
+        debugMessage: 'Otto verification failed. Please try again later.',
+      });
+    }
+    return;
   }
 });
 
