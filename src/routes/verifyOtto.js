@@ -1,8 +1,15 @@
 const express = require('express');
 const multer = require('multer');
-const pdfParse = require('pdf-parse');
-const aiAgentsService = require('../services/aiAgents');
-const { buildOttoSearchQueries, computeOttoGlobalResult, runOttoLongAnalysis } = require('../services/verificationService');
+const fs = require('fs/promises');
+const os = require('os');
+const path = require('path');
+const { extractPdfText } = require('../utils/pdfExtractor');
+const {
+  buildOttoSearchQueries,
+  runOttoLongAnalysis,
+  computeOttoMetaResult,
+  runAllAgents,
+} = require('../services/verificationService');
 const {
   PLAN_LIMITS,
   DEFAULT_PLAN,
@@ -13,8 +20,7 @@ const {
   normalizeUsageValue,
 } = require('../services/quotaService');
 const { extractMainKeywords, sanitizeInput } = require('../utils/textSanitizer');
-const { getOttoBarColor, getRiskLevel } = require('../utils/scoring');
-const { findWebSources, extractTrustedSourceContent, mapSourcesForOutput } = require('../services/googleSearch');
+const { findWebSources, extractTrustedSourceContent } = require('../services/googleSearch');
 const { getUserByEmail, getUserById } = require('../services/userService');
 
 const router = express.Router();
@@ -32,19 +38,46 @@ router.post('/verify-otto', upload.single('file'), async (req, res) => {
       return res.status(400).json({ success: false, error: 'missing_parameters' });
     }
 
-    if (req.file) {
+    const fileUrl = typeof req.body?.fileUrl === 'string' ? req.body.fileUrl.trim() : '';
+    const pdfTextSegments = [];
+    let pdfAttempted = false;
+
+    if (fileUrl) {
+      pdfAttempted = true;
       try {
-        const pdfData = await pdfParse(req.file.buffer);
-        const pdfText = (pdfData?.text || '').trim();
-        if (pdfText) {
-          inputText = inputText ? `${inputText}\n\n${pdfText}` : pdfText;
+        const extractedText = await extractPdfText(fileUrl);
+        if (extractedText && extractedText.trim()) {
+          pdfTextSegments.push(extractedText.trim());
         }
       } catch (pdfError) {
-        console.error('Erreur extraction PDF Otto :', pdfError);
-        if (!inputText || inputText.trim() === '') {
-          return res.status(400).json({ success: false, error: 'invalid_pdf' });
-        }
+        console.error('Erreur extraction PDF Otto (url) :', pdfError);
       }
+    }
+
+    if (req.file && req.file.buffer) {
+      pdfAttempted = true;
+      const tempPath = path.join(
+        os.tmpdir(),
+        `otto-${Date.now()}-${Math.random().toString(16).slice(2)}.pdf`,
+      );
+      try {
+        await fs.writeFile(tempPath, req.file.buffer);
+        const extractedText = await extractPdfText(tempPath);
+        if (extractedText && extractedText.trim()) {
+          pdfTextSegments.push(extractedText.trim());
+        }
+      } catch (pdfError) {
+        console.error('Erreur extraction PDF Otto (upload) :', pdfError);
+      } finally {
+        await fs.unlink(tempPath).catch(() => {});
+      }
+    }
+
+    if (pdfTextSegments.length > 0) {
+      const pdfCombined = pdfTextSegments.join('\n\n');
+      inputText = inputText ? `${inputText}\n\n${pdfCombined}` : pdfCombined;
+    } else if (pdfAttempted && (!inputText || inputText.trim() === '')) {
+      return res.status(400).json({ success: false, error: 'invalid_pdf' });
     }
 
     if (!inputText || inputText.trim() === '') {
@@ -87,59 +120,46 @@ router.post('/verify-otto', upload.single('file'), async (req, res) => {
     const contextualSourcesRaw = await findWebSources(keywords, queries, sanitizedText);
     const enrichedSources = await extractTrustedSourceContent(contextualSourcesRaw);
 
-    const isLongText = sanitizedText.length > 8000;
-    let agents;
-    let ottoResult;
+    const requiresLongAnalysis = pdfAttempted || sanitizedText.length > 8000;
+    let agentResults;
 
-    if (isLongText) {
+    if (requiresLongAnalysis) {
       const longAnalysis = await runOttoLongAnalysis(sanitizedText, enrichedSources, userLang);
-      ottoResult = longAnalysis.ottoResult;
-      agents = longAnalysis.agents || ottoResult.agents;
+      agentResults = longAnalysis?.agentResults || {};
     } else {
-      agents = await aiAgentsService.runAllAgents(sanitizedText, enrichedSources);
-      ottoResult = computeOttoGlobalResult(agents, sanitizedText, { userLang });
+      agentResults = await runAllAgents(sanitizedText, enrichedSources);
     }
 
-    const resolvedAgents = ottoResult.agents || agents;
+    const normalizedAgents = agentResults || {};
+    const metaResult = computeOttoMetaResult(normalizedAgents, userLang);
 
-    const globalReliability = ottoResult.global_reliability;
-    const risk = getRiskLevel(globalReliability);
-    const barColor = getOttoBarColor(globalReliability);
-    const summary = ottoResult.summary
-      || (userLang === 'en'
-        ? 'Otto Summary: Analysis unavailable for now. Please try again later.'
-        : 'Synthèse Otto : Analyse indisponible pour le moment. Réessayez plus tard.');
+    const ottoPayload = {
+      summaryLocalized: metaResult.summary,
+      keyPoints: metaResult.keyPoints,
+      reliability: metaResult.reliability,
+      rawAgents: metaResult.agentResults,
+    };
 
-    const contextualSources = mapSourcesForOutput(enrichedSources.length > 0 ? enrichedSources : contextualSourcesRaw).slice(0, 5);
+    if (normalizedAgents?.meta_summary) {
+      ottoPayload.metaSummary = normalizedAgents.meta_summary;
+    }
+    if (Array.isArray(normalizedAgents?.segments)) {
+      ottoPayload.segments = normalizedAgents.segments;
+    }
+
+    if ((!ottoPayload.keyPoints || ottoPayload.keyPoints.length === 0) && keywords.length > 0) {
+      ottoPayload.keyPoints = keywords.slice(0, 8);
+    }
 
     const updatedUser = await incrementUsageCounters(user.id, { otto: 1 });
     const quotaUser = updatedUser || { ...user, daily_otto_analysis: usedOtto + 1 };
     const quota = buildQuotaPayload(quotaUser);
 
-    const usageSnapshot = {
-      daily_checks_used: quota.usage.verificationsUsed,
-      daily_otto_analysis: quota.usage.ottoUsed,
-    };
-
     return res.json({
-      ottoResult,
-      globalReliability,
-      summary,
-      risk,
-      barColor,
-      plan: quota.plan,
-      quota,
+      status: 'ok',
+      lang: userLang,
+      ottoResult: ottoPayload,
       updatedQuota: quota,
-      userEmail: user.email,
-      userLang,
-      keywords,
-      queries,
-      contextualSources,
-      agents: resolvedAgents,
-      keyPoints: ottoResult.key_points,
-      usage: usageSnapshot,
-      dailyChecksUsed: usageSnapshot.daily_checks_used,
-      dailyOttoAnalysis: usageSnapshot.daily_otto_analysis,
     });
   } catch (error) {
     console.error('Erreur Otto :', error);
