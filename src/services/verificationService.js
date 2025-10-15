@@ -103,7 +103,45 @@ async function runAutoVerification(text) {
   };
 }
 
+function computeOttoGlobalResult(agentsResult, text) {
+  const { fact_checker, source_analyst, context_guardian, freshness_detector } = agentsResult || {};
+
+  const fact = fact_checker?.score || 50;
+  const source = source_analyst?.score || 50;
+  const context = 100 - (context_guardian?.context_score || 50);
+  const fresh = freshness_detector?.freshness_score || 50;
+
+  const globalReliability = Math.round(
+    fact * 0.4 + source * 0.3 + context * 0.2 + fresh * 0.1,
+  );
+
+  const summary = [
+    fact_checker?.summary,
+    source_analyst?.summary,
+    context_guardian?.summary,
+    freshness_detector?.summary,
+  ]
+    .filter(Boolean)
+    .join(' | ');
+
+  const keyPoints = Array.from(
+    new Set(
+      (text?.match(/\b[A-Z][a-z]{3,}\b/g) || []).slice(0, 8),
+    ),
+  );
+
+  return {
+    status: 'ok',
+    mode: 'OTTO',
+    global_reliability: globalReliability,
+    summary: summary || 'Synthèse indisponible',
+    key_points: keyPoints,
+    agents: agentsResult,
+  };
+}
+
 module.exports = {
   runAutoVerification,
   buildOttoSearchQueries,
+  computeOttoGlobalResult,
 };
