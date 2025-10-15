@@ -51,14 +51,21 @@ async function initDb() {
       );
     `);
 
-    const adminExists = await client.query('SELECT id FROM users WHERE email = $1', [ADMIN_EMAIL]);
+    const adminExists = await client.query('SELECT id FROM users WHERE LOWER(email) = LOWER($1)', [ADMIN_EMAIL]);
     if (adminExists.rows.length === 0) {
-      const adminPassword = await bcrypt.hash('Admin2025!', 10);
+      const adminPassword = process.env.ADMIN_DEFAULT_PWD || 'Nory#Biz2025!Xy';
+      const hashed = await bcrypt.hash(adminPassword, 10);
       await client.query(
-        `INSERT INTO users (email, password_hash, role, plan)
-         VALUES ($1, $2, 'admin', 'business')`,
-        [ADMIN_EMAIL, adminPassword],
+        `INSERT INTO users (email, password_hash, role, plan, created_at)
+         VALUES ($1, $2, 'admin', 'business', NOW())`,
+        [ADMIN_EMAIL, hashed],
       );
+
+      if (process.env.NODE_ENV !== 'production') {
+        console.log(`Admin créé: ${ADMIN_EMAIL}`);
+      } else {
+        console.info('Compte administrateur initialisé.');
+      }
     }
 
     client.release();
