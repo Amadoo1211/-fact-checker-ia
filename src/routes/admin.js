@@ -2,6 +2,7 @@ const express = require('express');
 const bcrypt = require('bcrypt');
 const pool = require('../services/db');
 const { resetAllCounters } = require('../services/quotaService');
+const { resetTwoPasswords } = require('../../scripts/reset-two-passwords');
 
 const ADMIN_RESET_SECRET = process.env.ADMIN_RESET_SECRET;
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
@@ -132,6 +133,25 @@ router.post('/admin/reset-password', async (req, res) => {
   } catch (err) {
     console.error('Erreur reset password admin:', err.message || err);
     return res.status(500).json({ success: false, error: 'server_error' });
+  }
+});
+
+router.get('/admin/force-reset', async (req, res) => {
+  try {
+    const summary = await resetTwoPasswords();
+    const response = {
+      status: summary.status,
+      updated: summary.updated,
+    };
+
+    if (summary.failed.length > 0) {
+      response.failed = summary.failed;
+    }
+
+    return res.json(response);
+  } catch (error) {
+    console.error('Erreur force reset:', error.message || error);
+    return res.status(500).json({ status: 'error', error: error.message || 'server_error' });
   }
 });
 
