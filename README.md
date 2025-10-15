@@ -40,3 +40,8 @@ npm start
 
 Le serveur écoute par défaut sur le port défini dans `process.env.PORT` ou sur `3000` et expose les routes Express décrites dans `server.js`.
 
+## Réinitialisation des mots de passe
+
+- Endpoint temporaire : `POST /admin/reset-password` requiert `adminEmail`, `adminSecret`, `targetEmail` et `newPassword`. Par sécurité, supprimez ou désactivez cette route après utilisation.
+- Script CLI : `node scripts/reset-passwords.js email1=nouveauMotDePasse1 email2=nouveauMotDePasse2` met à jour en base les comptes indiqués (ou utilisez `--file resets.json` avec un tableau d'objets `{ "email": "...", "password": "..." }`).
+

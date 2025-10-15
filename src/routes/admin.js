@@ -4,11 +4,22 @@ const pool = require('../services/db');
 const { resetAllCounters } = require('../services/quotaService');
 
 const ADMIN_RESET_SECRET = process.env.ADMIN_RESET_SECRET;
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
 
 const router = express.Router();
 
 function isAuthorized(secret) {
   return ADMIN_RESET_SECRET && secret === ADMIN_RESET_SECRET;
+}
+
+function isPasswordResetAuthorized(email, secret) {
+  return Boolean(
+    ADMIN_EMAIL &&
+    ADMIN_RESET_SECRET &&
+    email &&
+    email === ADMIN_EMAIL &&
+    secret === ADMIN_RESET_SECRET,
+  );
 }
 
 router.get('/admin/users', async (req, res) => {
@@ -92,9 +103,9 @@ router.post('/admin/reset-counters', async (req, res) => {
 });
 
 router.post('/admin/reset-password', async (req, res) => {
-  const { adminSecret, targetEmail, newPassword } = req.body || {};
+  const { adminEmail, adminSecret, targetEmail, newPassword } = req.body || {};
 
-  if (!isAuthorized(adminSecret)) {
+  if (!isPasswordResetAuthorized(adminEmail, adminSecret)) {
     return res.status(403).json({ success: false, error: 'access_denied' });
   }
 
@@ -104,16 +115,20 @@ router.post('/admin/reset-password', async (req, res) => {
 
   try {
     const hashed = await bcrypt.hash(newPassword, 10);
-    await pool.query(
+    const result = await pool.query(
       'UPDATE users SET password_hash = $1, updated_at = NOW() WHERE LOWER(email) = LOWER($2)',
       [hashed, targetEmail],
     );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ success: false, error: 'user_not_found' });
+    }
 
     if (process.env.NODE_ENV !== 'production') {
       console.log(`Mot de passe réinitialisé pour ${targetEmail}`);
     }
 
-    return res.json({ success: true, message: 'Password reset' });
+    return res.status(200).json({ success: true, message: 'password_reset' });
   } catch (err) {
     console.error('Erreur reset password admin:', err.message || err);
     return res.status(500).json({ success: false, error: 'server_error' });
