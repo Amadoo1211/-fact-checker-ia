@@ -5,8 +5,36 @@ const { Pool } = require('pg');
 const app = express();
 
 // Configuration CORS
+const allowedOrigins = [
+    /^chrome-extension:\/\/.+/,
+    /^http:\/\/localhost:\d+$/,
+    /^https:\/\/localhost:\d+$/,
+    'https://fact-checker-ia-production.up.railway.app'
+];
+
 app.use(cors({ 
-    origin: ['chrome-extension://*', 'https://fact-checker-ia-production.up.railway.app', 'http://localhost:*', 'https://localhost:*'],
+    origin: (origin, callback) => {
+        if (!origin) {
+            return callback(null, true);
+        }
+
+        const isAllowed = allowedOrigins.some(allowed => {
+            if (allowed instanceof RegExp) {
+                return allowed.test(origin);
+            }
+            if (typeof allowed === 'string' && allowed.endsWith('*')) {
+                const base = allowed.slice(0, -1);
+                return origin.startsWith(base);
+            }
+            return origin === allowed;
+        });
+
+        if (isAllowed) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
     credentials: true
 }));
 app.use(express.json({ limit: '5mb' }));
@@ -811,6 +839,52 @@ app.post('/verify', async (req, res) => {
     }
 });
 
+// Endpoint VerifyAI pour extension Chrome
+app.post('/verify/ai', async (req, res) => {
+    try {
+        const { model, prompt, response: modelResponse } = req.body || {};
+
+        const allowedModels = ['ChatGPT', 'Claude', 'Gemini'];
+        if (!allowedModels.includes(model)) {
+            return res.status(400).json({
+                error: 'Invalid model specified. Allowed values: ChatGPT, Claude, Gemini.'
+            });
+        }
+
+        const sanitizedResponse = sanitizeInput(modelResponse);
+        if (!sanitizedResponse || sanitizedResponse.length < 10) {
+            return res.status(400).json({
+                error: 'Response text is required for verification.'
+            });
+        }
+
+        const factChecker = new ImprovedFactChecker();
+        const claims = factChecker.extractVerifiableClaims(sanitizedResponse);
+        const keywords = extractMainKeywords(sanitizedResponse);
+        const smartQueries = prompt ? extractMainKeywords(prompt) : [];
+        const sources = await findWebSources(keywords, smartQueries, sanitizedResponse);
+        const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, sanitizedResponse, sources);
+        const result = factChecker.calculateBalancedScore(sanitizedResponse, analyzedSources, claims);
+
+        const responsePayload = {
+            modelAnalyzed: model,
+            reliabilityScore: result.score,
+            reasoningSummary: result.reasoning,
+            sources: analyzedSources,
+            claims,
+            keywords,
+            overallConfidence: result.score
+        };
+
+        res.json(responsePayload);
+    } catch (error) {
+        console.error('❌ Erreur VerifyAI:', error);
+        res.status(500).json({
+            error: 'Erreur lors de la vérification du modèle.'
+        });
+    }
+});
+
 // Endpoint feedback
 app.post('/feedback', async (req, res) => {
     try {
@@ -874,6 +948,7 @@ app.listen(PORT, () => {
     console.log(`🔑 Google API configured: ${!!process.env.GOOGLE_API_KEY}`);
     console.log(`💾 Database configured: ${!!process.env.DATABASE_URL}`);
     console.log(`⚖️  Features: Balanced scoring, Contextual analysis, Smart contradictions`);
+    console.log(`🧩 VerifyAI Integration active: Model verification endpoint ready`);
     console.log(`=====================================\n`);
     initDb();
 });
