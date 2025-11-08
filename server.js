@@ -1015,9 +1015,23 @@ app.post('/feedback', async (req, res) => {
       const sanitizedSurveyComment = sanitizeInput(surveyComment || '').substring(0, 2000);
       const sanitizedEmail = sanitizeInput(email || '').substring(0, 320);
 
+      console.log('🧾 Insertion pro_survey =>', {
+        willing: sanitizedWilling,
+        features: sanitizedFeatures,
+        comment: sanitizedSurveyComment,
+        email: sanitizedEmail
+      });
+
       await client.query(
-        'INSERT INTO pro_survey(willing, features, comment, email) VALUES($1,$2,$3,$4)',
-        [sanitizedWilling || null, sanitizedFeatures, sanitizedSurveyComment || null, sanitizedEmail || null]
+        'INSERT INTO pro_survey(willing, features, comment, email) VALUES($1, $2::text[], $3, $4)',
+        [
+          sanitizedWilling || null,
+          sanitizedFeatures.length
+            ? `{${sanitizedFeatures.map(f => `"${f.replace(/"/g, '""')}"`).join(',')}}`
+            : '{}',
+          sanitizedSurveyComment || null,
+          sanitizedEmail || null
+        ]
       );
 
       console.log(
