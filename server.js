@@ -1,4 +1,7 @@
-const fetch = require('node-fetch');
+// Compatible Node 18+ (fetch natif) et fallback dynamique pour older envs
+const fetch = globalThis.fetch || (async (...args) =>
+  (await import('node-fetch')).default(...args)
+);
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
@@ -40,10 +43,12 @@ app.use(cors({
 app.use(express.json({ limit: '5mb' }));
 
 // Database
-const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
+const pool = process.env.DATABASE_URL
+  ? new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+    })
+  : null;
 
 // ========== SYSTÈME DE FACT-CHECKING AMÉLIORÉ ET FIABLE ==========
 
@@ -970,6 +975,11 @@ app.post('/compare/ai', async (req, res) => {
 
 // Endpoint feedback
 app.post('/feedback', async (req, res) => {
+  if (!pool) {
+    console.log('⚠️ DB désactivée — feedback non stocké:', req.body);
+    return res.json({ success: true, message: 'Feedback reçu (non stocké)' });
+  }
+
   const client = await pool.connect();
   try {
     const { originalText, scoreGiven, isUseful, comment, sourcesFound } = req.body;
@@ -1051,6 +1061,11 @@ app.get('/health', (req, res) => {
 
 // Database initialization
 const initDb = async () => {
+    if (!pool) {
+        console.log('⚠️ DATABASE_URL absente — DB désactivée.');
+        return null;
+    }
+
     try {
         const client = await pool.connect();
         await client.query(`
