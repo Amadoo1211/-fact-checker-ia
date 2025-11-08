@@ -75,6 +75,18 @@ try {
         del(key) {
             this.store.delete(key);
         }
+        keys() {
+            const now = Date.now();
+            const keys = [];
+            for (const [key, entry] of this.store.entries()) {
+                if (entry.expires && entry.expires < now) {
+                    this.store.delete(key);
+                    continue;
+                }
+                keys.push(key);
+            }
+            return keys;
+        }
     };
 }
 
@@ -129,7 +141,61 @@ startupWarnings.forEach(message => logWarn(message));
 
 const app = express();
 
-const verificationCache = new NodeCache({ stdTTL: 3600, checkperiod: 120 });
+const CACHE_TTL_SECONDS = 300;
+const MAX_CACHE_ENTRIES = 200;
+const CACHE_CHECK_PERIOD_SECONDS = 60;
+
+const createVerificationCache = () => {
+    const baseCache = new NodeCache({ stdTTL: CACHE_TTL_SECONDS, checkperiod: CACHE_CHECK_PERIOD_SECONDS });
+    const entryOrder = new Map();
+
+    const cleanup = () => {
+        const activeKeys = typeof baseCache.keys === 'function' ? baseCache.keys() : Array.from(entryOrder.keys());
+        const activeSet = new Set(activeKeys);
+
+        for (const key of entryOrder.keys()) {
+            if (!activeSet.has(key)) {
+                entryOrder.delete(key);
+            }
+        }
+
+        let overflow = activeKeys.length - MAX_CACHE_ENTRIES;
+        if (overflow <= 0) {
+            return;
+        }
+
+        const orderedEntries = [...entryOrder.entries()].sort((a, b) => a[1] - b[1]);
+        for (const [key] of orderedEntries) {
+            if (overflow <= 0) {
+                break;
+            }
+            baseCache.del(key);
+            entryOrder.delete(key);
+            overflow -= 1;
+        }
+    };
+
+    return {
+        get(key) {
+            const value = baseCache.get(key);
+            if (value === undefined) {
+                entryOrder.delete(key);
+            }
+            return value;
+        },
+        set(key, value) {
+            baseCache.set(key, value);
+            entryOrder.set(key, Date.now());
+            cleanup();
+        },
+        del(key) {
+            baseCache.del(key);
+            entryOrder.delete(key);
+        }
+    };
+};
+
+const verificationCache = createVerificationCache();
 const metrics = {
     totalRequests: 0,
     cacheHits: 0,
@@ -1022,7 +1088,7 @@ function calculateRelevance(item, originalText) {
 // Endpoint principal avec système amélioré
 app.post('/verify', async (req, res) => {
     try {
-        const { text, smartQueries, analysisType } = req.body || {};
+        const { text, smartQueries, analysisType, forceRefresh } = req.body || {};
 
         const sanitizedInput = typeof text === 'string' ? text : '';
         logInfo(`\n🔍 === ANALYSE ÉQUILIBRÉE ===`);
@@ -1054,10 +1120,13 @@ app.post('/verify', async (req, res) => {
             smartQueries: sanitizedSmartQueries,
             analysisType: typeof analysisType === 'string' ? sanitizeInput(analysisType) : ''
         });
-        const cached = verificationCache.get(cacheKey);
-        if (cached) {
-            metrics.cacheHits += 1;
-            return sendSafeJson(res, cached);
+        const bypassCache = forceRefresh === true;
+        if (!bypassCache) {
+            const cached = verificationCache.get(cacheKey);
+            if (cached) {
+                metrics.cacheHits += 1;
+                return sendSafeJson(res, cached);
+            }
         }
 
         const factChecker = new ImprovedFactChecker();
@@ -1110,7 +1179,7 @@ app.post('/verify', async (req, res) => {
 // Endpoint VerifyAI pour extension Chrome
 app.post('/verify/ai', async (req, res) => {
     try {
-        const { model, prompt, response: modelResponse } = req.body || {};
+        const { model, prompt, response: modelResponse, forceRefresh } = req.body || {};
 
         const allowedModels = ['ChatGPT', 'Claude', 'Gemini'];
         if (!allowedModels.includes(model)) {
@@ -1142,10 +1211,13 @@ app.post('/verify/ai', async (req, res) => {
             prompt: sanitizedPrompt,
             response: sanitizedResponse
         });
-        const cached = verificationCache.get(cacheKey);
-        if (cached) {
-            metrics.cacheHits += 1;
-            return sendSafeJson(res, cached);
+        const bypassCache = forceRefresh === true;
+        if (!bypassCache) {
+            const cached = verificationCache.get(cacheKey);
+            if (cached) {
+                metrics.cacheHits += 1;
+                return sendSafeJson(res, cached);
+            }
         }
 
         const factChecker = new ImprovedFactChecker();
