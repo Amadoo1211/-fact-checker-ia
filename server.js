@@ -970,22 +970,64 @@ app.post('/compare/ai', async (req, res) => {
 
 // Endpoint feedback
 app.post('/feedback', async (req, res) => {
+    const client = await pool.connect();
     try {
         const { originalText, scoreGiven, isUseful, comment, sourcesFound } = req.body;
-        
-        const client = await pool.connect();
-        await client.query(
-            'INSERT INTO feedback(original_text, score_given, is_useful, comment, sources_found) VALUES($1,$2,$3,$4,$5)',
-            [sanitizeInput(originalText).substring(0, 2000), scoreGiven, isUseful, sanitizeInput(comment || '').substring(0, 500), JSON.stringify(sourcesFound || [])]
-        );
-        client.release();
-        
-        console.log(`📝 Feedback: ${isUseful ? 'Utile' : 'Pas utile'} - Score: ${scoreGiven}`);
-        res.json({ success: true });
-        
+
+        if (originalText === 'VerifyAI Pro Survey') {
+            let surveyPayload;
+            try {
+                surveyPayload = typeof comment === 'string' ? JSON.parse(comment) : (comment || {});
+            } catch (parseError) {
+                console.error('❌ Invalid survey payload:', parseError);
+                return res.status(400).json({ success: false, error: 'Invalid survey data' });
+            }
+
+            const {
+                willing = '',
+                features = [],
+                comment: surveyComment = '',
+                email = ''
+            } = surveyPayload || {};
+
+            const sanitizedWilling = sanitizeInput(willing).substring(0, 255);
+            const sanitizedFeatures = Array.isArray(features)
+                ? features
+                    .map(feature => sanitizeInput(feature).substring(0, 255))
+                    .filter(Boolean)
+                : [];
+            const sanitizedSurveyComment = sanitizeInput(surveyComment || '').substring(0, 2000);
+            const sanitizedEmail = sanitizeInput(email || '').substring(0, 320);
+
+            await client.query(
+                'INSERT INTO pro_survey(willing, features, comment, email) VALUES($1,$2,$3,$4)',
+                [sanitizedWilling || null, sanitizedFeatures, sanitizedSurveyComment || null, sanitizedEmail || null]
+            );
+
+            const featuresList = sanitizedFeatures.join(', ');
+            console.log(`🧩 Pro Survey received — willing: ${sanitizedWilling || 'N/A'}, features: [${featuresList}], email: ${sanitizedEmail || 'N/A'}`);
+        } else {
+            await client.query(
+                'INSERT INTO feedback(original_text, score_given, is_useful, comment, sources_found) VALUES($1,$2,$3,$4,$5)',
+                [
+                    sanitizeInput(originalText).substring(0, 2000),
+                    scoreGiven,
+                    isUseful,
+                    sanitizeInput(comment || '').substring(0, 500),
+                    JSON.stringify(sourcesFound || [])
+                ]
+            );
+
+            console.log(`📝 Feedback: ${isUseful ? 'Utile' : 'Pas utile'} - Score: ${scoreGiven}`);
+        }
+
+        res.json({ success: true, message: 'Feedback recorded' });
+
     } catch (err) {
         console.error('❌ Erreur feedback:', err);
         res.status(500).json({ error: 'Erreur serveur' });
+    } finally {
+        client.release();
     }
 });
 
@@ -1012,6 +1054,16 @@ const initDb = async () => {
                 is_useful BOOLEAN,
                 comment TEXT,
                 sources_found JSONB,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS pro_survey (
+                id SERIAL PRIMARY KEY,
+                willing TEXT,
+                features TEXT[],
+                comment TEXT,
+                email TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
