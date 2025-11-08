@@ -885,6 +885,89 @@ app.post('/verify/ai', async (req, res) => {
     }
 });
 
+// Endpoint de comparaison multi-modèles
+app.post('/compare/ai', async (req, res) => {
+    try {
+        const { prompt, responses } = req.body || {};
+
+        if (!prompt || typeof prompt !== 'string' || !responses || typeof responses !== 'object') {
+            return res.status(400).json({
+                success: false,
+                error: 'Prompt and responses are required for comparison.'
+            });
+        }
+
+        const responseEntries = Object.entries(responses).filter(([model, text]) => typeof text === 'string' && text.trim().length > 0);
+
+        if (responseEntries.length === 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'At least one model response must be provided.'
+            });
+        }
+
+        const factChecker = new ImprovedFactChecker();
+        const sanitizedPrompt = sanitizeInput(prompt);
+        const promptKeywords = extractMainKeywords(sanitizedPrompt);
+        const smartQueries = promptKeywords;
+        const promptClaims = factChecker.extractVerifiableClaims(sanitizedPrompt);
+
+        const comparison = [];
+
+        for (const [modelName, rawResponse] of responseEntries) {
+            const sanitizedResponse = sanitizeInput(rawResponse);
+
+            if (!sanitizedResponse || sanitizedResponse.length < 10) {
+                comparison.push({
+                    model: modelName,
+                    score: 0,
+                    confidence: 0,
+                    summary: 'Réponse insuffisante pour une analyse fiable.',
+                    sourcesCount: 0
+                });
+                continue;
+            }
+
+            const responseClaims = factChecker.extractVerifiableClaims(sanitizedResponse);
+            const responseKeywords = extractMainKeywords(sanitizedResponse);
+            const combinedKeywords = Array.from(new Set([...promptKeywords, ...responseKeywords]));
+
+            const sources = await findWebSources(combinedKeywords, smartQueries, sanitizedResponse);
+            const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, sanitizedResponse, sources);
+            const scoringClaims = responseClaims.length > 0 ? responseClaims : promptClaims;
+            const result = factChecker.calculateBalancedScore(sanitizedResponse, analyzedSources, scoringClaims);
+
+            comparison.push({
+                model: modelName,
+                score: Number(result.score.toFixed(2)),
+                confidence: Number(result.confidence.toFixed(2)),
+                summary: result.reasoning,
+                sourcesCount: analyzedSources.length
+            });
+        }
+
+        const bestModelEntry = comparison.reduce((best, current) => {
+            if (!best || current.score > best.score) {
+                return current;
+            }
+            return best;
+        }, null);
+
+        res.json({
+            success: true,
+            prompt: sanitizedPrompt,
+            comparison,
+            bestModel: bestModelEntry ? bestModelEntry.model : null
+        });
+    } catch (error) {
+        console.error('❌ Erreur comparaison AI:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Erreur lors de la comparaison des modèles.'
+        });
+    }
+});
+
 // Endpoint feedback
 app.post('/feedback', async (req, res) => {
     try {
