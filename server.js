@@ -5,7 +5,141 @@ const fetch = globalThis.fetch || (async (...args) =>
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
+const { createHash } = require('crypto');
+
+const isProduction = process.env.NODE_ENV === 'production';
+const startupWarnings = [];
+
+let chalkModule = null;
+try {
+    chalkModule = require('chalk');
+} catch (err) {
+    if (!isProduction) {
+        startupWarnings.push('Chalk non disponible — logs sans couleurs.');
+    }
+}
+const chalk = !isProduction && chalkModule ? chalkModule : null;
+
+let rateLimit;
+try {
+    rateLimit = require('express-rate-limit');
+} catch (err) {
+    startupWarnings.push('express-rate-limit non disponible — utilisation d\'un limiteur interne.');
+    rateLimit = (options = {}) => {
+        const windowMs = options.windowMs || 60 * 1000;
+        const max = options.max || 30;
+        const hits = new Map();
+        return (req, res, next) => {
+            const now = Date.now();
+            const key = req.ip || req.headers['x-forwarded-for'] || req.connection?.remoteAddress || 'global';
+            const record = hits.get(key) || { count: 0, reset: now + windowMs };
+            if (now >= record.reset) {
+                record.count = 0;
+                record.reset = now + windowMs;
+            }
+            record.count += 1;
+            hits.set(key, record);
+            if (record.count > max) {
+                res.status(429).json({ error: 'Too many requests' });
+                return;
+            }
+            next();
+        };
+    };
+}
+
+let NodeCacheModule;
+try {
+    NodeCacheModule = require('node-cache');
+} catch (err) {
+    startupWarnings.push('node-cache non disponible — utilisation d\'un cache Map interne.');
+    NodeCacheModule = class {
+        constructor(options = {}) {
+            this.store = new Map();
+            this.stdTTL = (options.stdTTL || 0) * 1000;
+        }
+        set(key, value) {
+            const expires = this.stdTTL ? Date.now() + this.stdTTL : null;
+            this.store.set(key, { value, expires });
+            return true;
+        }
+        get(key) {
+            const entry = this.store.get(key);
+            if (!entry) return undefined;
+            if (entry.expires && entry.expires < Date.now()) {
+                this.store.delete(key);
+                return undefined;
+            }
+            return entry.value;
+        }
+        del(key) {
+            this.store.delete(key);
+        }
+    };
+}
+
+let stringSimilarityModule;
+try {
+    stringSimilarityModule = require('string-similarity');
+} catch (err) {
+    startupWarnings.push('string-similarity non disponible — comparaison textuelle simplifiée.');
+    stringSimilarityModule = {
+        compareTwoStrings: (a = '', b = '') => {
+            if (!a || !b) return 0;
+            const wordsA = new Set(a.toLowerCase().split(/\s+/).filter(Boolean));
+            const wordsB = new Set(b.toLowerCase().split(/\s+/).filter(Boolean));
+            const intersection = [...wordsA].filter(word => wordsB.has(word)).length;
+            const union = new Set([...wordsA, ...wordsB]).size || 1;
+            return intersection / union;
+        }
+    };
+}
+
+const stringSimilarity = stringSimilarityModule;
+const NodeCache = NodeCacheModule;
+
+const colorize = (color, message) => {
+    if (!chalk) return message;
+    if (typeof chalk[color] === 'function') {
+        return chalk[color](message);
+    }
+    return message;
+};
+
+const logInfo = (message) => {
+    if (!isProduction) {
+        console.log(colorize('cyan', message));
+    }
+};
+
+const logWarn = (message) => {
+    if (!isProduction) {
+        console.warn(colorize('yellow', message));
+    }
+};
+
+const logError = (message, error) => {
+    if (!isProduction) {
+        const fullMessage = error ? `${message}: ${error}` : message;
+        console.error(colorize('red', fullMessage));
+    }
+};
+
+startupWarnings.forEach(message => logWarn(message));
+
 const app = express();
+
+const verificationCache = new NodeCache({ stdTTL: 3600, checkperiod: 120 });
+const metrics = {
+    totalRequests: 0,
+    cacheHits: 0,
+    startedAt: Date.now()
+};
+
+const MAX_TEXT_LENGTH = 10_000;
+const MAX_RESPONSE_BYTES = 1024 * 1024; // 1MB
+const FETCH_TIMEOUT_MS = 7000;
+const MAX_API_DELAY_MS = 200;
 
 // Configuration CORS
 const allowedOrigins = [
@@ -15,7 +149,7 @@ const allowedOrigins = [
     'https://fact-checker-ia-production.up.railway.app'
 ];
 
-app.use(cors({ 
+app.use(cors({
     origin: (origin, callback) => {
         if (!origin) {
             return callback(null, true);
@@ -40,7 +174,21 @@ app.use(cors({
     },
     credentials: true
 }));
+
+const limiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false
+});
+
+app.use(limiter);
 app.use(express.json({ limit: '5mb' }));
+
+app.use((req, res, next) => {
+    metrics.totalRequests += 1;
+    next();
+});
 
 // Database
 const pool = process.env.DATABASE_URL
@@ -145,7 +293,7 @@ class ImprovedFactChecker {
             })));
         }
 
-        console.log(`🔍 Claims extraits: ${claims.length}`);
+        logInfo(`🔍 Claims extraits: ${claims.length}`);
         return claims;
     }
 
@@ -475,7 +623,7 @@ class ImprovedFactChecker {
         let confidence = 0;
         const reasoning = [];
 
-        console.log(`🎯 Calcul du score équilibré...`);
+        logInfo(`🎯 Calcul du score équilibré...`);
 
         // 1. Score de base
         const contentType = this.analyzeContentType(originalText, claims);
@@ -506,7 +654,7 @@ class ImprovedFactChecker {
 
         const finalScore = Math.max(0.15, Math.min(0.92, totalScore));
         
-        console.log(`📊 Score équilibré: ${Math.round(finalScore * 100)}%`);
+        logInfo(`📊 Score équilibré: ${Math.round(finalScore * 100)}%`);
         
         return {
             score: finalScore,
@@ -542,15 +690,21 @@ class ImprovedFactChecker {
 
         const keywords1 = new Set(extractKeywords(text1));
         const keywords2 = new Set(extractKeywords(text2));
-        
+
         const intersection = new Set([...keywords1].filter(x => keywords2.has(x)));
         const union = new Set([...keywords1, ...keywords2]);
-        
-        const similarity = union.size > 0 ? intersection.size / union.size : 0;
-        
+
+        const lexicalSimilarity = union.size > 0 ? intersection.size / union.size : 0;
+        const semanticSimilarity = stringSimilarity.compareTwoStrings(
+            sanitizeInput(text1).toLowerCase(),
+            sanitizeInput(text2).toLowerCase()
+        );
+
+        const combinedScore = Math.min(1, (lexicalSimilarity * 0.6) + (semanticSimilarity * 0.4));
+
         return {
-            score: similarity,
-            confirms: similarity > 0.15
+            score: combinedScore,
+            confirms: combinedScore > 0.2
         };
     }
 
@@ -593,7 +747,7 @@ async function analyzeSourcesWithImprovedLogic(factChecker, originalText, source
             });
             
         } catch (error) {
-            console.error(`Erreur analyse source ${source.url}:`, error.message);
+            logError(`Erreur analyse source ${source.url}`, error.message);
             
             const credibility = factChecker.getSourceCredibilityTier(source.url);
             analyzedSources.push({
@@ -615,14 +769,88 @@ async function analyzeSourcesWithImprovedLogic(factChecker, originalText, source
 
 function sanitizeInput(text) {
     if (!text || typeof text !== 'string') return '';
-    
+
     return text
         .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
         .replace(/<script[^>]*>.*?<\/script>/gi, '')
         .replace(/javascript:/gi, '')
         .replace(/on\w+\s*=/gi, '')
-        .substring(0, 5000)
+        .substring(0, MAX_TEXT_LENGTH)
         .trim();
+}
+
+const delay = (ms = 0) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+        const response = await fetch(url, {
+            ...options,
+            signal: controller.signal
+        });
+        return response;
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
+function truncatePayload(value, maxStringLength, maxArrayLength, depth = 0) {
+    if (value === null || value === undefined) {
+        return value;
+    }
+
+    if (typeof value === 'string') {
+        if (value.length > maxStringLength) {
+            return `${value.slice(0, maxStringLength)}…`;
+        }
+        return value;
+    }
+
+    if (Array.isArray(value)) {
+        const limit = Math.max(1, Math.floor(maxArrayLength / Math.max(depth || 1, 1)));
+        return value.slice(0, limit).map(item => truncatePayload(item, maxStringLength, maxArrayLength, depth + 1));
+    }
+
+    if (typeof value === 'object') {
+        const result = {};
+        for (const [key, val] of Object.entries(value)) {
+            result[key] = truncatePayload(val, maxStringLength, maxArrayLength, depth + 1);
+        }
+        return result;
+    }
+
+    return value;
+}
+
+function enforceResponseSize(payload) {
+    const reductionSteps = [
+        { maxString: 2000, maxArray: 20 },
+        { maxString: 1000, maxArray: 10 },
+        { maxString: 400, maxArray: 5 }
+    ];
+
+    for (const step of reductionSteps) {
+        const truncated = truncatePayload(payload, step.maxString, step.maxArray);
+        const size = Buffer.byteLength(JSON.stringify(truncated), 'utf8');
+        if (size <= MAX_RESPONSE_BYTES) {
+            return truncated;
+        }
+    }
+
+    return {
+        error: 'Response exceeded maximum size and was truncated.',
+        truncated: true
+    };
+}
+
+function sendSafeJson(res, payload) {
+    res.json(enforceResponseSize(payload));
+}
+
+function createCacheKey(prefix, data) {
+    return `${prefix}:${createHash('sha1').update(JSON.stringify(data)).digest('hex')}`;
 }
 
 function extractMainKeywords(text) {
@@ -649,7 +877,7 @@ function extractMainKeywords(text) {
         return [...new Set(keywords)].filter(k => k && k.length > 2).slice(0, 6);
         
     } catch (e) {
-        console.error('Erreur extraction keywords:', e.message);
+        logError('Erreur extraction keywords', e.message);
         return [];
     }
 }
@@ -659,7 +887,7 @@ async function findWebSources(keywords, smartQueries, originalText) {
     const SEARCH_ENGINE_ID = process.env.SEARCH_ENGINE_ID;
 
     if (!API_KEY || !SEARCH_ENGINE_ID) {
-        console.log('API credentials manquantes - sources mock');
+        logWarn('API credentials manquantes - sources mock');
         return [
             {
                 title: "Wikipedia - Source de référence",
@@ -679,42 +907,53 @@ async function findWebSources(keywords, smartQueries, originalText) {
     }
     
     let allSources = [];
-    
-    // Recherche avec queries intelligentes
+
     if (smartQueries && smartQueries.length > 0) {
-        for (const query of smartQueries.slice(0, 2)) {
+        const queryPromises = smartQueries.slice(0, 2).map((query, index) => (async () => {
+            const delayMs = Math.min(index * MAX_API_DELAY_MS, MAX_API_DELAY_MS);
+            if (delayMs > 0) {
+                await delay(delayMs);
+            }
+
             try {
                 const url = `https://www.googleapis.com/customsearch/v1?key=${API_KEY}&cx=${SEARCH_ENGINE_ID}&q=${encodeURIComponent(query)}&num=4`;
-                const response = await fetch(url);
+                const response = await fetchWithTimeout(url, {}, FETCH_TIMEOUT_MS);
                 const data = await response.json();
-                
+
                 if (response.ok && data.items) {
-                    const sources = data.items.map(item => ({
+                    return data.items.map(item => ({
                         title: item.title || 'Sans titre',
                         url: item.link || '',
                         snippet: item.snippet || 'Pas de description',
                         query_used: query,
                         relevance: calculateRelevance(item, originalText)
                     }));
-                    allSources.push(...sources);
                 }
-                
-                await new Promise(resolve => setTimeout(resolve, 300));
+
+                return [];
             } catch (error) {
-                console.error(`Erreur recherche pour "${query}":`, error.message);
+                logError(`Erreur recherche pour "${query}"`, error.message);
+                return [];
+            }
+        })());
+
+        const results = await Promise.allSettled(queryPromises);
+        for (const result of results) {
+            if (result.status === 'fulfilled' && Array.isArray(result.value)) {
+                allSources.push(...result.value);
             }
         }
     }
-    
-    // Recherche fallback avec keywords
+
     if (allSources.length < 2 && keywords.length > 0) {
         try {
+            await delay(MAX_API_DELAY_MS);
             const fallbackQuery = keywords.slice(0, 3).join(' ');
             const url = `https://www.googleapis.com/customsearch/v1?key=${API_KEY}&cx=${SEARCH_ENGINE_ID}&q=${encodeURIComponent(fallbackQuery)}&num=3`;
-            
-            const response = await fetch(url);
+
+            const response = await fetchWithTimeout(url, {}, FETCH_TIMEOUT_MS);
             const data = await response.json();
-            
+
             if (response.ok && data.items) {
                 const sources = data.items.map(item => ({
                     title: item.title || 'Sans titre',
@@ -726,7 +965,7 @@ async function findWebSources(keywords, smartQueries, originalText) {
                 allSources.push(...sources);
             }
         } catch (error) {
-            console.error('Erreur recherche fallback:', error.message);
+            logError('Erreur recherche fallback', error.message);
         }
     }
     
@@ -743,7 +982,7 @@ async function findWebSources(keywords, smartQueries, originalText) {
         }
     }
     
-    console.log(`📋 ${uniqueSources.length} sources uniques trouvées`);
+    logInfo(`📋 ${uniqueSources.length} sources uniques trouvées`);
     return uniqueSources;
 }
 
@@ -783,63 +1022,87 @@ function calculateRelevance(item, originalText) {
 // Endpoint principal avec système amélioré
 app.post('/verify', async (req, res) => {
     try {
-        const { text, smartQueries, analysisType } = req.body;
-        
-        console.log(`\n🔍 === ANALYSE ÉQUILIBRÉE ===`);
-        console.log(`📝 Texte: "${text.substring(0, 80)}..."`);
-        
-        if (!text || text.length < 10) {
-            return res.json({ 
+        const { text, smartQueries, analysisType } = req.body || {};
+
+        const sanitizedInput = typeof text === 'string' ? text : '';
+        logInfo(`\n🔍 === ANALYSE ÉQUILIBRÉE ===`);
+        logInfo(`📝 Texte: "${sanitizedInput.substring(0, 80)}..."`);
+
+        if (!sanitizedInput || sanitizedInput.length < 10) {
+            return sendSafeJson(res, {
                 overallConfidence: 0.25,
-                scoringExplanation: "**Texte insuffisant** (25%) - Contenu trop court pour analyse.", 
+                scoringExplanation: "**Texte insuffisant** (25%) - Contenu trop court pour analyse.",
                 keywords: [],
                 sources: [],
                 methodology: "Analyse équilibrée avec détection contextuelle"
             });
         }
-        
+
+        if (sanitizedInput.length > MAX_TEXT_LENGTH) {
+            res.status(413);
+            return sendSafeJson(res, {
+                error: `Text length exceeds maximum of ${MAX_TEXT_LENGTH} characters.`
+            });
+        }
+
+        const sanitizedSmartQueries = Array.isArray(smartQueries)
+            ? smartQueries.map(query => sanitizeInput(query))
+            : [];
+
+        const cacheKey = createCacheKey('verify', {
+            text: sanitizeInput(sanitizedInput),
+            smartQueries: sanitizedSmartQueries,
+            analysisType: typeof analysisType === 'string' ? sanitizeInput(analysisType) : ''
+        });
+        const cached = verificationCache.get(cacheKey);
+        if (cached) {
+            metrics.cacheHits += 1;
+            return sendSafeJson(res, cached);
+        }
+
         const factChecker = new ImprovedFactChecker();
-        
-        // 1. Extraction des claims vérifiables
-        const claims = factChecker.extractVerifiableClaims(text);
-        
-        // 2. Extraction des mots-clés
-        const keywords = extractMainKeywords(text);
-        
-        // 3. Recherche de sources
-        const sources = await findWebSources(keywords, smartQueries, text);
-        
-        // 4. Analyse sémantique améliorée
-        const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, text, sources);
-        
-        // 5. Calcul du score équilibré
-        const result = factChecker.calculateBalancedScore(text, analyzedSources, claims);
-        
+
+        const claims = factChecker.extractVerifiableClaims(sanitizedInput);
+        const keywords = extractMainKeywords(sanitizedInput);
+        const sources = await findWebSources(keywords, sanitizedSmartQueries, sanitizedInput);
+        const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, sanitizedInput, sources);
+        const result = factChecker.calculateBalancedScore(sanitizedInput, analyzedSources, claims);
+
+        const reliabilityLabel =
+            result.score > 0.85 ? 'Highly Reliable' :
+            result.score > 0.6 ? 'Mostly Reliable' :
+            result.score > 0.4 ? 'Uncertain' :
+            'Low Reliability';
+
         const response = {
             overallConfidence: result.score,
             confidence: result.confidence,
             scoringExplanation: result.reasoning,
             sources: analyzedSources,
-            keywords: keywords,
+            keywords,
             claimsAnalyzed: claims,
             details: result.details,
-            methodology: "Analyse équilibrée avec détection contextuelle intelligente"
+            methodology: "Analyse équilibrée avec détection contextuelle intelligente",
+            reliabilityLabel
         };
-        
-        console.log(`✅ Score équilibré: ${Math.round(result.score * 100)}% (confiance: ${Math.round(result.confidence * 100)}%)`);
-        console.log(`📊 ${analyzedSources.length} sources | ${claims.length} claims | ${analyzedSources.filter(s => s.actuallySupports).length} confirment`);
-        console.log(`===============================\n`);
-        
-        res.json(response);
-        
+
+        verificationCache.set(cacheKey, response);
+
+        logInfo(`✅ Score équilibré: ${Math.round(result.score * 100)}% (confiance: ${Math.round(result.confidence * 100)}%)`);
+        logInfo(`📊 ${analyzedSources.length} sources | ${claims.length} claims | ${analyzedSources.filter(s => s.actuallySupports).length} confirment`);
+        logInfo(`===============================\n`);
+
+        return sendSafeJson(res, response);
+
     } catch (error) {
-        console.error('❌ Erreur analyse équilibrée:', error);
-        res.status(500).json({ 
+        logError('❌ Erreur analyse équilibrée', error);
+        res.status(500);
+        return sendSafeJson(res, {
             overallConfidence: 0.20,
             scoringExplanation: "**Erreur système** (20%) - Impossible de terminer l'analyse.",
             keywords: [],
             sources: [],
-            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+            error: !isProduction ? error?.message : undefined
         });
     }
 });
@@ -851,25 +1114,53 @@ app.post('/verify/ai', async (req, res) => {
 
         const allowedModels = ['ChatGPT', 'Claude', 'Gemini'];
         if (!allowedModels.includes(model)) {
-            return res.status(400).json({
+            res.status(400);
+            return sendSafeJson(res, {
                 error: 'Invalid model specified. Allowed values: ChatGPT, Claude, Gemini.'
             });
         }
 
+        const sanitizedPrompt = typeof prompt === 'string' ? sanitizeInput(prompt) : '';
         const sanitizedResponse = sanitizeInput(modelResponse);
+
         if (!sanitizedResponse || sanitizedResponse.length < 10) {
-            return res.status(400).json({
+            res.status(400);
+            return sendSafeJson(res, {
                 error: 'Response text is required for verification.'
             });
+        }
+
+        if (sanitizedResponse.length > MAX_TEXT_LENGTH) {
+            res.status(413);
+            return sendSafeJson(res, {
+                error: `Response text exceeds maximum of ${MAX_TEXT_LENGTH} characters.`
+            });
+        }
+
+        const cacheKey = createCacheKey('verify_ai', {
+            model,
+            prompt: sanitizedPrompt,
+            response: sanitizedResponse
+        });
+        const cached = verificationCache.get(cacheKey);
+        if (cached) {
+            metrics.cacheHits += 1;
+            return sendSafeJson(res, cached);
         }
 
         const factChecker = new ImprovedFactChecker();
         const claims = factChecker.extractVerifiableClaims(sanitizedResponse);
         const keywords = extractMainKeywords(sanitizedResponse);
-        const smartQueries = prompt ? extractMainKeywords(prompt) : [];
+        const smartQueries = sanitizedPrompt ? extractMainKeywords(sanitizedPrompt) : [];
         const sources = await findWebSources(keywords, smartQueries, sanitizedResponse);
         const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, sanitizedResponse, sources);
         const result = factChecker.calculateBalancedScore(sanitizedResponse, analyzedSources, claims);
+
+        const reliabilityLabel =
+            result.score > 0.85 ? 'Highly Reliable' :
+            result.score > 0.6 ? 'Mostly Reliable' :
+            result.score > 0.4 ? 'Uncertain' :
+            'Low Reliability';
 
         const responsePayload = {
             modelAnalyzed: model,
@@ -878,13 +1169,17 @@ app.post('/verify/ai', async (req, res) => {
             sources: analyzedSources,
             claims,
             keywords,
-            overallConfidence: result.score
+            overallConfidence: result.score,
+            reliabilityLabel
         };
 
-        res.json(responsePayload);
+        verificationCache.set(cacheKey, responsePayload);
+
+        return sendSafeJson(res, responsePayload);
     } catch (error) {
-        console.error('❌ Erreur VerifyAI:', error);
-        res.status(500).json({
+        logError('❌ Erreur VerifyAI', error);
+        res.status(500);
+        return sendSafeJson(res, {
             error: 'Erreur lors de la vérification du modèle.'
         });
     }
@@ -896,7 +1191,8 @@ app.post('/compare/ai', async (req, res) => {
         const { prompt, responses } = req.body || {};
 
         if (!prompt || typeof prompt !== 'string' || !responses || typeof responses !== 'object') {
-            return res.status(400).json({
+            res.status(400);
+            return sendSafeJson(res, {
                 success: false,
                 error: 'Prompt and responses are required for comparison.'
             });
@@ -905,9 +1201,18 @@ app.post('/compare/ai', async (req, res) => {
         const responseEntries = Object.entries(responses).filter(([model, text]) => typeof text === 'string' && text.trim().length > 0);
 
         if (responseEntries.length === 0) {
-            return res.status(400).json({
+            res.status(400);
+            return sendSafeJson(res, {
                 success: false,
                 error: 'At least one model response must be provided.'
+            });
+        }
+
+        if (prompt.length > MAX_TEXT_LENGTH) {
+            res.status(413);
+            return sendSafeJson(res, {
+                success: false,
+                error: `Prompt exceeds maximum of ${MAX_TEXT_LENGTH} characters.`
             });
         }
 
@@ -920,6 +1225,17 @@ app.post('/compare/ai', async (req, res) => {
         const comparison = [];
 
         for (const [modelName, rawResponse] of responseEntries) {
+            if (rawResponse.length > MAX_TEXT_LENGTH) {
+                comparison.push({
+                    model: modelName,
+                    score: 0,
+                    confidence: 0,
+                    summary: `Réponse rejetée: dépasse ${MAX_TEXT_LENGTH} caractères.`,
+                    sourcesCount: 0
+                });
+                continue;
+            }
+
             const sanitizedResponse = sanitizeInput(rawResponse);
 
             if (!sanitizedResponse || sanitizedResponse.length < 10) {
@@ -958,15 +1274,16 @@ app.post('/compare/ai', async (req, res) => {
             return best;
         }, null);
 
-        res.json({
+        return sendSafeJson(res, {
             success: true,
             prompt: sanitizedPrompt,
             comparison,
             bestModel: bestModelEntry ? bestModelEntry.model : null
         });
     } catch (error) {
-        console.error('❌ Erreur comparaison AI:', error);
-        res.status(500).json({
+        logError('❌ Erreur comparaison AI', error);
+        res.status(500);
+        return sendSafeJson(res, {
             success: false,
             error: 'Erreur lors de la comparaison des modèles.'
         });
@@ -976,8 +1293,8 @@ app.post('/compare/ai', async (req, res) => {
 // Endpoint feedback
 app.post('/feedback', async (req, res) => {
   if (!pool) {
-    console.log('⚠️ DB désactivée — feedback non stocké:', req.body);
-    return res.json({ success: true, message: 'Feedback reçu (non stocké)' });
+    logWarn(`⚠️ DB désactivée — feedback non stocké: ${JSON.stringify(req.body || {})}`);
+    return sendSafeJson(res, { success: true, message: 'Feedback reçu (non stocké)' });
   }
 
   const client = await pool.connect();
@@ -985,8 +1302,8 @@ app.post('/feedback', async (req, res) => {
     const { originalText, scoreGiven, isUseful, comment, sourcesFound } = req.body;
 
     // 🧩 Logs de diagnostic
-    console.log('📩 Feedback reçu - texte:', originalText);
-    console.log('📦 Body complet:', req.body);
+    logInfo(`📩 Feedback reçu - texte: ${sanitizeInput(originalText || '').substring(0, 120)}`);
+    logInfo(`📦 Body complet: ${JSON.stringify(req.body || {})}`);
 
     // 🔍 Détection améliorée du sondage VerifyAI Pro
     if (originalText && originalText.trim().toLowerCase() === 'verifyai pro survey') {
@@ -997,8 +1314,9 @@ app.post('/feedback', async (req, res) => {
             ? JSON.parse(comment)
             : comment || {};
       } catch (parseError) {
-        console.error('❌ Invalid survey payload:', parseError);
-        return res.status(400).json({ success: false, error: 'Invalid survey data' });
+        logError('❌ Invalid survey payload', parseError);
+        res.status(400);
+        return sendSafeJson(res, { success: false, error: 'Invalid survey data' });
       }
 
       const {
@@ -1015,12 +1333,14 @@ app.post('/feedback', async (req, res) => {
       const sanitizedSurveyComment = sanitizeInput(surveyComment || '').substring(0, 2000);
       const sanitizedEmail = sanitizeInput(email || '').substring(0, 320);
 
-      console.log('🧾 Insertion pro_survey =>', {
-        willing: sanitizedWilling,
-        features: sanitizedFeatures,
-        comment: sanitizedSurveyComment,
-        email: sanitizedEmail
-      });
+      logInfo(
+        `🧾 Insertion pro_survey => ${JSON.stringify({
+          willing: sanitizedWilling,
+          features: sanitizedFeatures,
+          comment: sanitizedSurveyComment,
+          email: sanitizedEmail
+        })}`
+      );
 
       await client.query(
         'INSERT INTO pro_survey(willing, features, comment, email) VALUES($1, $2::text[], $3, $4)',
@@ -1034,7 +1354,7 @@ app.post('/feedback', async (req, res) => {
         ]
       );
 
-      console.log(
+      logInfo(
         `🧩 Pro Survey enregistré — willing: ${sanitizedWilling || 'N/A'}, features: [${sanitizedFeatures.join(', ')}], email: ${sanitizedEmail || 'N/A'}`
       );
     } else {
@@ -1050,13 +1370,14 @@ app.post('/feedback', async (req, res) => {
         ]
       );
 
-      console.log(`📝 Feedback IA - ${isUseful ? 'Utile' : 'Pas utile'} (score: ${scoreGiven})`);
+      logInfo(`📝 Feedback IA - ${isUseful ? 'Utile' : 'Pas utile'} (score: ${scoreGiven})`);
     }
 
-    res.json({ success: true, message: 'Feedback enregistré' });
+    return sendSafeJson(res, { success: true, message: 'Feedback enregistré' });
   } catch (err) {
-    console.error('❌ Erreur feedback globale:', err);
-    res.status(500).json({ error: 'Erreur serveur' });
+    logError('❌ Erreur feedback globale', err);
+    res.status(500);
+    return sendSafeJson(res, { error: 'Erreur serveur' });
   } finally {
     client.release();
   }
@@ -1064,19 +1385,29 @@ app.post('/feedback', async (req, res) => {
 
 // Endpoint health
 app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'ok', 
-        version: 'BALANCED-FACTCHECKER-2.1',
+    return sendSafeJson(res, {
+        status: 'ok',
+        version: 'VERIFYAI-SERVER-2.3',
         features: ['balanced_scoring', 'contextual_analysis', 'intelligent_contradictions', 'source_verification'],
         timestamp: new Date().toISOString(),
         api_configured: !!(process.env.GOOGLE_API_KEY && process.env.SEARCH_ENGINE_ID)
     });
 });
 
+app.get('/metrics', (req, res) => {
+    const uptimeSeconds = Math.round((Date.now() - metrics.startedAt) / 1000);
+    return sendSafeJson(res, {
+        totalRequests: metrics.totalRequests,
+        uptime: uptimeSeconds,
+        dbConnected: !!pool,
+        cacheHits: metrics.cacheHits
+    });
+});
+
 // Database initialization
 const initDb = async () => {
     if (!pool) {
-        console.log('⚠️ DATABASE_URL absente — DB désactivée.');
+        logWarn('⚠️ DATABASE_URL absente — DB désactivée.');
         return null;
     }
 
@@ -1104,9 +1435,9 @@ const initDb = async () => {
             );
         `);
         client.release();
-        console.log('✅ Database ready');
+        logInfo('✅ Database ready');
     } catch (err) {
-        console.error('❌ Database error:', err.message);
+        logError('❌ Database error', err.message);
     }
 };
 
