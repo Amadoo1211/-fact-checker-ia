@@ -1,47 +1,200 @@
-# Otto Fact Checker – Explications en français
+# 🧠 VerifyAI – Serveur de Vérification de Faits (v2.3)
 
-Cette application Node.js/Express expose une API dédiée au fact-checking qui s'appuie sur quatre agents IA "Otto" ainsi qu'un moteur de vérification plus classique. Elle permet d'auditer un texte, de noter sa fiabilité et de qualifier les sources utilisées.
+**VerifyAI** est une API Node.js/Express conçue pour évaluer automatiquement la **fiabilité d’un texte**.  
+Elle alimente l’extension Chrome VerifyAI et compare les informations fournies avec des **sources web fiables** grâce à un moteur de fact-checking complet, sans recours à d’agents IA externes.
 
-## Aperçu des agents Otto
+---
 
-| Agent | Rôle | Sortie principale |
-|-------|------|-------------------|
-| Fact Checker | Distingue les affirmations vérifiées des affirmations fausses ou invérifiables. Il signale aussi toute référence inventée (hallucination). | Score global de fiabilité, listes `verified_claims`, `unverified_claims`, `hallucinated_references` |
-| Source Analyst | Vérifie que chaque source existe, est crédible et soutient bien l'affirmation citée. | `real_sources`, `fake_sources`, score de qualité |
-| Context Guardian | Repère les informations ou contextes manquants afin de signaler les biais ou omissions potentielles. | `context_score`, `omissions`, détection de manipulation |
-| Freshness Detector | Indique si les données mentionnées sont récentes ou obsolètes. | `freshness_score`, `recent_data`, `outdated_data` |
+## ⚙️ Fonctionnement général
 
-Les quatre agents sont exécutés en parallèle depuis `AIAgentsService.runAllAgents`. La réponse agrégée réunit leurs analyses pour être restituée au frontend.
+Le fichier principal `server.js` agit comme le **backend central** de VerifyAI.  
+Il :
 
-## Calcul du score et logique de vérification
+- Reçoit les requêtes de l’extension Chrome ou d’applications clientes via `/verify` ou `/verify/ai`  
+- Analyse le texte transmis : extraction des faits, mots-clés, données chiffrées, etc.  
+- Interroge le Web (via l’API Google Custom Search) pour trouver des **sources pertinentes et fiables**  
+- Évalue la **cohérence, le consensus, la crédibilité et la fraîcheur** des sources trouvées  
+- Calcule un **score global de fiabilité** et une étiquette (“Highly Reliable”, “Uncertain”, etc.)  
+- Met en cache les résultats pour accélérer les vérifications suivantes  
+- Enregistre le feedback utilisateur dans PostgreSQL (si disponible)
 
-1. **Extraction des affirmations vérifiables** : l'algorithme identifie chiffres, dates, références géographiques et scientifiques (`ImprovedFactChecker.extractVerifiableClaims`).
-2. **Analyse du type de contenu** : on distingue opinion, question, article factuel, etc. pour fixer un score de base.
-3. **Évaluation des sources** : les sources sont classées par niveau de crédibilité et leur soutien/contradiction vis-à-vis du texte ajuste le score (`evaluateSourceQuality`).
-4. **Consensus et cohérence contextuelle** : on ajoute ou retire des points selon le consensus entre sources et la diversité des domaines (`evaluateConsensus`, `evaluateContextualCoherence`).
-5. **Score équilibré** : l'ensemble produit un score final pondéré accompagné d'une justification détaillée.
+---
 
-Chaque agent retourne exclusivement du JSON. En cas d'échec d'appel à l'API OpenAI ou de réponse mal formatée, une valeur de secours est renvoyée afin d'éviter les erreurs côté client.
+## 🧩 Rôle de `server.js`
 
-## Configuration
+`server.js` est le **noyau serveur** de VerifyAI.  
+Il gère :
 
-- **Clé OpenAI** : `OPENAI_API_KEY`
-- **Base de données PostgreSQL** : `DATABASE_URL`
-- **Stripe** (optionnel) : `STRIPE_SECRET_KEY` et `STRIPE_WEBHOOK_SECRET`
+| Composant | Description |
+|------------|-------------|
+| **API Express** | Fournit les endpoints `/verify`, `/verify/ai`, `/compare/ai`, `/feedback`, et `/health`. |
+| **Analyse de texte** | Extraction d’affirmations vérifiables, de mots-clés et de contextes (géographiques, temporels, etc.). |
+| **Vérification Web** | Recherche automatique de sources crédibles via Google Custom Search. |
+| **Évaluation contextuelle** | Détection de contradictions, calcul de consensus et de diversité des sources. |
+| **Système de cache** | Limite les appels redondants et accélère les analyses. |
+| **Base de données (PostgreSQL)** | Stocke les feedbacks utilisateurs et sondages VerifyAI Pro. |
+| **Sécurité et limitations** | Filtrage CORS, limiteur de requêtes et nettoyage d’entrée pour éviter les abus. |
 
-Les clés d'environnement peuvent être définies dans un fichier `.env` (ignoré par Git) ou dans votre système d'hébergement.
+---
 
-## Lancer le serveur
+## 🚀 Principaux endpoints API
 
-```bash
+### `POST /verify`
+
+Analyse un texte libre et renvoie un score de fiabilité.
+
+**Exemple d’appel :**
+```json
+{
+  "text": "La population de Tokyo dépasse 14 millions d’habitants."
+}
+```
+**Exemple de réponse :**
+```json
+{
+  "overallConfidence": 0.87,
+  "reliabilityLabel": "Highly Reliable",
+  "sources": [
+    { "url": "https://en.wikipedia.org/wiki/Tokyo", "credibilityTier": "tier1", "actuallySupports": true }
+  ],
+  "keywords": ["Tokyo", "population", "14 millions"],
+  "scoringExplanation": "Fait géographique avec sources officielles récentes (+87%)"
+}
+```
+
+### `POST /verify/ai`
+
+Spécifique à l’extension VerifyAI.  
+Permet d’analyser la réponse d’un modèle d’IA (ChatGPT, Claude, Gemini, etc.) pour en évaluer la fiabilité.
+
+**Exemple :**
+```json
+{
+  "model": "ChatGPT",
+  "prompt": "Quel est le PIB de la France ?",
+  "response": "Le PIB de la France est d’environ 2,9 billions de dollars."
+}
+```
+**Retour :**
+```json
+{
+  "modelAnalyzed": "ChatGPT",
+  "reliabilityLabel": "Mostly Reliable",
+  "reliabilityScore": 0.74,
+  "sources": [...],
+  "reasoningSummary": "Données économiques cohérentes avec sources officielles."
+}
+```
+
+### `POST /compare/ai`
+
+Compare plusieurs réponses de modèles d’IA sur un même prompt.
+
+**Exemple :**
+```json
+{
+  "prompt": "Quelle est la capitale du Canada ?",
+  "responses": {
+    "ChatGPT": "Ottawa",
+    "Gemini": "Toronto"
+  }
+}
+```
+**Retour :**
+```json
+{
+  "success": true,
+  "bestModel": "ChatGPT",
+  "comparison": [
+    { "model": "ChatGPT", "score": 0.92 },
+    { "model": "Gemini", "score": 0.45 }
+  ]
+}
+```
+
+### `POST /feedback`
+
+Permet à l’extension ou à l’utilisateur de transmettre un retour sur les analyses.  
+Stocke les retours dans PostgreSQL (table `feedback`).  
+Peut aussi collecter les réponses au sondage VerifyAI Pro (table `pro_survey`).
+
+### `GET /health`
+
+Renvoie l’état du serveur et les fonctionnalités actives.
+
+```json
+{
+  "status": "ok",
+  "version": "VERIFYAI-SERVER-2.3",
+  "features": ["balanced_scoring", "contextual_analysis", "intelligent_contradictions"],
+  "api_configured": true
+}
+```
+
+---
+
+## 🔑 Configuration (`.env`)
+
+```
+# Clés API Google Custom Search
+GOOGLE_API_KEY=your_google_api_key
+SEARCH_ENGINE_ID=your_cse_id
+
+# Base de données (optionnelle)
+DATABASE_URL=postgres://user:password@host:port/dbname
+
+# Environnement
+NODE_ENV=production
+PORT=3000
+```
+
+---
+
+## ⚙️ Lancer le serveur
+
+```
 npm install
 npm start
 ```
 
-Le serveur écoute par défaut sur le port défini dans `process.env.PORT` ou sur `3000` et expose les routes Express décrites dans `server.js`.
+- Le serveur écoute sur `http://localhost:3000`
+- Logs colorés en mode développement
+- Reconnexion automatique à la base PostgreSQL si disponible
 
-## Réinitialisation des mots de passe
+---
 
-- Endpoint temporaire : `POST /admin/reset-password` requiert `adminEmail`, `adminSecret`, `targetEmail` et `newPassword`. Par sécurité, supprimez ou désactivez cette route après utilisation.
-- Script CLI : `node scripts/reset-passwords.js email1=nouveauMotDePasse1 email2=nouveauMotDePasse2` met à jour en base les comptes indiqués (ou utilisez `--file resets.json` avec un tableau d'objets `{ "email": "...", "password": "..." }`).
+## 🧠 Méthodologie d’analyse
 
+VerifyAI applique un système équilibré combinant plusieurs étapes :
+
+1. Extraction des faits → détection des données chiffrées, noms, dates, lieux
+2. Analyse du contenu → différenciation entre faits, opinions et questions
+3. Recherche web intelligente → Google Custom Search filtrée par crédibilité des domaines
+4. Évaluation de cohérence → comparaison sémantique, contradictions et contexte
+5. Scoring final → calcul pondéré de fiabilité, entre 0 et 1
+
+---
+
+## 🧰 Outils internes
+
+- **ImprovedFactChecker** : cœur du moteur de scoring
+- **NodeCache** : cache mémoire avec TTL
+- **express-rate-limit** : anti-abus
+- **string-similarity** : mesure de similarité lexicale
+- **pg** : gestion PostgreSQL
+
+---
+
+## 📊 Endpoints de diagnostic
+
+| Endpoint | Description |
+|----------|-------------|
+| `/metrics` | Donne le nombre total de requêtes, les hits cache, et l’uptime |
+| `/health` | Vérifie la configuration et la disponibilité du serveur |
+
+---
+
+## 🧩 Intégration Chrome Extension
+
+L’extension VerifyAI envoie directement les textes ou réponses d’IA au serveur via `/verify` ou `/verify/ai`.  
+Les résultats (score, fiabilité, sources, etc.) sont ensuite affichés sous forme de badges et d’alertes de confiance dans le navigateur.
