@@ -1,7 +1,54 @@
-node_modules/
-.env
-.env.local
-.DS_Store
-npm-debug.log*
-yarn-error.log
+# Dependencies
+/node_modules/
+/.pnp
+.pnp.js
 
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directories
+coverage
+.nyc_output
+
+# Build and cache artifacts
+.DS_Store
+Thumbs.db
+*.tgz
+.cache/
+.parcel-cache/
+.tmp/
+tmp/
+temp/
+.sass-cache/
+dist/
+build/
+
+# Environment variables
+.env
+.env.*
+*.env
+
+# IDE directories and settings
+.vscode/
+.idea/
+*.sw?
+
+# Miscellaneous
+*.iml
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
