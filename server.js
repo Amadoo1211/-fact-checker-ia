@@ -976,6 +976,14 @@ class ImprovedFactChecker {
 
         let score = baseScore + consistencyBonus + freshnessBonus;
 
+        if (score === 0 && totalSources > 0 && contradictingSources.length === 0) {
+            score = 0.45; // Score minimum si aucune contradiction mais faible support
+        }
+
+        if (credibleSources.length > 2 && contradictingSources.length === 0) {
+            score += 0.1; // Bonus cohérence forte entre sources crédibles
+        }
+
         if (credibleSources.length === 0) {
             score = Math.min(score, 0.55);
         }
@@ -1105,7 +1113,21 @@ async function analyzeSourcesWithImprovedLogic(factChecker, originalText, source
             const safeHref = safeUrl.replace(/'/g, '%27'); // [IMPROVED]
             const clickable = safeUrl ? `<a href='${safeHref}' target='_blank' rel='noopener noreferrer'>${anchorTitle}</a>` : anchorTitle; // [IMPROVED]
 
-            const actuallySupports = semanticMatch.confirms && !contradiction.detected && semanticMatch.score > 0.15;
+            const actuallySupports = semanticMatch.score >= 0.10 && !contradiction.detected;
+
+            let adjustedQuality = combinedQuality;
+            if (safeUrl) {
+                const loweredUrl = safeUrl.toLowerCase();
+                if (loweredUrl.includes('.edu') || loweredUrl.includes('.gov') || loweredUrl.includes('who.int') || loweredUrl.includes('nature.com')) {
+                    adjustedQuality = Math.min(1, adjustedQuality + 0.2);
+                }
+                if (loweredUrl.includes('wikipedia') || loweredUrl.includes('britannica')) {
+                    adjustedQuality = Math.min(1, adjustedQuality + 0.15);
+                }
+                if (loweredUrl.includes('reddit') || loweredUrl.includes('forum') || loweredUrl.includes('blogspot')) {
+                    adjustedQuality = Math.max(0, adjustedQuality - 0.15);
+                }
+            }
 
             analyzedSources.push({
                 ...source,
@@ -1116,7 +1138,7 @@ async function analyzeSourcesWithImprovedLogic(factChecker, originalText, source
                 credibilityTier: credibility.tier,
                 credibilityMultiplier: credibility.multiplier,
                 actuallySupports: actuallySupports,
-                sourceQuality: Number(combinedQuality.toFixed(2)), // [IMPROVED]
+                sourceQuality: Number(adjustedQuality.toFixed(2)), // [IMPROVED]
                 clickable, // [IMPROVED]
                 containsRecentSignals: hasRecentYear, // [IMPROVED]
                 containsOlderSignals: hasOlderYear // [IMPROVED]
@@ -1126,6 +1148,19 @@ async function analyzeSourcesWithImprovedLogic(factChecker, originalText, source
             logError(`Erreur analyse source ${source.url}`, error.message);
 
             const credibility = factChecker.getSourceCredibilityTier(source.url);
+            let fallbackQuality = Math.max(0.1, Math.min(1, credibility.multiplier * 0.6));
+            if (source.url) {
+                const loweredUrl = source.url.toLowerCase();
+                if (loweredUrl.includes('.edu') || loweredUrl.includes('.gov') || loweredUrl.includes('who.int') || loweredUrl.includes('nature.com')) {
+                    fallbackQuality = Math.min(1, fallbackQuality + 0.2);
+                }
+                if (loweredUrl.includes('wikipedia') || loweredUrl.includes('britannica')) {
+                    fallbackQuality = Math.min(1, fallbackQuality + 0.15);
+                }
+                if (loweredUrl.includes('reddit') || loweredUrl.includes('forum') || loweredUrl.includes('blogspot')) {
+                    fallbackQuality = Math.max(0, fallbackQuality - 0.15);
+                }
+            }
             analyzedSources.push({
                 ...source,
                 semanticRelevance: 0.3,
@@ -1134,7 +1169,7 @@ async function analyzeSourcesWithImprovedLogic(factChecker, originalText, source
                 credibilityTier: credibility.tier,
                 credibilityMultiplier: credibility.multiplier,
                 actuallySupports: false,
-                sourceQuality: Number(Math.max(0.1, Math.min(1, credibility.multiplier * 0.6)).toFixed(2)), // [IMPROVED]
+                sourceQuality: Number(fallbackQuality.toFixed(2)), // [IMPROVED]
                 clickable: source.url ? `<a href='${source.url.replace(/'/g, '%27')}' target='_blank' rel='noopener noreferrer'>${escapeHtml(source.title || 'Source')}</a>` : escapeHtml(source.title || 'Source'), // [IMPROVED]
                 containsRecentSignals: false, // [IMPROVED]
                 containsOlderSignals: false // [IMPROVED]
