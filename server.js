@@ -110,6 +110,13 @@ try {
 const stringSimilarity = stringSimilarityModule;
 const NodeCache = NodeCacheModule;
 
+let francModule = null;
+try {
+    francModule = require('franc');
+} catch (err) {
+    startupWarnings.push('franc non disponible — heuristique de langue utilisée.');
+}
+
 const colorize = (color, message) => {
     if (!chalk) return message;
     if (typeof chalk[color] === 'function') {
@@ -922,7 +929,7 @@ function createCacheKey(prefix, data) {
 function extractMainKeywords(text) {
     const cleaned = sanitizeInput(text).substring(0, 1000);
     const keywords = [];
-    
+
     try {
         // Entités nommées
         const namedEntities = cleaned.match(/\b[A-Z][a-zA-ZÀ-ÿ]+(?:\s+[A-Z][a-zA-ZÀ-ÿ]+){0,2}\b/g) || [];
@@ -946,6 +953,408 @@ function extractMainKeywords(text) {
         logError('Erreur extraction keywords', e.message);
         return [];
     }
+}
+
+const ISO3_TO_ISO1 = {
+    eng: 'en',
+    fra: 'fr',
+    ita: 'it',
+    spa: 'es',
+    deu: 'de',
+    ger: 'de',
+    jpn: 'ja',
+    tur: 'tr',
+    hin: 'hi',
+    rus: 'ru'
+};
+
+const SUMMARY_TRANSLATIONS = {
+    en: {
+        label: 'Analysis Summary',
+        reliability: {
+            veryHigh: 'The statement appears highly reliable ({score}%).',
+            mostly: 'The statement appears mostly reliable ({score}%).',
+            uncertain: 'Reliability remains uncertain ({score}%).',
+            low: 'The statement appears unreliable ({score}%).'
+        },
+        positive: {
+            recentConsistent: 'Recent and consistent data from multiple sources.',
+            recent: 'Recent information identified across the sources.',
+            consistent: 'Sources present consistent information overall.',
+            limited: 'Some relevant data identified, though limited.',
+            none: 'Insufficient data to judge recency or consistency.'
+        },
+        warning: {
+            none: 'No major contradictions detected.',
+            minor: 'Minor contradictions found.',
+            major: 'Significant contradictions detected — review carefully.'
+        },
+        sources: {
+            diverse: 'Verified and diverse sources.',
+            limited: 'Verified sources but limited diversity.',
+            scarce: 'Verified sources but very few in number.',
+            none: 'No reliable sources identified.'
+        }
+    },
+    fr: {
+        label: 'Résumé de l’analyse',
+        reliability: {
+            veryHigh: 'Le texte semble très fiable ({score}%).',
+            mostly: 'Le texte semble globalement fiable ({score}%).',
+            uncertain: 'La fiabilité du texte reste incertaine ({score}%).',
+            low: 'Le texte semble peu fiable ({score}%).'
+        },
+        positive: {
+            recentConsistent: 'Données récentes et cohérentes entre les sources.',
+            recent: 'Informations récentes identifiées dans les sources.',
+            consistent: 'Les sources présentent une information cohérente.',
+            limited: 'Quelques données pertinentes mais limitées.',
+            none: 'Données exploitables insuffisantes.'
+        },
+        warning: {
+            none: 'Aucune contradiction majeure détectée.',
+            minor: 'Quelques contradictions mineures observées.',
+            major: 'Contradictions importantes détectées.'
+        },
+        sources: {
+            diverse: 'Sources vérifiées et diversifiées.',
+            limited: 'Sources vérifiées mais diversité limitée.',
+            scarce: 'Sources vérifiées mais très peu nombreuses.',
+            none: 'Aucune source fiable n’a été identifiée.'
+        }
+    },
+    es: {
+        label: 'Resumen del análisis',
+        reliability: {
+            veryHigh: 'La afirmación parece muy confiable ({score}%).',
+            mostly: 'La afirmación parece mayormente confiable ({score}%).',
+            uncertain: 'La fiabilidad sigue siendo incierta ({score}%).',
+            low: 'La afirmación parece poco confiable ({score}%).'
+        },
+        positive: {
+            recentConsistent: 'Datos recientes y coherentes entre las fuentes.',
+            recent: 'Información reciente identificada en las fuentes.',
+            consistent: 'Las fuentes muestran información coherente.',
+            limited: 'Algunos datos relevantes pero limitados.',
+            none: 'Datos insuficientes para evaluar actualidad o coherencia.'
+        },
+        warning: {
+            none: 'No se detectaron contradicciones importantes.',
+            minor: 'Se observaron contradicciones menores.',
+            major: 'Se detectaron contradicciones significativas.'
+        },
+        sources: {
+            diverse: 'Fuentes verificadas y diversas.',
+            limited: 'Fuentes verificadas pero con diversidad limitada.',
+            scarce: 'Fuentes verificadas pero muy escasas.',
+            none: 'No se identificaron fuentes confiables.'
+        }
+    },
+    de: {
+        label: 'Analysezusammenfassung',
+        reliability: {
+            veryHigh: 'Die Aussage wirkt sehr zuverlässig ({score}%).',
+            mostly: 'Die Aussage wirkt überwiegend zuverlässig ({score}%).',
+            uncertain: 'Die Zuverlässigkeit bleibt unklar ({score}%).',
+            low: 'Die Aussage wirkt wenig zuverlässig ({score}%).'
+        },
+        positive: {
+            recentConsistent: 'Aktuelle und übereinstimmende Daten aus mehreren Quellen.',
+            recent: 'Aktuelle Informationen wurden in den Quellen gefunden.',
+            consistent: 'Die Quellen liefern insgesamt stimmige Informationen.',
+            limited: 'Einige relevante, aber begrenzte Daten vorhanden.',
+            none: 'Zu wenige Daten für eine Einschätzung.'
+        },
+        warning: {
+            none: 'Keine größeren Widersprüche festgestellt.',
+            minor: 'Einige geringfügige Widersprüche festgestellt.',
+            major: 'Deutliche Widersprüche erkannt.'
+        },
+        sources: {
+            diverse: 'Geprüfte und vielfältige Quellen.',
+            limited: 'Geprüfte Quellen, aber begrenzte Vielfalt.',
+            scarce: 'Geprüfte Quellen, jedoch sehr wenige.',
+            none: 'Keine verlässlichen Quellen gefunden.'
+        }
+    },
+    it: {
+        label: "Riepilogo dell'analisi",
+        reliability: {
+            veryHigh: 'L’affermazione risulta molto affidabile ({score}%).',
+            mostly: 'L’affermazione risulta per lo più affidabile ({score}%).',
+            uncertain: 'L’affidabilità rimane incerta ({score}%).',
+            low: 'L’affermazione risulta poco affidabile ({score}%).'
+        },
+        positive: {
+            recentConsistent: 'Dati recenti e coerenti tra le fonti.',
+            recent: 'Informazioni recenti rilevate nelle fonti.',
+            consistent: 'Le fonti mostrano informazioni coerenti.',
+            limited: 'Alcuni dati pertinenti ma limitati.',
+            none: 'Dati insufficienti per valutarne l’attualità o la coerenza.'
+        },
+        warning: {
+            none: 'Nessuna contraddizione rilevante individuata.',
+            minor: 'Osservate lievi contraddizioni.',
+            major: 'Contraddizioni significative rilevate.'
+        },
+        sources: {
+            diverse: 'Fonti verificate e diversificate.',
+            limited: 'Fonti verificate ma con diversità limitata.',
+            scarce: 'Fonti verificate ma molto poche.',
+            none: 'Nessuna fonte affidabile identificata.'
+        }
+    },
+    ja: {
+        label: '分析の概要',
+        reliability: {
+            veryHigh: 'この記述は非常に信頼できると判断されます（{score}%）。',
+            mostly: 'この記述は概ね信頼できると判断されます（{score}%）。',
+            uncertain: 'この記述の信頼性は不確かです（{score}%）。',
+            low: 'この記述は信頼性が低いと判断されます（{score}%）。'
+        },
+        positive: {
+            recentConsistent: '複数の情報源で最新かつ一貫したデータが確認されました。',
+            recent: '情報源から最新の情報が確認されました。',
+            consistent: '情報源の内容は概ね一致しています。',
+            limited: '関連するデータはあるものの量は限られています。',
+            none: '新しいデータや一貫性を判断する情報が不足しています。'
+        },
+        warning: {
+            none: '大きな矛盾は確認されませんでした。',
+            minor: 'いくつか小さな矛盾が見つかりました。',
+            major: '重大な矛盾が検出されました。'
+        },
+        sources: {
+            diverse: '検証済みで多様な情報源です。',
+            limited: '検証済みですが情報源の多様性は限定的です。',
+            scarce: '検証済みの情報源はあるものの非常に少ないです。',
+            none: '信頼できる情報源は確認できませんでした。'
+        }
+    },
+    tr: {
+        label: 'Analiz Özeti',
+        reliability: {
+            veryHigh: 'Açıklama son derece güvenilir görünüyor ({score}%).',
+            mostly: 'Açıklama çoğunlukla güvenilir görünüyor ({score}%).',
+            uncertain: 'Güvenilirlik belirsiz kalıyor ({score}%).',
+            low: 'Açıklama güvenilir görünmüyor ({score}%).'
+        },
+        positive: {
+            recentConsistent: 'Birden fazla kaynaktan güncel ve tutarlı veriler.',
+            recent: 'Kaynaklarda güncel bilgiler bulundu.',
+            consistent: 'Kaynaklar genel olarak tutarlı bilgiler sunuyor.',
+            limited: 'Bazı ilgili veriler mevcut ancak sınırlı.',
+            none: 'Güncellik veya tutarlılığı değerlendirmek için veri yetersiz.'
+        },
+        warning: {
+            none: 'Önemli bir çelişki tespit edilmedi.',
+            minor: 'Küçük çelişkiler gözlemlendi.',
+            major: 'Önemli çelişkiler tespit edildi.'
+        },
+        sources: {
+            diverse: 'Doğrulanmış ve çeşitli kaynaklar.',
+            limited: 'Doğrulanmış kaynaklar ancak çeşitlilik sınırlı.',
+            scarce: 'Doğrulanmış ancak çok az sayıda kaynak.',
+            none: 'Güvenilir kaynak bulunamadı.'
+        }
+    },
+    hi: {
+        label: 'विश्लेषण सारांश',
+        reliability: {
+            veryHigh: 'कथन अत्यंत विश्वसनीय प्रतीत होता है ({score}%).',
+            mostly: 'कथन अधिकांश रूप से विश्वसनीय प्रतीत होता है ({score}%).',
+            uncertain: 'विश्वसनीयता अनिश्चित बनी हुई है ({score}%).',
+            low: 'कथन कम विश्वसनीय प्रतीत होता है ({score}%).'
+        },
+        positive: {
+            recentConsistent: 'कई स्रोतों से हाल का और सुसंगत डेटा मिला।',
+            recent: 'स्रोतों में हाल की जानकारी पहचानी गई।',
+            consistent: 'स्रोतों में जानकारी अधिकांशतः सुसंगत है।',
+            limited: 'कुछ प्रासंगिक डेटा उपलब्ध हैं लेकिन सीमित।',
+            none: 'नवीनता या सुसंगतता आँकने के लिए डेटा अपर्याप्त है।'
+        },
+        warning: {
+            none: 'कोई प्रमुख विरोधाभास नहीं मिला।',
+            minor: 'कुछ छोटे विरोधाभास पाए गए।',
+            major: 'महत्वपूर्ण विरोधाभास पाए गए।'
+        },
+        sources: {
+            diverse: 'सत्यापित और विविध स्रोत।',
+            limited: 'सत्यापित स्रोत लेकिन विविधता सीमित।',
+            scarce: 'सत्यापित स्रोत बहुत कम हैं।',
+            none: 'कोई विश्वसनीय स्रोत नहीं मिला।'
+        }
+    },
+    ru: {
+        label: 'Резюме анализа',
+        reliability: {
+            veryHigh: 'Утверждение выглядит очень надёжным ({score}%).',
+            mostly: 'Утверждение выглядит в основном надёжным ({score}%).',
+            uncertain: 'Надёжность остаётся неопределённой ({score}%).',
+            low: 'Утверждение выглядит ненадёжным ({score}%).'
+        },
+        positive: {
+            recentConsistent: 'Актуальные и согласованные данные из нескольких источников.',
+            recent: 'В источниках найдены актуальные сведения.',
+            consistent: 'Источники дают в целом согласованную информацию.',
+            limited: 'Есть некоторые релевантные, но ограниченные данные.',
+            none: 'Недостаточно данных для оценки актуальности или согласованности.'
+        },
+        warning: {
+            none: 'Существенных противоречий не обнаружено.',
+            minor: 'Обнаружены небольшие противоречия.',
+            major: 'Обнаружены значительные противоречия.'
+        },
+        sources: {
+            diverse: 'Проверенные и разнообразные источники.',
+            limited: 'Проверенные источники, но ограниченное разнообразие.',
+            scarce: 'Проверенных источников очень мало.',
+            none: 'Надёжные источники не найдены.'
+        }
+    }
+};
+
+const LANGUAGE_HEURISTICS = [
+    { regex: /[àâäéèêëîïôöùûüçœ]/i, code: 'fr' },
+    { regex: /[áéíóúñü¿¡]/i, code: 'es' },
+    { regex: /[äöüß]/i, code: 'de' },
+    { regex: /[àèéìòù]/i, code: 'it' },
+    { regex: /[ぁ-んァ-ン一-龥]/, code: 'ja' },
+    { regex: /[ğüşöçıİ]/i, code: 'tr' },
+    { regex: /[\u0900-\u097F]/, code: 'hi' },
+    { regex: /[а-яё]/i, code: 'ru' }
+];
+
+function detectLanguageCode(text) {
+    const cleaned = sanitizeInput(text || '');
+    if (!cleaned) {
+        return 'en';
+    }
+
+    let detected = null;
+
+    if (francModule) {
+        try {
+            const iso3 = francModule(cleaned, { minLength: Math.min(10, Math.max(3, cleaned.length)) });
+            if (iso3 && iso3 !== 'und') {
+                detected = ISO3_TO_ISO1[iso3] || null;
+            }
+        } catch (error) {
+            logWarn(`Erreur détection de langue via franc: ${error.message}`);
+        }
+    }
+
+    if (!detected) {
+        for (const heuristic of LANGUAGE_HEURISTICS) {
+            if (heuristic.regex.test(cleaned)) {
+                detected = heuristic.code;
+                break;
+            }
+        }
+    }
+
+    return detected || 'en';
+}
+
+function resolveTemplate(textPack, section, key, replacements) {
+    const sectionPack = textPack[section] || {};
+    const fallbackPack = SUMMARY_TRANSLATIONS.en[section] || {};
+    const template = sectionPack[key] || fallbackPack[key] || '';
+
+    return template.replace(/\{(\w+)\}/g, (_, token) => {
+        const value = replacements[token];
+        return value !== undefined ? value : `{${token}}`;
+    });
+}
+
+function createLocalizedSummary(languageCode, result = {}, analyzedSources = []) {
+    const lang = SUMMARY_TRANSLATIONS[languageCode] ? languageCode : 'en';
+    const textPack = SUMMARY_TRANSLATIONS[lang];
+
+    const score = typeof result.score === 'number' ? result.score : 0;
+    const scorePercent = Math.round(Math.max(0, Math.min(1, score)) * 100);
+
+    const totalSources = Array.isArray(analyzedSources) ? analyzedSources.length : 0;
+    const supportingCount = Array.isArray(analyzedSources)
+        ? analyzedSources.filter(source => source?.actuallySupports).length
+        : 0;
+    const contradictionCount = Array.isArray(analyzedSources)
+        ? analyzedSources.filter(source => source?.contradicts).length
+        : 0;
+
+    const supportRatio = totalSources > 0 ? supportingCount / totalSources : 0;
+    const contradictionRatio = totalSources > 0 ? contradictionCount / totalSources : 0;
+
+    const domainSet = new Set();
+    if (Array.isArray(analyzedSources)) {
+        for (const source of analyzedSources) {
+            if (!source || !source.url) continue;
+            try {
+                const hostname = new URL(source.url).hostname;
+                domainSet.add(hostname);
+            } catch {
+                domainSet.add(source.url);
+            }
+        }
+    }
+
+    const hasRecentSources = Array.isArray(analyzedSources) && analyzedSources.some(source => {
+        const snippet = `${source?.snippet || ''} ${source?.title || ''}`;
+        return /202[0-5]|recent|latest|nouveau|nouvelle|récent|reciente|aktuell|aktuellen|aggiornato|aggiornata|最新|最近|güncel|हालिया|последн/iu.test(snippet);
+    });
+
+    let positiveKey = 'limited';
+    if (totalSources === 0) {
+        positiveKey = 'none';
+    } else if (hasRecentSources && supportRatio >= 0.6) {
+        positiveKey = 'recentConsistent';
+    } else if (hasRecentSources) {
+        positiveKey = 'recent';
+    } else if (supportRatio >= 0.6) {
+        positiveKey = 'consistent';
+    }
+
+    let warningKey = 'none';
+    if (contradictionRatio > 0.5) {
+        warningKey = 'major';
+    } else if (contradictionCount > 0) {
+        warningKey = 'minor';
+    }
+
+    let sourcesKey = 'limited';
+    if (totalSources === 0) {
+        sourcesKey = 'none';
+    } else if (domainSet.size >= 3) {
+        sourcesKey = 'diverse';
+    } else if (totalSources <= 1) {
+        sourcesKey = 'scarce';
+    }
+
+    const reliabilityKey = score >= 0.85
+        ? 'veryHigh'
+        : score >= 0.65
+            ? 'mostly'
+            : score >= 0.45
+                ? 'uncertain'
+                : 'low';
+
+    const replacements = {
+        score: scorePercent,
+        contradictions: contradictionCount,
+        sources: totalSources
+    };
+
+    const summaryLines = [
+        `🔍 ${resolveTemplate(textPack, 'reliability', reliabilityKey, replacements)}`,
+        `➕ ${resolveTemplate(textPack, 'positive', positiveKey, replacements)}`,
+        `⚠️ ${resolveTemplate(textPack, 'warning', warningKey, replacements)}`,
+        `✅ ${resolveTemplate(textPack, 'sources', sourcesKey, replacements)}`
+    ];
+
+    return {
+        label: textPack.label,
+        text: summaryLines.join('\n')
+    };
 }
 
 async function findWebSources(keywords, smartQueries, originalText) {
@@ -1137,6 +1546,9 @@ app.post('/verify', async (req, res) => {
         const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, sanitizedInput, sources);
         const result = factChecker.calculateBalancedScore(sanitizedInput, analyzedSources, claims);
 
+        const languageDetected = detectLanguageCode(sanitizedInput);
+        const localizedSummary = createLocalizedSummary(languageDetected, result, analyzedSources);
+
         const reliabilityLabel =
             result.score > 0.85 ? 'Highly Reliable' :
             result.score > 0.6 ? 'Mostly Reliable' :
@@ -1152,7 +1564,10 @@ app.post('/verify', async (req, res) => {
             claimsAnalyzed: claims,
             details: result.details,
             methodology: "Analyse équilibrée avec détection contextuelle intelligente",
-            reliabilityLabel
+            reliabilityLabel,
+            languageDetected,
+            summaryLabel: localizedSummary.label,
+            summaryText: localizedSummary.text
         };
 
         verificationCache.set(cacheKey, response);
@@ -1228,6 +1643,9 @@ app.post('/verify/ai', async (req, res) => {
         const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, sanitizedResponse, sources);
         const result = factChecker.calculateBalancedScore(sanitizedResponse, analyzedSources, claims);
 
+        const languageDetected = detectLanguageCode(sanitizedResponse);
+        const localizedSummary = createLocalizedSummary(languageDetected, result, analyzedSources);
+
         const reliabilityLabel =
             result.score > 0.85 ? 'Highly Reliable' :
             result.score > 0.6 ? 'Mostly Reliable' :
@@ -1242,7 +1660,10 @@ app.post('/verify/ai', async (req, res) => {
             claims,
             keywords,
             overallConfidence: result.score,
-            reliabilityLabel
+            reliabilityLabel,
+            languageDetected,
+            summaryLabel: localizedSummary.label,
+            summaryText: localizedSummary.text
         };
 
         verificationCache.set(cacheKey, responsePayload);
