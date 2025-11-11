@@ -134,72 +134,72 @@ const colorize = (color, message) => {
     return message;
 };
 
-const LABELS = {
-    en: { high: "Highly reliable ✅", mod: "Moderate reliability ⚠️", low: "Low reliability ❌", unverified: "Unverified 🚫" },
-    fr: { high: "Très fiable ✅", mod: "Fiabilité modérée ⚠️", low: "Faible fiabilité ❌", unverified: "Non vérifié 🚫" },
-    es: { high: "Muy fiable ✅", mod: "Fiabilidad moderada ⚠️", low: "Poca fiabilidad ❌", unverified: "No verificado 🚫" },
-    de: { high: "Sehr zuverlässig ✅", mod: "Mittlere Zuverlässigkeit ⚠️", low: "Geringe Zuverlässigkeit ❌", unverified: "Unbestätigt 🚫" },
-    tr: { high: "Yüksek güvenilirlik ✅", mod: "Orta güvenilirlik ⚠️", low: "Düşük güvenilirlik ❌", unverified: "Doğrulanmadı 🚫" },
-    ru: { high: "Высокая достоверность ✅", mod: "Умеренная достоверность ⚠️", low: "Низкая достоверность ❌", unverified: "Не проверено 🚫" },
-    ja: { high: "非常に信頼できる ✅", mod: "中程度の信頼性 ⚠️", low: "信頼性が低い ❌", unverified: "未確認 🚫" },
-    hi: { high: "उच्च विश्वसनीयता ✅", mod: "मध्यम विश्वसनीयता ⚠️", low: "कम विश्वसनीयता ❌", unverified: "अप्रमाणित 🚫" },
-    zh: { high: "高度可靠 ✅", mod: "中等可靠 ⚠️", low: "低可靠 ❌", unverified: "未验证 🚫" }
+const RELIABILITY_LABELS = {
+    en: { high: "Highly reliable", medium: "Mostly reliable", low: "Limited reliability", very_low: "Low reliability" },
+    fr: { high: "Haute fiabilité", medium: "Fiabilité partielle", low: "Fiabilité incertaine", very_low: "Faible fiabilité" },
+    es: { high: "Alta fiabilidad", medium: "Fiabilidad parcial", low: "Fiabilidad incierta", very_low: "Baja fiabilidad" },
+    de: { high: "Hohe Zuverlässigkeit", medium: "Teilweise zuverlässig", low: "Unklare Zuverlässigkeit", very_low: "Geringe Zuverlässigkeit" },
+    tr: { high: "Yüksek güvenilirlik", medium: "Kısmen güvenilir", low: "Belirsiz güvenilirlik", very_low: "Düşük güvenilirlik" },
+    ru: { high: "Высокая достоверность", medium: "Частичная достоверность", low: "Сомнительная достоверность", very_low: "Низкая достоверность" },
+    ja: { high: "高い信頼性", medium: "部分的に信頼できる", low: "信頼性が不確か", very_low: "信頼性が低い" },
+    hi: { high: "उच्च विश्वसनीयता", medium: "आंशिक विश्वसनीयता", low: "अनिश्चित विश्वसनीयता", very_low: "कम विश्वसनीयता" },
+    zh: { high: "高度可靠", medium: "部分可靠", low: "可靠性不确定", very_low: "可靠性低" }
 };
 
-const SUMMARY_MESSAGES = {
+const ANALYSIS_SUMMARIES = {
     en: {
-        high: "Multiple trusted and recent sources confirm this information.",
-        mod: "Most sources agree, but a few inconsistencies exist.",
-        low: "Several reliable sources contradict this claim.",
-        unverified: "No reliable sources found — verification limited."
+        high: "✅ Highly reliable and coherent with trusted sources.",
+        medium: "⚠️ Partially correct — some details may differ.",
+        low: "❓ Uncertain reliability — limited or mixed evidence.",
+        very_low: "❌ Likely incorrect or contradicted by sources."
     },
     fr: {
-        high: "Plusieurs sources fiables et récentes confirment cette information.",
-        mod: "La plupart des sources concordent, mais quelques divergences subsistent.",
-        low: "Plusieurs sources fiables contredisent cette affirmation.",
-        unverified: "Aucune source fiable trouvée — vérification limitée."
+        high: "✅ Information fiable et cohérente avec les sources de confiance.",
+        medium: "⚠️ Partiellement correct — certains détails peuvent différer.",
+        low: "❓ Fiabilité incertaine — preuves limitées ou mixtes.",
+        very_low: "❌ Probablement inexact ou contredit par les sources."
     },
     es: {
-        high: "Múltiples fuentes fiables y recientes confirman esta información.",
-        mod: "La mayoría de las fuentes coinciden, pero existen algunas inconsistencias.",
-        low: "Varias fuentes fiables contradicen esta afirmación.",
-        unverified: "No se encontraron fuentes fiables; verificación limitada."
+        high: "✅ Información fiable y coherente con fuentes de confianza.",
+        medium: "⚠️ Parcialmente correcta: algunos detalles pueden diferir.",
+        low: "❓ Fiabilidad incierta — evidencias limitadas o contradictorias.",
+        very_low: "❌ Probablemente incorrecto o contradicho por las fuentes."
     },
     de: {
-        high: "Mehrere vertrauenswürdige und aktuelle Quellen bestätigen diese Information.",
-        mod: "Die meisten Quellen stimmen überein, einige Unterschiede bestehen jedoch.",
-        low: "Mehrere zuverlässige Quellen widersprechen dieser Behauptung.",
-        unverified: "Keine verlässlichen Quellen gefunden – begrenzte Überprüfung."
+        high: "✅ Sehr zuverlässig und durch vertrauenswürdige Quellen bestätigt.",
+        medium: "⚠️ Teilweise korrekt – einige Details können abweichen.",
+        low: "❓ Zuverlässigkeit unklar – begrenzte oder gemischte Belege.",
+        very_low: "❌ Wahrscheinlich falsch oder durch Quellen widerlegt."
     },
     tr: {
-        high: "Birden fazla güvenilir ve güncel kaynak bu bilgiyi doğruluyor.",
-        mod: "Kaynakların çoğu aynı fikirde, ancak bazı tutarsızlıklar var.",
-        low: "Birkaç güvenilir kaynak bu iddiayı çürütüyor.",
-        unverified: "Güvenilir kaynak bulunamadı — doğrulama sınırlı."
+        high: "✅ Güvenilir kaynaklarla uyumlu ve yüksek güvenilirlikte.",
+        medium: "⚠️ Kısmen doğru — bazı detaylar farklı olabilir.",
+        low: "❓ Güvenilirlik belirsiz — sınırlı veya karışık kanıtlar.",
+        very_low: "❌ Muhtemelen yanlış veya kaynaklarca çürütülmüş."
     },
     ru: {
-        high: "Несколько надежных и актуальных источников подтверждают эту информацию.",
-        mod: "Большинство источников согласны, но есть некоторые несоответствия.",
-        low: "Несколько надежных источников опровергают это утверждение.",
-        unverified: "Надежные источники не найдены — проверка ограничена."
+        high: "✅ Информация достоверна и подтверждена надежными источниками.",
+        medium: "⚠️ Частично верно — некоторые детали могут отличаться.",
+        low: "❓ Достоверность сомнительна — ограниченные или противоречивые данные.",
+        very_low: "❌ Вероятно неверно или опровергнуто источниками."
     },
     ja: {
-        high: "複数の信頼できる最新の情報源がこの情報を裏付けています。",
-        mod: "ほとんどの情報源は一致していますが、いくつかの不一致があります。",
-        low: "いくつかの信頼できる情報源がこの主張に反論しています。",
-        unverified: "信頼できる情報源が見つからず、検証は限定的です。"
+        high: "✅ 信頼できる情報源と一致しており非常に信頼できます。",
+        medium: "⚠️ 部分的に正しい可能性があります — 詳細に相違があるかもしれません。",
+        low: "❓ 信頼性が不確かです — 裏付けが限られているか矛盾しています。",
+        very_low: "❌ 情報源によって誤りとされている可能性が高いです。"
     },
     hi: {
-        high: "कई भरोसेमंद और हालिया स्रोत इस जानकारी की पुष्टि करते हैं।",
-        mod: "अधिकांश स्रोत सहमत हैं, लेकिन कुछ असंगतियाँ मौजूद हैं।",
-        low: "कई विश्वसनीय स्रोत इस दावे का खंडन करते हैं।",
-        unverified: "कोई विश्वसनीय स्रोत नहीं मिला — सत्यापन सीमित है।"
+        high: "✅ विश्वसनीय स्रोतों से मेल खाता है और अत्यधिक विश्वसनीय है।",
+        medium: "⚠️ आंशिक रूप से सही — कुछ विवरण अलग हो सकते हैं।",
+        low: "❓ विश्वसनीयता अनिश्चित — सीमित या मिश्रित प्रमाण।",
+        very_low: "❌ संभवतः गलत या स्रोतों द्वारा खंडित।"
     },
     zh: {
-        high: "多个可信且最新的来源证实了这一信息。",
-        mod: "大多数来源一致，但存在一些差异。",
-        low: "多个可靠来源与该说法相矛盾。",
-        unverified: "未找到可靠来源——验证有限。"
+        high: "✅ 与可信来源一致，信息高度可靠。",
+        medium: "⚠️ 部分正确——某些细节可能不同。",
+        low: "❓ 可靠性不确定——证据有限或矛盾。",
+        very_low: "❌ 可能不正确或被来源驳斥。"
     }
 };
 
@@ -214,42 +214,6 @@ const SOURCE_PREFIX = {
     hi: 'स्रोत',
     zh: '来源'
 };
-
-const TRUSTED_MEDIA_DOMAINS = new Set([
-    'reuters.com',
-    'bbc.com',
-    'apnews.com',
-    'nytimes.com',
-    'theguardian.com',
-    'washingtonpost.com',
-    'lemonde.fr',
-    'aljazeera.com',
-    'france24.com'
-]);
-
-const ENCYCLOPEDIC_DOMAINS = new Set([
-    'wikipedia.org',
-    'britannica.com',
-    'nature.com',
-    'science.org',
-    'sciencedirect.com'
-]);
-
-const EXPERT_KNOWLEDGE_DOMAINS = new Set([
-    'stackoverflow.com',
-    'medium.com',
-    'towardsdatascience.com',
-    'khanacademy.org',
-    'mit.edu'
-]);
-
-const COMMUNITY_OR_LOW_DOMAINS = new Set([
-    'reddit.com',
-    'quora.com',
-    'answers.com',
-    'yahoo.com',
-    'facebook.com'
-]);
 
 const normalizeLanguageCode = (code) => {
     if (!code || typeof code !== 'string') {
@@ -274,21 +238,34 @@ function detectLanguage(text) {
     return 'en';
 }
 
-const getReliabilityLabel = (language, level) => {
+const getReliabilityLabel = (language, category) => {
     const lang = normalizeLanguageCode(language);
-    const dictionary = LABELS[lang] || LABELS.en;
-    return dictionary[level] || LABELS.en[level];
+    const dictionary = RELIABILITY_LABELS[lang] || RELIABILITY_LABELS.en;
+    return dictionary[category] || RELIABILITY_LABELS.en[category] || RELIABILITY_LABELS.en.low;
 };
 
-const getSummaryMessage = (language, level) => {
+const getAnalysisSummaryMessage = (language, category) => {
     const lang = normalizeLanguageCode(language);
-    const dictionary = SUMMARY_MESSAGES[lang] || SUMMARY_MESSAGES.en;
-    return dictionary[level] || SUMMARY_MESSAGES.en[level];
+    const dictionary = ANALYSIS_SUMMARIES[lang] || ANALYSIS_SUMMARIES.en;
+    return dictionary[category] || ANALYSIS_SUMMARIES.en[category] || ANALYSIS_SUMMARIES.en.low;
 };
 
 const getSourcesPrefix = (language) => {
     const lang = normalizeLanguageCode(language);
     return SOURCE_PREFIX[lang] || SOURCE_PREFIX.en;
+};
+
+const categorizeScore = (score) => {
+    if (score >= 0.85) {
+        return 'high';
+    }
+    if (score >= 0.6) {
+        return 'medium';
+    }
+    if (score >= 0.4) {
+        return 'low';
+    }
+    return 'very_low';
 };
 
 const buildSourcesMarkdown = (mainSources, language) => {
@@ -396,31 +373,36 @@ const metrics = {
 };
 
 // === GOOGLE API OPTIMIZATION === // [IMPROVED]
-const GOOGLE_CACHE_TTL_MS = 2 * 60 * 1000; // [IMPROVED]
-const googleSearchCache = new Map(); // [IMPROVED]
-const trustedDomains = ['.edu', '.gov', '.org', 'bbc.com', 'reuters.com', 'lemonde.fr', 'wikipedia.org', 'who.int', 'nature.com', 'science.org']; // [IMPROVED]
-const lowTrustDomains = ['reddit', 'forum', 'quora']; // [IMPROVED]
-const fallbackTrustedSources = [ // [IMPROVED]
-    { title: 'Wikipedia - Informations vérifiées', url: 'https://fr.wikipedia.org', snippet: 'Base encyclopédique fiable.', query_used: 'fallback', domainQuality: 0.75, relevance: 0.65 }, // [IMPROVED]
-    { title: 'WHO - Organisation mondiale de la Santé', url: 'https://www.who.int', snippet: 'Données de santé officielles.', query_used: 'fallback', domainQuality: 0.95, relevance: 0.7 }, // [IMPROVED]
-    { title: 'Reuters - Actualités internationales', url: 'https://www.reuters.com', snippet: 'Couverture journalistique mondiale.', query_used: 'fallback', domainQuality: 0.9, relevance: 0.68 } // [IMPROVED]
-]; // [IMPROVED]
+const GOOGLE_CACHE_TTL_MS = 2 * 60 * 1000;
+const googleSearchCache = new Map();
 
-const getCachedGoogleResults = (query) => { // [IMPROVED]
-    const entry = googleSearchCache.get(query); // [IMPROVED]
-    if (!entry) { // [IMPROVED]
-        return null; // [IMPROVED]
-    } // [IMPROVED]
-    if (Date.now() - entry.timestamp > GOOGLE_CACHE_TTL_MS) { // [IMPROVED]
-        googleSearchCache.delete(query); // [IMPROVED]
-        return null; // [IMPROVED]
-    } // [IMPROVED]
-    return entry.data; // [IMPROVED]
-}; // [IMPROVED]
+const PRIORITY_DOMAINS = [
+    '.gov', '.edu', '.int', '.org',
+    'wikipedia.org', 'nature.com', 'bbc.com', 'reuters.com', 'who.int', 'un.org', 'data.gov'
+];
 
-const setCachedGoogleResults = (query, data) => { // [IMPROVED]
-    googleSearchCache.set(query, { data, timestamp: Date.now() }); // [IMPROVED]
-}; // [IMPROVED]
+const SECONDARY_TRUSTED_DOMAINS = [
+    'science.org', 'science.gov', 'statista.com', 'nationalgeographic.com',
+    'apnews.com', 'nytimes.com', 'lemonde.fr', 'britannica.com'
+];
+
+const LOW_TRUST_HINTS = ['reddit', 'forum', 'quora', 'blogspot', 'facebook', 'twitter'];
+
+const getCachedGoogleResults = (query) => {
+    const entry = googleSearchCache.get(query);
+    if (!entry) {
+        return null;
+    }
+    if (Date.now() - entry.timestamp > GOOGLE_CACHE_TTL_MS) {
+        googleSearchCache.delete(query);
+        return null;
+    }
+    return entry.data;
+};
+
+const setCachedGoogleResults = (query, data) => {
+    googleSearchCache.set(query, { data, timestamp: Date.now() });
+};
 
 const MAX_TEXT_LENGTH = 10_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024; // 1MB
@@ -792,249 +774,186 @@ class ImprovedFactChecker {
 
     // 8. ÉVALUATION DE LA QUALITÉ DES SOURCES
     evaluateSourceQuality(sources) {
-        if (sources.length === 0) {
-            return {
-                impact: -0.10,
-                confidence: 0,
-                reasoning: 'Aucune source de vérification trouvée (-10%).'
-            };
+        if (!Array.isArray(sources) || sources.length === 0) {
+            return { adjustment: -0.1, supporting: 0, contradicting: 0, reliable: 0 };
         }
 
-        let qualityScore = 0;
-        let supportingHigh = sources.filter(s => s.actuallySupports && s.credibilityMultiplier > 0.8).length;
-        let supportingAny = sources.filter(s => s.actuallySupports).length;
-        let contradictingHigh = sources.filter(s => s.contradicts && s.credibilityMultiplier > 0.8).length;
+        let adjustment = 0;
+        let supporting = 0;
+        let contradicting = 0;
+        let reliable = 0;
 
-        // Bonus pour sources de support
-        if (supportingHigh > 0) {
-            qualityScore += supportingHigh * 0.15;
-        } else if (supportingAny > 0) {
-            qualityScore += supportingAny * 0.08;
-        }
-
-        // Pénalité pour vraies contradictions seulement
-        if (contradictingHigh > 0) {
-            qualityScore -= contradictingHigh * 0.08;
-        }
-
-        // Bonus progressif pour sources multiples
-        if (sources.length >= 3) {
-            qualityScore += 0.05;
+        for (const source of sources) {
+            const credibility = typeof source.credibility === 'number' ? source.credibility : 0.6;
+            if (source.supports) {
+                supporting += 1;
+                adjustment += 0.04 + (credibility * 0.04);
+            }
+            if (source.contradicts) {
+                contradicting += 1;
+                adjustment -= 0.06;
+            }
+            if (credibility >= 0.75) {
+                reliable += 1;
+            }
         }
 
-        // Bonus spécial pour sources très fiables
-        const tier1Sources = sources.filter(s => s.credibilityMultiplier === 1.0).length;
-        if (tier1Sources > 0) {
-            qualityScore += tier1Sources * 0.08;
+        if (supporting === 0) {
+            adjustment -= 0.04;
         }
 
-        let reasoning = `Sources analysées: ${supportingAny} confirment`;
-        if (contradictingHigh > 0) {
-            reasoning += `, ${contradictingHigh} contredisent vraiment`;
-        }
-        if (supportingHigh > 0) {
-            reasoning += `. ${supportingHigh} sources très fiables confirment (+${supportingHigh * 15}%).`;
-        }
+        adjustment = Math.max(-0.18, Math.min(0.18, adjustment));
 
         return {
-            impact: Math.max(-0.15, Math.min(0.30, qualityScore)),
-            confidence: Math.min(0.4, sources.length * 0.1),
-            reasoning
+            adjustment,
+            supporting,
+            contradicting,
+            reliable
         };
     }
 
     // 9. ÉVALUATION DU CONSENSUS
     evaluateConsensus(sources) {
-        if (sources.length < 2) {
-            return { bonus: 0, confidence: 0, reasoning: '' };
+        if (!Array.isArray(sources) || sources.length === 0) {
+            return { adjustment: 0, level: 'none', supporting: 0, contradicting: 0 };
         }
 
-        const supporting = sources.filter(s => s.actuallySupports).length;
-        const contradicting = sources.filter(s => s.contradicts).length;
         const total = sources.length;
+        const supporting = sources.filter(source => source.supports).length;
+        const contradicting = sources.filter(source => source.contradicts).length;
 
-        const supportRatio = supporting / total;
-        const contradictRatio = contradicting / total;
-        
-        let bonus = 0;
-        let reasoning = '';
+        let adjustment = 0;
 
-        if (supportRatio >= 0.8 && supporting >= 2) {
-            bonus = 0.12;
-            reasoning = `Consensus très fort: ${supporting}/${total} sources confirment (+12%).`;
-        } else if (supportRatio >= 0.6 && supporting >= 2) {
-            bonus = 0.08;
-            reasoning = `Bon consensus: ${supporting}/${total} sources confirment (+8%).`;
-        } else if (supportRatio >= 0.4 && supporting >= 1) {
-            bonus = 0.04;
-            reasoning = `Consensus modéré: ${supporting}/${total} sources confirment (+4%).`;
-        } else if (contradictRatio > 0.5) {
-            bonus = -0.06;
-            reasoning = `Contradictions dominantes: ${contradicting}/${total} sources contredisent (-6%).`;
-        } else {
-            reasoning = `Pas de consensus clair: sources partagées.`;
+        if (supporting >= 2) {
+            const ratio = supporting / total;
+            if (ratio >= 0.75) {
+                adjustment += 0.06;
+            } else if (ratio >= 0.5) {
+                adjustment += 0.04;
+            } else {
+                adjustment += 0.02;
+            }
+        } else if (supporting === 1) {
+            adjustment += 0.015;
+        }
+
+        if (contradicting > 0) {
+            if (contradicting >= supporting) {
+                adjustment -= 0.05;
+            } else {
+                adjustment -= 0.02;
+            }
+        }
+
+        adjustment = Math.max(-0.08, Math.min(0.08, adjustment));
+
+        let level = 'weak';
+        if (supporting >= 3 && supporting / total >= 0.7) {
+            level = 'strong';
+        } else if (supporting >= 2) {
+            level = 'moderate';
+        } else if (supporting === 1) {
+            level = 'light';
+        } else if (contradicting > 0) {
+            level = 'contradictory';
         }
 
         return {
-            bonus: Math.max(-0.10, Math.min(0.15, bonus)),
-            confidence: Math.min(0.25, total * 0.06),
-            reasoning
+            adjustment,
+            level,
+            supporting,
+            contradicting
         };
     }
 
     // 10. COHÉRENCE CONTEXTUELLE
     evaluateContextualCoherence(originalText, sources) {
-        if (sources.length === 0) return { bonus: 0, reasoning: '' };
+        if (!Array.isArray(sources) || sources.length === 0) {
+            return { adjustment: 0, details: { diversityBonus: 0, freshnessBonus: 0 } };
+        }
 
-        let coherenceScore = 0;
-        
-        // Bonus pour diversité de sources
-        const uniqueDomains = new Set(sources.map(s => {
-            try {
-                return new URL(s.url).hostname;
-            } catch {
-                return s.url;
+        const domains = new Set();
+        const categories = new Set();
+        let hasRecent = false;
+        const currentYear = new Date().getFullYear();
+
+        for (const source of sources) {
+            if (source.domain) {
+                domains.add(source.domain);
             }
-        })).size;
-        
-        if (uniqueDomains >= 3) {
-            coherenceScore += 0.03;
+            if (source.category) {
+                categories.add(source.category);
+            }
+            if (source.year && currentYear - source.year <= 3) {
+                hasRecent = true;
+            }
         }
 
-        // Bonus pour mix de types de sources
-        const hasTier1 = sources.some(s => s.credibilityTier === 'tier1');
-        const hasTier2 = sources.some(s => s.credibilityTier === 'tier2');
-        const hasTier3 = sources.some(s => s.credibilityTier === 'tier3');
-        
-        if ((hasTier1 && hasTier2) || (hasTier1 && hasTier3) || (hasTier2 && hasTier3)) {
-            coherenceScore += 0.04;
+        let adjustment = 0;
+        let diversityBonus = 0;
+        let freshnessBonus = 0;
+
+        if (domains.size >= 3) {
+            diversityBonus = 0.03;
+            adjustment += diversityBonus;
         }
 
-        // Bonus pour sources récentes
-        const hasRecentSources = sources.some(s => 
-            s.snippet && /202[3-5]|recent|latest|current/i.test(s.snippet)
-        );
-        
-        if (hasRecentSources && /population|data|statistics|facts/i.test(originalText)) {
-            coherenceScore += 0.03;
+        if (categories.size >= 2) {
+            adjustment += 0.02;
         }
 
-        let reasoning = '';
-        if (coherenceScore > 0) {
-            reasoning = `Cohérence contextuelle: sources diversifiées (+${Math.round(coherenceScore * 100)}%).`;
+        if (hasRecent) {
+            freshnessBonus = 0.02;
+            adjustment += freshnessBonus;
         }
+
+        adjustment = Math.max(0, Math.min(0.06, adjustment));
 
         return {
-            bonus: coherenceScore,
-            reasoning: reasoning
+            adjustment,
+            details: {
+                diversityBonus: Number(diversityBonus.toFixed(2)),
+                freshnessBonus: Number(freshnessBonus.toFixed(2))
+            }
         };
     }
 
-    // === IMPROVED SCORING SYSTEM === // [IMPROVED]
-    // 11. CALCUL FINAL ÉQUILIBRÉ
+    // === SCORING RÉÉQUILIBRÉ ===
     calculateBalancedScore(originalText, analyzedSources, claims, language = 'en') {
         const safeLanguage = normalizeLanguageCode(language);
-        const totalSources = Array.isArray(analyzedSources) ? analyzedSources.length : 0;
-        const supportingSources = analyzedSources.filter(source => source.actuallySupports);
-        const contradictingSources = analyzedSources.filter(source => source.contradicts);
-        const credibleSources = analyzedSources.filter(source => (source.sourceQuality || 0) >= 0.75);
-        const credibleSupporting = supportingSources.filter(source => (source.sourceQuality || 0) >= 0.75);
-        const credibleContradicting = contradictingSources.filter(source => (source.sourceQuality || 0) >= 0.75);
+        const contentType = this.analyzeContentType(originalText, Array.isArray(claims) ? claims : []);
+        const baseScore = contentType?.baseScore ?? 0.5;
 
-        const baseScore = totalSources > 0 ? supportingSources.length / Math.max(1, totalSources) : 0;
+        const quality = this.evaluateSourceQuality(analyzedSources);
+        const consensus = this.evaluateConsensus(analyzedSources);
+        const coherence = this.evaluateContextualCoherence(originalText, analyzedSources);
 
-        let consistencyBonus = 0;
-        if (credibleSupporting.length >= 3) {
-            consistencyBonus += 0.1;
-        }
-        if (credibleContradicting.length >= 2) {
-            consistencyBonus -= 0.1;
-        }
+        let score = baseScore + quality.adjustment + consensus.adjustment + coherence.adjustment;
+        score = Math.max(0.15, Math.min(0.92, score));
 
-        const extractYear = (source) => {
-            if (source.freshnessYear) {
-                return source.freshnessYear;
-            }
-            const combined = `${source.title || ''} ${source.snippet || ''}`;
-            const yearMatch = combined.match(/(20\d{2})/);
-            if (!yearMatch) {
-                return null;
-            }
-            const year = parseInt(yearMatch[1], 10);
-            return Number.isNaN(year) ? null : year;
-        };
-
-        const currentYear = new Date().getFullYear();
-        const freshSources = credibleSources.filter(source => {
-            const year = extractYear(source);
-            if (!year) {
-                return false;
-            }
-            return currentYear - year <= 3;
-        });
-        const freshnessBonus = freshSources.length > 0 ? 0.05 : 0;
-
-        let score = baseScore + consistencyBonus + freshnessBonus;
-
-        if (score === 0 && totalSources > 0 && contradictingSources.length === 0) {
-            score = 0.45; // Score minimum si aucune contradiction mais faible support
-        }
-
-        if (credibleSources.length > 2 && contradictingSources.length === 0) {
-            score += 0.1; // Bonus cohérence forte entre sources crédibles
-        }
-
-        if (credibleSources.length === 0) {
-            score = Math.min(score, 0.55);
-        }
-
-        score = Math.max(0, Math.min(1, score));
-
-        const details = {
-            baseScore: Number(baseScore.toFixed(2)),
-            freshnessBonus: Number(freshnessBonus.toFixed(2)),
-            consistencyBonus: Number(consistencyBonus.toFixed(2)),
-            supportingSources: supportingSources.length,
-            contradictingSources: contradictingSources.length,
-            credibleSources: credibleSources.length
-        };
-
-        let level = 'unverified';
-        if (credibleSources.length === 0 || totalSources === 0) {
-            level = 'unverified';
-        } else if (score >= 0.75 && credibleSupporting.length > 0) {
-            level = 'high';
-        } else if (score >= 0.5) {
-            level = 'mod';
-        } else if (score >= 0.3) {
-            level = 'low';
-        } else {
-            level = 'unverified';
-        }
-
-        const reliabilityLabel = getReliabilityLabel(safeLanguage, level);
-        const summary = getSummaryMessage(safeLanguage, level);
-
-        logInfo(`📊 Score équilibré: ${Math.round(score * 100)}% (${safeLanguage})`);
+        const category = categorizeScore(score);
+        const reliabilityLabel = getReliabilityLabel(safeLanguage, category);
+        const analysisSummary = getAnalysisSummaryMessage(safeLanguage, category);
 
         const breakdown = {
-            baseScore: details.baseScore,
-            freshnessBonus: details.freshnessBonus,
-            consistencyBonus: details.consistencyBonus,
-            supportingSources: details.supportingSources,
-            contradictingSources: details.contradictingSources,
-            credibleSources: details.credibleSources
+            baseScore: Number(baseScore.toFixed(2)),
+            sourceQuality: Number(quality.adjustment.toFixed(2)),
+            consensus: Number(consensus.adjustment.toFixed(2)),
+            contextual: Number(coherence.adjustment.toFixed(2)),
+            supportingSources: quality.supporting,
+            contradictingSources: quality.contradicting,
+            reliableSources: quality.reliable
         };
 
         return {
             score,
-            confidence: Math.min(1, Math.max(0, score + (credibleSources.length > 0 ? 0.05 : -0.05))),
-            reasoning: summary,
-            details,
+            confidence: Math.min(1, Math.max(0.2, score + (quality.reliable > 0 ? 0.05 : -0.05))),
+            reasoning: analysisSummary,
+            details: breakdown,
             breakdown,
-            summaryText: summary,
+            summaryText: analysisSummary,
             reliabilityLabel,
-            reliabilityLevel: level
+            reliabilityLevel: category
         };
     }
     // MÉTHODES UTILITAIRES
@@ -1095,89 +1014,49 @@ const escapeHtml = (value = '') => String(value) // [IMPROVED]
     .replace(/'/g, '&#39;'); // [IMPROVED]
 
 // === SOURCE ENRICHMENT === // [IMPROVED]
-async function analyzeSourcesWithImprovedLogic(factChecker, originalText, sources) {
-    const analyzedSources = [];
-
-    for (const source of sources.slice(0, 5)) {
-        try {
-            const credibility = factChecker.getSourceCredibilityTier(source.url);
-            const semanticMatch = factChecker.calculateSemanticSimilarity(originalText, source.snippet || '');
-            const contradiction = factChecker.detectIntelligentContradiction(originalText, source.snippet || '');
-            const domainReliability = computeDomainReliabilityScore(source.url); // [IMPROVED]
-            const combinedQuality = Math.max(0.1, Math.min(1, ((source.domainQuality || domainReliability.quality) + credibility.multiplier) / 2)); // [IMPROVED]
-            const hasRecentYear = /(202[3-5])/i.test(`${source.title || ''} ${source.snippet || ''}`); // [IMPROVED]
-            const hasOlderYear = /(201[0-8])/i.test(`${source.title || ''} ${source.snippet || ''}`); // [IMPROVED]
-            const safeTitle = (source.title || 'Source'); // [IMPROVED]
-            const safeUrl = source.url || ''; // [IMPROVED]
-            const anchorTitle = escapeHtml(safeTitle); // [IMPROVED]
-            const safeHref = safeUrl.replace(/'/g, '%27'); // [IMPROVED]
-            const clickable = safeUrl ? `<a href='${safeHref}' target='_blank' rel='noopener noreferrer'>${anchorTitle}</a>` : anchorTitle; // [IMPROVED]
-
-            const actuallySupports = semanticMatch.score >= 0.10 && !contradiction.detected;
-
-            let adjustedQuality = combinedQuality;
-            if (safeUrl) {
-                const loweredUrl = safeUrl.toLowerCase();
-                if (loweredUrl.includes('.edu') || loweredUrl.includes('.gov') || loweredUrl.includes('who.int') || loweredUrl.includes('nature.com')) {
-                    adjustedQuality = Math.min(1, adjustedQuality + 0.2);
-                }
-                if (loweredUrl.includes('wikipedia') || loweredUrl.includes('britannica')) {
-                    adjustedQuality = Math.min(1, adjustedQuality + 0.15);
-                }
-                if (loweredUrl.includes('reddit') || loweredUrl.includes('forum') || loweredUrl.includes('blogspot')) {
-                    adjustedQuality = Math.max(0, adjustedQuality - 0.15);
-                }
-            }
-
-            analyzedSources.push({
-                ...source,
-                semanticRelevance: semanticMatch.score,
-                confirmsContent: semanticMatch.confirms,
-                contradicts: contradiction.detected,
-                contradictionDetails: contradiction.details,
-                credibilityTier: credibility.tier,
-                credibilityMultiplier: credibility.multiplier,
-                actuallySupports: actuallySupports,
-                sourceQuality: Number(adjustedQuality.toFixed(2)), // [IMPROVED]
-                clickable, // [IMPROVED]
-                containsRecentSignals: hasRecentYear, // [IMPROVED]
-                containsOlderSignals: hasOlderYear // [IMPROVED]
-            });
-
-        } catch (error) {
-            logError(`Erreur analyse source ${source.url}`, error.message);
-
-            const credibility = factChecker.getSourceCredibilityTier(source.url);
-            let fallbackQuality = Math.max(0.1, Math.min(1, credibility.multiplier * 0.6));
-            if (source.url) {
-                const loweredUrl = source.url.toLowerCase();
-                if (loweredUrl.includes('.edu') || loweredUrl.includes('.gov') || loweredUrl.includes('who.int') || loweredUrl.includes('nature.com')) {
-                    fallbackQuality = Math.min(1, fallbackQuality + 0.2);
-                }
-                if (loweredUrl.includes('wikipedia') || loweredUrl.includes('britannica')) {
-                    fallbackQuality = Math.min(1, fallbackQuality + 0.15);
-                }
-                if (loweredUrl.includes('reddit') || loweredUrl.includes('forum') || loweredUrl.includes('blogspot')) {
-                    fallbackQuality = Math.max(0, fallbackQuality - 0.15);
-                }
-            }
-            analyzedSources.push({
-                ...source,
-                semanticRelevance: 0.3,
-                confirmsContent: false,
-                contradicts: false,
-                credibilityTier: credibility.tier,
-                credibilityMultiplier: credibility.multiplier,
-                actuallySupports: false,
-                sourceQuality: Number(fallbackQuality.toFixed(2)), // [IMPROVED]
-                clickable: source.url ? `<a href='${source.url.replace(/'/g, '%27')}' target='_blank' rel='noopener noreferrer'>${escapeHtml(source.title || 'Source')}</a>` : escapeHtml(source.title || 'Source'), // [IMPROVED]
-                containsRecentSignals: false, // [IMPROVED]
-                containsOlderSignals: false // [IMPROVED]
-            });
-        }
+function enrichSourcesForScoring(factChecker, originalText, rawSources) {
+    if (!Array.isArray(rawSources)) {
+        return [];
     }
 
-    return analyzedSources;
+    const CONTRADICTION_HINTS = ['not', 'no', 'false', 'incorrect', 'fake', 'hoax', 'denied', 'refuted', 'debunk'];
+    const enriched = [];
+
+    for (const source of rawSources) {
+        if (!source || !source.url) {
+            continue;
+        }
+
+        const credibilityInfo = typeof source.credibility === 'number' ? {
+            credibility: source.credibility,
+            category: source.category || 'generic',
+            domain: source.domain || extractHostname(source.url)
+        } : scoreDomainTrust(source.url);
+
+        const similarity = factChecker.calculateSemanticSimilarity(originalText, `${source.title || ''} ${source.snippet || ''}`);
+        const combinedText = `${source.title || ''} ${source.snippet || ''}`.toLowerCase();
+        const supports = similarity.score >= 0.25;
+        const contradicts = similarity.score >= 0.18 && CONTRADICTION_HINTS.some(hint => combinedText.includes(hint));
+
+        const yearMatch = combinedText.match(/(20\d{2})/);
+        const year = yearMatch ? parseInt(yearMatch[1], 10) : null;
+
+        enriched.push({
+            title: source.title || 'Source',
+            url: source.url,
+            snippet: source.snippet || '',
+            relevance: typeof source.relevance === 'number' ? Number(source.relevance) : 0.5,
+            credibility: credibilityInfo.credibility,
+            category: credibilityInfo.category,
+            domain: credibilityInfo.domain,
+            supports,
+            contradicts,
+            similarity: Number(similarity.score.toFixed(3)),
+            year: Number.isInteger(year) ? year : null
+        });
+    }
+
+    return enriched;
 }
 
 // ========== FONCTIONS UTILITAIRES ==========
@@ -1297,131 +1176,128 @@ function extractMainKeywords(text) {
     }
 }
 
-const computeDomainReliabilityScore = (url = '') => { // [IMPROVED]
-    const lowerUrl = url.toLowerCase(); // [IMPROVED]
-    let bonus = 0; // [IMPROVED]
-    let quality = 0.55; // [IMPROVED]
-    if (!lowerUrl) { // [IMPROVED]
-        return { bonus: -0.05, quality: 0.4 }; // [IMPROVED]
-    } // [IMPROVED]
+const scoreDomainTrust = (url = '') => {
+    const lowerUrl = (url || '').toLowerCase();
+    if (!lowerUrl) {
+        return { credibility: 0.55, category: 'generic', domain: '' };
+    }
 
-    for (const domain of trustedDomains) { // [IMPROVED]
-        if (lowerUrl.includes(domain)) { // [IMPROVED]
-            bonus += 0.18; // [IMPROVED]
-            quality = Math.max(quality, 0.85); // [IMPROVED]
-        } // [IMPROVED]
-    } // [IMPROVED]
+    let domain = '';
+    try {
+        domain = new URL(url).hostname.replace(/^www\./, '');
+    } catch (error) {
+        domain = lowerUrl.replace(/^https?:\/\//, '').split('/')[0];
+    }
 
-    if (lowerUrl.includes('.edu') || lowerUrl.endsWith('.edu/')) { // [IMPROVED]
-        bonus += 0.1; // [IMPROVED]
-        quality = Math.max(quality, 0.92); // [IMPROVED]
-    } // [IMPROVED]
-    if (lowerUrl.includes('.gov') || lowerUrl.endsWith('.gov/')) { // [IMPROVED]
-        bonus += 0.12; // [IMPROVED]
-        quality = Math.max(quality, 0.94); // [IMPROVED]
-    } // [IMPROVED]
+    let credibility = 0.6;
+    let category = 'generic';
+    const loweredDomain = domain.toLowerCase();
 
-    if (lowTrustDomains.some(domain => lowerUrl.includes(domain))) { // [IMPROVED]
-        bonus -= 0.25; // [IMPROVED]
-        quality = Math.min(quality, 0.3); // [IMPROVED]
-    } // [IMPROVED]
+    if (PRIORITY_DOMAINS.some(item => loweredDomain.endsWith(item.replace(/^[.]/, '')) || loweredDomain.includes(item))) {
+        credibility = 0.88;
+        category = 'priority';
+    } else if (SECONDARY_TRUSTED_DOMAINS.some(item => loweredDomain.includes(item))) {
+        credibility = 0.78;
+        category = 'trusted';
+    }
 
-    return { bonus: Math.max(-0.35, Math.min(0.4, bonus)), quality: Math.max(0.1, Math.min(1, quality)) }; // [IMPROVED]
-}; // [IMPROVED]
+    if (/\.(gov|edu|int|org)(\.|$)/.test(loweredDomain)) {
+        credibility = Math.max(credibility, 0.9);
+        category = 'institutional';
+    }
 
-const computeTextualRelevanceScore = (reference, title, snippet) => { // [IMPROVED]
-    if (!reference) { // [IMPROVED]
-        return 0.1; // [IMPROVED]
-    } // [IMPROVED]
-    const sanitize = (text) => text.toLowerCase().replace(/[^a-z0-9à-ÿ\s]/gi, ' '); // [IMPROVED]
-    const referenceWords = new Set(sanitize(reference).split(/\s+/).filter(word => word.length > 3)); // [IMPROVED]
-    if (referenceWords.size === 0) { // [IMPROVED]
-        return 0.1; // [IMPROVED]
-    } // [IMPROVED]
-    const combined = `${sanitize(title || '')} ${sanitize(snippet || '')}`; // [IMPROVED]
-    let matches = 0; // [IMPROVED]
-    for (const word of referenceWords) { // [IMPROVED]
-        if (combined.includes(word)) { // [IMPROVED]
-            matches += 1; // [IMPROVED]
-        } // [IMPROVED]
-    } // [IMPROVED]
-    return Math.max(0.05, Math.min(1, matches / referenceWords.size)); // [IMPROVED]
-}; // [IMPROVED]
+    if (LOW_TRUST_HINTS.some(hint => loweredDomain.includes(hint))) {
+        credibility = Math.min(credibility, 0.45);
+        category = 'low';
+    }
 
-const evaluateRelevanceScore = (result, originalText, query) => { // [IMPROVED]
-    const { title, snippet, url } = result; // [IMPROVED]
-    const queryScore = computeTextualRelevanceScore(query, title, snippet); // [IMPROVED]
-    const contextScore = computeTextualRelevanceScore(originalText, title, snippet); // [IMPROVED]
-    const domainReliability = computeDomainReliabilityScore(url); // [IMPROVED]
-    let score = 0.2 + (queryScore * 0.45) + (contextScore * 0.25) + domainReliability.bonus; // [IMPROVED]
-    score = Math.max(0.1, Math.min(1, score)); // [IMPROVED]
-    return { score, domainReliability }; // [IMPROVED]
-}; // [IMPROVED]
+    return {
+        credibility: Number(Math.max(0.3, Math.min(0.95, credibility)).toFixed(2)),
+        category,
+        domain: loweredDomain
+    };
+};
 
-const deduplicateSources = (sources) => { // [IMPROVED]
-    const unique = []; // [IMPROVED]
-    for (const candidate of sources) { // [IMPROVED]
-        const isDuplicate = unique.some(existing => { // [IMPROVED]
-            if (existing.url && candidate.url && existing.url === candidate.url) { // [IMPROVED]
-                return true; // [IMPROVED]
-            } // [IMPROVED]
-            const titleSimilarity = stringSimilarity.compareTwoStrings((existing.title || '').toLowerCase(), (candidate.title || '').toLowerCase()); // [IMPROVED]
-            const snippetSimilarity = stringSimilarity.compareTwoStrings((existing.snippet || '').toLowerCase(), (candidate.snippet || '').toLowerCase()); // [IMPROVED]
-            return titleSimilarity > 0.8 || snippetSimilarity > 0.8; // [IMPROVED]
-        }); // [IMPROVED]
-        if (!isDuplicate) { // [IMPROVED]
-            unique.push(candidate); // [IMPROVED]
-        } // [IMPROVED]
-    } // [IMPROVED]
-    return unique; // [IMPROVED]
-}; // [IMPROVED]
+const calculateTextRelevance = (reference, title = '', snippet = '') => {
+    const normalizedReference = sanitizeInput(reference).toLowerCase();
+    const combined = `${title || ''} ${snippet || ''}`.toLowerCase();
+    if (!normalizedReference || !combined) {
+        return 0.2;
+    }
 
-const queryGoogleSearch = async (query, numResults = 4, language = 'en') => { // [IMPROVED]
-    const cacheKey = `${language || 'any'}::${numResults}::${query}`; // [IMPROVED]
-    const cached = getCachedGoogleResults(cacheKey); // [IMPROVED]
-    if (cached) { // [IMPROVED]
-        return { items: cached, cacheHit: true }; // [IMPROVED]
-    } // [IMPROVED]
+    const similarity = stringSimilarity.compareTwoStrings(normalizedReference, combined);
+    const tokens = new Set(normalizedReference.split(/\s+/).filter(word => word.length > 3));
+    let matches = 0;
+    tokens.forEach(token => {
+        if (combined.includes(token)) {
+            matches += 1;
+        }
+    });
 
-    const retryDelays = [500, 1000, 2000]; // [IMPROVED]
-    let lastError = null; // [IMPROVED]
+    const keywordScore = tokens.size > 0 ? matches / tokens.size : 0;
+    return Math.max(0.1, Math.min(1, (similarity * 0.6) + (keywordScore * 0.4)));
+};
 
-    for (let attempt = 0; attempt < retryDelays.length; attempt += 1) { // [IMPROVED]
-        try { // [IMPROVED]
-            const params = new URLSearchParams({
-                key: process.env.GOOGLE_API_KEY,
-                cx: process.env.SEARCH_ENGINE_ID,
-                q: query,
-                num: String(numResults)
-            });
-            if (language && typeof language === 'string' && language.length === 2) {
-                params.set('lr', `lang_${language}`);
-            }
-            const url = `https://www.googleapis.com/customsearch/v1?${params.toString()}`; // [IMPROVED]
-            const response = await fetchWithTimeout(url, {}, FETCH_TIMEOUT_MS); // [IMPROVED]
-            const data = await response.json(); // [IMPROVED]
+const deduplicateByUrl = (sources) => {
+    const seen = new Set();
+    return sources.filter(source => {
+        if (!source.url) {
+            return false;
+        }
+        const key = source.url.split('#')[0];
+        if (seen.has(key)) {
+            return false;
+        }
+        seen.add(key);
+        return true;
+    });
+};
 
-            if (response.ok && Array.isArray(data.items)) { // [IMPROVED]
-                setCachedGoogleResults(cacheKey, data.items); // [IMPROVED]
-                return { items: data.items, cacheHit: false }; // [IMPROVED]
-            } // [IMPROVED]
+const buildKeywordSet = (keywords, originalText) => {
+    const set = new Set();
+    if (Array.isArray(keywords)) {
+        keywords.filter(Boolean).forEach(keyword => {
+            keyword.toLowerCase().split(/\s+/).forEach(word => set.add(word));
+        });
+    }
+    sanitizeInput(originalText).toLowerCase().split(/\s+/).forEach(word => {
+        if (word.length > 3) {
+            set.add(word);
+        }
+    });
+    return set;
+};
 
-            if (response.status === 429 || response.status === 503) { // [IMPROVED]
-                lastError = `HTTP_${response.status}`; // [IMPROVED]
-                await delay(retryDelays[attempt]); // [IMPROVED]
-                continue; // [IMPROVED]
-            } // [IMPROVED]
+const queryGoogleSearch = async (query, language = 'en', numResults = 6) => {
+    const cacheKey = `${language || 'any'}::${numResults}::${query}`;
+    const cached = getCachedGoogleResults(cacheKey);
+    if (cached) {
+        return { items: cached, cacheHit: true };
+    }
 
-            lastError = data?.error?.message || `HTTP_${response.status}`; // [IMPROVED]
-            break; // [IMPROVED]
-        } catch (error) { // [IMPROVED]
-            lastError = error.message; // [IMPROVED]
-            await delay(retryDelays[attempt]); // [IMPROVED]
-        } // [IMPROVED]
-    } // [IMPROVED]
+    const params = new URLSearchParams({
+        key: process.env.GOOGLE_API_KEY,
+        cx: process.env.SEARCH_ENGINE_ID,
+        q: query,
+        num: String(numResults)
+    });
+    if (language && typeof language === 'string' && language.length === 2) {
+        params.set('lr', `lang_${language}`);
+    }
 
-    return { items: [], error: lastError || 'Google API temporarily unavailable' }; // [IMPROVED]
-}; // [IMPROVED]
+    try {
+        const url = `https://www.googleapis.com/customsearch/v1?${params.toString()}`;
+        const response = await fetchWithTimeout(url, {}, FETCH_TIMEOUT_MS);
+        const data = await response.json();
+        if (response.ok && Array.isArray(data.items)) {
+            setCachedGoogleResults(cacheKey, data.items);
+            return { items: data.items, cacheHit: false };
+        }
+        return { items: [], error: data?.error?.message || `HTTP_${response.status}` };
+    } catch (error) {
+        return { items: [], error: error.message };
+    }
+};
 
 const extractHostname = (url = '') => {
     if (!url) return '';
@@ -1433,253 +1309,117 @@ const extractHostname = (url = '') => {
     }
 };
 
-const determineDomainMultiplier = (url = '') => {
-    const hostname = extractHostname(url);
-    const lower = hostname.toLowerCase();
-
-    if (!lower) {
-        return { multiplier: 0.5, category: 'generic', hostname: '' };
-    }
-
-    const hasGov = /\.gov(\.|$)/.test(lower);
-    const hasEdu = /\.edu(\.|$)/.test(lower);
-    const hasInt = /\.int(\.|$)/.test(lower);
-    const hasOrg = /\.org(\.|$)/.test(lower);
-
-    if (COMMUNITY_OR_LOW_DOMAINS.has(lower)) {
-        return { multiplier: 0.45, category: 'community', hostname: lower };
-    }
-
-    if (hasGov || hasEdu || hasInt || hasOrg) {
-        return { multiplier: 1.0, category: 'institutional', hostname: lower };
-    }
-
-    if (TRUSTED_MEDIA_DOMAINS.has(lower)) {
-        return { multiplier: 0.9, category: 'trusted_media', hostname: lower };
-    }
-
-    if (ENCYCLOPEDIC_DOMAINS.has(lower)) {
-        return { multiplier: 0.85, category: 'encyclopedic', hostname: lower };
-    }
-
-    if (EXPERT_KNOWLEDGE_DOMAINS.has(lower)) {
-        return { multiplier: 0.78, category: 'expert', hostname: lower };
-    }
-
-    return { multiplier: 0.55, category: 'generic', hostname: lower };
-};
-
-const evaluateFreshnessFactor = (title = '', snippet = '') => {
-    const combined = `${title} ${snippet}`;
-    const yearMatch = combined.match(/(20\d{2})/);
-    if (!yearMatch) {
-        return { factor: 0.98, year: null, isFresh: false };
-    }
-    const year = parseInt(yearMatch[1], 10);
-    if (Number.isNaN(year)) {
-        return { factor: 0.98, year: null, isFresh: false };
-    }
-    const currentYear = new Date().getFullYear();
-    const age = currentYear - year;
-    if (age <= 3) {
-        return { factor: 1.05, year, isFresh: true };
-    }
-    if (age > 10) {
-        return { factor: 0.9, year, isFresh: false };
-    }
-    return { factor: 0.97, year, isFresh: false };
-};
-
-const calculateSemanticMatchScore = (referenceText, title = '', snippet = '') => {
-    const lexicalScore = computeTextualRelevanceScore(referenceText, title, snippet);
-    const combined = `${title || ''} ${snippet || ''}`;
-    const semanticScore = stringSimilarity.compareTwoStrings(
-        sanitizeInput(referenceText).toLowerCase(),
-        sanitizeInput(combined).toLowerCase()
-    );
-    return Math.max(0.1, Math.min(1, (lexicalScore * 0.6) + (semanticScore * 0.4)));
-};
-
 async function findWebSources(keywords, smartQueries, originalText, language = 'en') {
     const API_KEY = process.env.GOOGLE_API_KEY;
     const SEARCH_ENGINE_ID = process.env.SEARCH_ENGINE_ID;
 
     if (!API_KEY || !SEARCH_ENGINE_ID) {
-        logWarn('API credentials manquantes - sources mock');
-        const fallback = fallbackTrustedSources.slice(0, 3).map(source => ({
-            ...source,
-            credibility: 0.85,
-            domainQuality: 0.85,
-            domain: extractHostname(source.url),
-            freshnessYear: null,
-            relevance: 0.6,
-            languageUsed: language
-        }));
-        const mainSources = fallback.map(({ title, url, credibility }) => ({ title, url, credibility }));
-        return {
-            sources: fallback,
-            mainSources,
-            mainSourcesMarkdown: buildSourcesMarkdown(mainSources, language),
-            error: 'Missing Google API credentials'
-        };
+        logWarn('API credentials manquantes - impossibilité de consulter Google Custom Search.');
+        return { sources: [], scoringSources: [], error: 'Missing Google API credentials' };
     }
 
-    const baseLanguage = normalizeLanguageCode(language || 'en');
-    const effectiveQueries = [];
-
+    const normalizedLanguage = normalizeLanguageCode(language || 'en');
+    const preparedQueries = [];
     const safeSmartQueries = Array.isArray(smartQueries) ? smartQueries.filter(Boolean) : [];
     const safeKeywords = Array.isArray(keywords) ? keywords.filter(Boolean) : [];
 
     for (const query of safeSmartQueries.slice(0, 3)) {
-        effectiveQueries.push(query);
-    }
-    if (effectiveQueries.length === 0 && safeKeywords.length > 0) {
-        effectiveQueries.push(safeKeywords.slice(0, 4).join(' '));
-    }
-    if (effectiveQueries.length === 0 && originalText) {
-        effectiveQueries.push(sanitizeInput(originalText).split(/\s+/).slice(0, 6).join(' '));
+        preparedQueries.push(query);
     }
 
-    const seenQuery = new Set();
-    const aggregatedSources = [];
-    let apiUnavailable = false;
+    if (preparedQueries.length === 0 && safeKeywords.length > 0) {
+        preparedQueries.push(safeKeywords.slice(0, 4).join(' '));
+    }
 
-    for (let index = 0; index < effectiveQueries.length; index += 1) {
-        const query = effectiveQueries[index];
-        if (!query || seenQuery.has(query)) {
+    if (preparedQueries.length === 0 && originalText) {
+        preparedQueries.push(sanitizeInput(originalText).split(/\s+/).slice(0, 6).join(' '));
+    }
+
+    if (preparedQueries.length === 0) {
+        return { sources: [], scoringSources: [], error: 'No query provided' };
+    }
+
+    const keywordSet = buildKeywordSet(safeKeywords, originalText);
+    const collected = [];
+    const seenQueries = new Set();
+
+    for (let index = 0; index < preparedQueries.length; index += 1) {
+        const query = preparedQueries[index];
+        if (!query || seenQueries.has(query)) {
             continue;
         }
-        seenQuery.add(query);
-        const delayMs = Math.min(index * MAX_API_DELAY_MS, MAX_API_DELAY_MS);
-        if (delayMs > 0) {
-            await delay(delayMs);
+        seenQueries.add(query);
+
+        if (index > 0) {
+            await delay(Math.min(index * MAX_API_DELAY_MS, MAX_API_DELAY_MS));
         }
-        const result = await queryGoogleSearch(query, 10, baseLanguage);
-        if (Array.isArray(result.items) && result.items.length > 0) {
-            for (const item of result.items) {
-                const title = item.title || 'Sans titre';
-                const url = item.link || '';
-                const snippet = item.snippet || 'Pas de description';
-                if (!url) {
-                    continue;
+
+        const { items, error } = await queryGoogleSearch(query, normalizedLanguage, 8);
+        if (error) {
+            logWarn(`Google Custom Search error: ${sanitizeLogOutput(error)} (query: ${sanitizeLogOutput(query)})`);
+        }
+        if (!Array.isArray(items)) {
+            continue;
+        }
+
+        for (const item of items) {
+            const title = item?.title || 'Source';
+            const url = item?.link || '';
+            const snippet = item?.snippet || '';
+            if (!url) {
+                continue;
+            }
+
+            const domainInfo = scoreDomainTrust(url);
+            const relevance = calculateTextRelevance(originalText, title, snippet);
+            const combinedScore = (relevance * 0.6) + (domainInfo.credibility * 0.4);
+
+            const contentLower = `${title} ${snippet}`.toLowerCase();
+            let keywordMatch = keywordSet.size === 0;
+            if (!keywordMatch) {
+                for (const word of keywordSet) {
+                    if (contentLower.includes(word)) {
+                        keywordMatch = true;
+                        break;
+                    }
                 }
-                const domainInfo = determineDomainMultiplier(url);
-                const semanticMatch = calculateSemanticMatchScore(originalText, title, snippet);
-                const freshness = evaluateFreshnessFactor(title, snippet);
-                const score = Number((semanticMatch * domainInfo.multiplier * freshness.factor).toFixed(4));
-                aggregatedSources.push({
-                    title,
-                    url,
-                    snippet,
-                    query_used: query,
-                    domain: domainInfo.hostname,
-                    domainCategory: domainInfo.category,
-                    credibility: Number(domainInfo.multiplier.toFixed(2)),
-                    domainQuality: Number(domainInfo.multiplier.toFixed(2)),
-                    freshnessYear: freshness.year,
-                    isFresh: freshness.isFresh,
-                    relevance: score,
-                    languageUsed: baseLanguage,
-                    semanticMatch
-                });
             }
-        } else if (result.error) {
-            apiUnavailable = true;
-            logWarn(`Google search temporary issue for query: ${sanitizeLogOutput(query)} (${result.error})`);
-        }
-    }
 
-    if (aggregatedSources.length === 0 && safeKeywords.length > 0) {
-        const fallbackQuery = safeKeywords.slice(0, 3).join(' ');
-        const result = await queryGoogleSearch(fallbackQuery, 10, baseLanguage);
-        if (Array.isArray(result.items) && result.items.length > 0) {
-            for (const item of result.items) {
-                const title = item.title || 'Sans titre';
-                const url = item.link || '';
-                if (!url) continue;
-                const snippet = item.snippet || 'Pas de description';
-                const domainInfo = determineDomainMultiplier(url);
-                const freshness = evaluateFreshnessFactor(title, snippet);
-                const semanticMatch = calculateSemanticMatchScore(originalText, title, snippet);
-                const score = Number((semanticMatch * domainInfo.multiplier * freshness.factor).toFixed(4));
-                aggregatedSources.push({
-                    title,
-                    url,
-                    snippet,
-                    query_used: fallbackQuery,
-                    domain: domainInfo.hostname,
-                    domainCategory: domainInfo.category,
-                    credibility: Number(domainInfo.multiplier.toFixed(2)),
-                    domainQuality: Number(domainInfo.multiplier.toFixed(2)),
-                    freshnessYear: freshness.year,
-                    isFresh: freshness.isFresh,
-                    relevance: score,
-                    languageUsed: baseLanguage,
-                    semanticMatch
-                });
+            if (!keywordMatch) {
+                continue;
             }
-        } else if (result.error) {
-            apiUnavailable = true;
-            logWarn(`Google fallback query failed: ${sanitizeLogOutput(result.error)}`);
+
+            collected.push({
+                title,
+                url,
+                snippet,
+                relevance: Number(relevance.toFixed(2)),
+                score: Number(combinedScore.toFixed(3)),
+                credibility: domainInfo.credibility,
+                category: domainInfo.category,
+                domain: domainInfo.domain
+            });
         }
     }
 
-    if (aggregatedSources.length === 0 && apiUnavailable) {
-        return { error: 'Google API temporarily unavailable', sources: [] };
-    }
+    const deduped = deduplicateByUrl(collected)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 5);
 
-    const deduped = deduplicateSources(aggregatedSources);
-    deduped.sort((a, b) => b.relevance - a.relevance);
-
-    const uniqueByDomain = [];
-    const seenDomains = new Set();
-    for (const source of deduped) {
-        const domain = source.domain || extractHostname(source.url);
-        if (seenDomains.has(domain)) {
-            continue;
-        }
-        seenDomains.add(domain);
-        uniqueByDomain.push(source);
-        if (uniqueByDomain.length >= 5) {
-            break;
-        }
-    }
-
-    while (uniqueByDomain.length < 3 && fallbackTrustedSources[uniqueByDomain.length]) {
-        const fallbackSource = fallbackTrustedSources[uniqueByDomain.length];
-        uniqueByDomain.push({
-            ...fallbackSource,
-            credibility: 0.85,
-            domainQuality: 0.85,
-            domain: extractHostname(fallbackSource.url),
-            domainCategory: 'encyclopedic',
-            relevance: 0.55,
-            freshnessYear: null,
-            isFresh: false,
-            languageUsed: baseLanguage,
-            semanticMatch: 0.5
-        });
-    }
-
-    const mainSources = uniqueByDomain.slice(0, 5).map(source => ({
-        title: source.title,
-        url: source.url,
-        credibility: Number((source.credibility || source.domainQuality || 0.55).toFixed(2))
+    const sources = deduped.slice(0, 5).map(item => ({
+        title: item.title,
+        url: item.url,
+        snippet: item.snippet,
+        relevance: item.relevance
     }));
 
-    const markdown = buildSourcesMarkdown(mainSources, baseLanguage);
-
-    logInfo(`📋 ${uniqueByDomain.length} sources uniques trouvées (${baseLanguage})`);
+    const markdown = buildSourcesMarkdown(sources, normalizedLanguage);
 
     return {
-        sources: uniqueByDomain,
-        mainSources,
+        sources,
+        scoringSources: deduped,
         mainSourcesMarkdown: markdown
     };
-}
-
-function calculateRelevance(item, originalText) { // [IMPROVED]
-    return evaluateRelevanceScore(item, originalText, item.query_used || ''); // [IMPROVED]
 }
 
 // ========== ENDPOINTS API ==========
@@ -1695,7 +1435,7 @@ app.post('/verify', async (req, res) => {
 
         if (!sanitizedInput || sanitizedInput.length < 10) {
             const fallbackLanguage = detectLanguage(sanitizedInput);
-            const fallbackLabel = getReliabilityLabel(fallbackLanguage, 'unverified');
+            const fallbackLabel = getReliabilityLabel(fallbackLanguage, 'very_low');
             const details = {
                 baseScore: 0,
                 freshnessBonus: 0,
@@ -1704,23 +1444,26 @@ app.post('/verify', async (req, res) => {
                 contradictingSources: 0,
                 credibleSources: 0
             };
+            const analysisSummary = getAnalysisSummaryMessage(fallbackLanguage, 'very_low');
             return sendSafeJson(res, {
                 summary: "Texte insuffisant pour une vérification fiable.",
                 score: 0.25,
                 reliabilityLabel: fallbackLabel,
+                languageDetected: fallbackLanguage,
                 language: fallbackLanguage,
                 mainSources: [],
                 mainSourcesMarkdown: '',
                 details,
                 overallConfidence: 0.25,
-                scoringExplanation: "**Texte insuffisant** (25%) - Contenu trop court pour analyse.",
+                confidence: 0.25,
+                analysisSummary,
                 keywords: [],
                 sources: [],
-                methodology: "Analyse équilibrée avec détection contextuelle",
-                reliabilityLevel: 'unverified',
+                methodology: "Analyse équilibrée restaurée",
+                reliabilityLevel: 'very_low',
                 scoringBreakdown: details,
                 summaryText: "Texte insuffisant pour une vérification fiable.",
-                verifiedByMultipleTrustedSources: false
+                sourceFetchError: 'Input too short'
             });
         }
 
@@ -1754,53 +1497,44 @@ app.post('/verify', async (req, res) => {
         const claims = factChecker.extractVerifiableClaims(sanitizedInput);
         const keywords = extractMainKeywords(sanitizedInput);
         const detectedLanguage = detectLanguage(sanitizedInput);
-        const sourceResult = await findWebSources(keywords, sanitizedSmartQueries, sanitizedInput, detectedLanguage); // [IMPROVED]
-        const sources = Array.isArray(sourceResult.sources) ? sourceResult.sources : []; // [IMPROVED]
-        const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, sanitizedInput, sources); // [IMPROVED]
-        const result = factChecker.calculateBalancedScore(sanitizedInput, analyzedSources, claims, detectedLanguage); // [IMPROVED]
-        const verifiedByMultipleTrustedSources = analyzedSources.filter(source => source.actuallySupports && source.sourceQuality >= 0.75).length >= 3; // [IMPROVED]
+        const sourceResult = await findWebSources(keywords, sanitizedSmartQueries, sanitizedInput, detectedLanguage);
+        const userSources = Array.isArray(sourceResult.sources) ? sourceResult.sources : [];
+        const scoringSources = Array.isArray(sourceResult.scoringSources) && sourceResult.scoringSources.length > 0
+            ? sourceResult.scoringSources
+            : userSources;
+        const analyzedSources = enrichSourcesForScoring(factChecker, sanitizedInput, scoringSources);
+        const result = factChecker.calculateBalancedScore(sanitizedInput, analyzedSources, claims, detectedLanguage);
 
-        const reliabilityLabel = result.reliabilityLabel;
-        const fallbackMainSources = analyzedSources.slice(0, 5)
-            .filter(source => source && source.url)
-            .map(source => ({
-                title: source.title || 'Source',
-                url: source.url,
-                credibility: Number(((source.sourceQuality ?? 0.55)).toFixed(2))
-            }));
-        const mainSources = Array.isArray(sourceResult.mainSources) && sourceResult.mainSources.length > 0
-            ? sourceResult.mainSources
-            : fallbackMainSources;
         const mainSourcesMarkdown = sourceResult.mainSourcesMarkdown && sourceResult.mainSourcesMarkdown.length > 0
             ? sourceResult.mainSourcesMarkdown
-            : buildSourcesMarkdown(mainSources, detectedLanguage);
+            : buildSourcesMarkdown(userSources, detectedLanguage);
 
         const response = {
             summary: result.summaryText,
             score: Number(result.score.toFixed(2)),
-            reliabilityLabel,
+            reliabilityLabel: result.reliabilityLabel,
+            languageDetected: detectedLanguage,
             language: detectedLanguage,
-            mainSources,
+            analysisSummary: result.summaryText,
+            overallConfidence: Number(result.score.toFixed(2)),
+            confidence: Number(result.confidence.toFixed(2)),
+            sources: userSources,
+            mainSources: userSources,
             mainSourcesMarkdown,
-            details: result.details,
-            overallConfidence: result.score,
-            confidence: result.confidence,
-            scoringExplanation: result.reasoning,
-            sources: analyzedSources,
             keywords,
             claimsAnalyzed: claims,
-            methodology: "Analyse équilibrée avec détection contextuelle intelligente",
+            methodology: "Analyse équilibrée restaurée",
             reliabilityLevel: result.reliabilityLevel,
-            scoringBreakdown: result.breakdown, // [IMPROVED]
-            summaryText: result.summaryText, // [IMPROVED]
-            verifiedByMultipleTrustedSources, // [IMPROVED]
-            sourceFetchError: sourceResult.error // [IMPROVED]
+            scoringBreakdown: result.breakdown,
+            scoringDetails: result.details,
+            sourceAnalysis: analyzedSources,
+            sourceFetchError: sourceResult.error
         };
 
         verificationCache.set(cacheKey, response);
 
         logInfo(`✅ Score équilibré: ${Math.round(result.score * 100)}% (confiance: ${Math.round(result.confidence * 100)}%)`);
-        logInfo(`📊 ${analyzedSources.length} sources | ${claims.length} claims | ${analyzedSources.filter(s => s.actuallySupports).length} confirment`);
+        logInfo(`📊 ${analyzedSources.length} sources utilisées | ${claims.length} faits détectés | ${analyzedSources.filter(s => s.supports).length} confirment`);
         logInfo(`===============================\n`);
 
         return sendSafeJson(res, response);
@@ -1867,23 +1601,15 @@ app.post('/verify/ai', async (req, res) => {
         const keywords = extractMainKeywords(sanitizedResponse);
         const smartQueries = sanitizedPrompt ? extractMainKeywords(sanitizedPrompt) : [];
         const detectedLanguage = detectLanguage(sanitizedResponse);
-        const sourceResult = await findWebSources(keywords, smartQueries, sanitizedResponse, detectedLanguage); // [IMPROVED]
-        const sources = Array.isArray(sourceResult.sources) ? sourceResult.sources : []; // [IMPROVED]
-        const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, sanitizedResponse, sources); // [IMPROVED]
-        const result = factChecker.calculateBalancedScore(sanitizedResponse, analyzedSources, claims, detectedLanguage); // [IMPROVED]
-        const verifiedByMultipleTrustedSources = analyzedSources.filter(source => source.actuallySupports && source.sourceQuality >= 0.75).length >= 3; // [IMPROVED]
+        const sourceResult = await findWebSources(keywords, smartQueries, sanitizedResponse, detectedLanguage);
+        const sources = Array.isArray(sourceResult.sources) ? sourceResult.sources : [];
+        const scoringSources = Array.isArray(sourceResult.scoringSources) && sourceResult.scoringSources.length > 0
+            ? sourceResult.scoringSources
+            : sources;
+        const analyzedSources = enrichSourcesForScoring(factChecker, sanitizedResponse, scoringSources);
+        const result = factChecker.calculateBalancedScore(sanitizedResponse, analyzedSources, claims, detectedLanguage);
 
-        const reliabilityLabel = result.reliabilityLabel;
-        const fallbackMainSources = analyzedSources.slice(0, 5)
-            .filter(source => source && source.url)
-            .map(source => ({
-                title: source.title || 'Source',
-                url: source.url,
-                credibility: Number(((source.sourceQuality ?? 0.55)).toFixed(2))
-            }));
-        const mainSources = Array.isArray(sourceResult.mainSources) && sourceResult.mainSources.length > 0
-            ? sourceResult.mainSources
-            : fallbackMainSources;
+        const mainSources = sources;
         const mainSourcesMarkdown = sourceResult.mainSourcesMarkdown && sourceResult.mainSourcesMarkdown.length > 0
             ? sourceResult.mainSourcesMarkdown
             : buildSourcesMarkdown(mainSources, detectedLanguage);
@@ -1894,20 +1620,21 @@ app.post('/verify/ai', async (req, res) => {
             score: Number(result.score.toFixed(2)),
             reliabilityScore: result.score,
             reasoningSummary: result.reasoning,
-            sources: analyzedSources,
+            analysisSummary: result.summaryText,
+            sources,
             claims,
             keywords,
             language: detectedLanguage,
             mainSources,
             mainSourcesMarkdown,
             overallConfidence: result.score,
-            reliabilityLabel,
+            reliabilityLabel: result.reliabilityLabel,
             reliabilityLevel: result.reliabilityLevel,
             details: result.details,
-            scoringBreakdown: result.breakdown, // [IMPROVED]
-            summaryText: result.summaryText, // [IMPROVED]
-            verifiedByMultipleTrustedSources, // [IMPROVED]
-            sourceFetchError: sourceResult.error // [IMPROVED]
+            scoringBreakdown: result.breakdown,
+            summaryText: result.summaryText,
+            sourceAnalysis: analyzedSources,
+            sourceFetchError: sourceResult.error
         };
 
         verificationCache.set(cacheKey, responsePayload);
@@ -1969,7 +1696,7 @@ app.post('/compare/ai', async (req, res) => {
                     score: 0,
                     confidence: 0,
                     summary: `Réponse rejetée: dépasse ${MAX_TEXT_LENGTH} caractères.`,
-                    reliabilityLabel: getReliabilityLabel(fallbackLanguage, 'unverified'),
+                    reliabilityLabel: getReliabilityLabel(fallbackLanguage, 'very_low'),
                     language: fallbackLanguage,
                     details: {
                         baseScore: 0,
@@ -1992,56 +1719,52 @@ app.post('/compare/ai', async (req, res) => {
 
             const sanitizedResponse = sanitizeInput(rawResponse);
 
-            if (!sanitizedResponse || sanitizedResponse.length < 10) {
-                const fallbackLanguage = detectLanguage(rawResponse);
-                comparison.push({
-                    model: modelName,
-                    score: 0,
-                    confidence: 0,
-                    summary: 'Réponse insuffisante pour une analyse fiable.',
-                    reliabilityLabel: getReliabilityLabel(fallbackLanguage, 'unverified'),
-                    language: fallbackLanguage,
-                    details: {
-                        baseScore: 0,
-                        freshnessBonus: 0,
-                        consistencyBonus: 0,
-                        supportingSources: 0,
-                        contradictingSources: 0,
-                        credibleSources: 0
-                    },
-                    mainSources: [],
-                    mainSourcesMarkdown: '',
-                    summaryText: 'Réponse insuffisante pour une analyse fiable.',
-                    scoringBreakdown: null,
-                    sourcesCount: 0,
-                    verifiedByMultipleTrustedSources: false,
-                    sourceFetchError: 'Input too short'
-                });
-                continue;
-            }
+        if (!sanitizedResponse || sanitizedResponse.length < 10) {
+            const fallbackLanguage = detectLanguage(rawResponse);
+            const analysisSummary = getAnalysisSummaryMessage(fallbackLanguage, 'very_low');
+            comparison.push({
+                model: modelName,
+                score: 0,
+                confidence: 0,
+                summary: 'Réponse insuffisante pour une analyse fiable.',
+                reliabilityLabel: getReliabilityLabel(fallbackLanguage, 'very_low'),
+                language: fallbackLanguage,
+                analysisSummary,
+                details: {
+                    baseScore: 0,
+                    sourceQuality: 0,
+                    consensus: 0,
+                    contextual: 0,
+                    supportingSources: 0,
+                    contradictingSources: 0,
+                    reliableSources: 0
+                },
+                mainSources: [],
+                mainSourcesMarkdown: '',
+                summaryText: 'Réponse insuffisante pour une analyse fiable.',
+                scoringBreakdown: null,
+                sourcesCount: 0,
+                sourceAnalysis: [],
+                sourceFetchError: 'Input too short'
+            });
+            continue;
+        }
 
             const detectedLanguage = detectLanguage(sanitizedResponse);
             const responseClaims = factChecker.extractVerifiableClaims(sanitizedResponse);
             const responseKeywords = extractMainKeywords(sanitizedResponse);
             const combinedKeywords = Array.from(new Set([...promptKeywords, ...responseKeywords]));
 
-            const sourceResult = await findWebSources(combinedKeywords, smartQueries, sanitizedResponse, detectedLanguage); // [IMPROVED]
-            const sources = Array.isArray(sourceResult.sources) ? sourceResult.sources : []; // [IMPROVED]
-            const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, sanitizedResponse, sources); // [IMPROVED]
+            const sourceResult = await findWebSources(combinedKeywords, smartQueries, sanitizedResponse, detectedLanguage);
+            const sources = Array.isArray(sourceResult.sources) ? sourceResult.sources : [];
+            const scoringSources = Array.isArray(sourceResult.scoringSources) && sourceResult.scoringSources.length > 0
+                ? sourceResult.scoringSources
+                : sources;
+            const analyzedSources = enrichSourcesForScoring(factChecker, sanitizedResponse, scoringSources);
             const scoringClaims = responseClaims.length > 0 ? responseClaims : promptClaims;
-            const result = factChecker.calculateBalancedScore(sanitizedResponse, analyzedSources, scoringClaims, detectedLanguage); // [IMPROVED]
-            const verifiedByMultipleTrustedSources = analyzedSources.filter(source => source.actuallySupports && source.sourceQuality >= 0.75).length >= 3; // [IMPROVED]
+            const result = factChecker.calculateBalancedScore(sanitizedResponse, analyzedSources, scoringClaims, detectedLanguage);
 
-            const fallbackMainSources = analyzedSources.slice(0, 5)
-                .filter(source => source && source.url)
-                .map(source => ({
-                    title: source.title || 'Source',
-                    url: source.url,
-                    credibility: Number(((source.sourceQuality ?? 0.55)).toFixed(2))
-                }));
-            const mainSources = Array.isArray(sourceResult.mainSources) && sourceResult.mainSources.length > 0
-                ? sourceResult.mainSources
-                : fallbackMainSources;
+            const mainSources = sources;
             const mainSourcesMarkdown = sourceResult.mainSourcesMarkdown && sourceResult.mainSourcesMarkdown.length > 0
                 ? sourceResult.mainSourcesMarkdown
                 : buildSourcesMarkdown(mainSources, detectedLanguage);
@@ -2056,11 +1779,12 @@ app.post('/compare/ai', async (req, res) => {
                 details: result.details,
                 mainSources,
                 mainSourcesMarkdown,
-                summaryText: result.summaryText, // [IMPROVED]
-                scoringBreakdown: result.breakdown, // [IMPROVED]
+                analysisSummary: result.summaryText,
+                summaryText: result.summaryText,
+                scoringBreakdown: result.breakdown,
                 sourcesCount: analyzedSources.length,
-                verifiedByMultipleTrustedSources, // [IMPROVED]
-                sourceFetchError: sourceResult.error // [IMPROVED]
+                sourceAnalysis: analyzedSources,
+                sourceFetchError: sourceResult.error
             });
         }
 
