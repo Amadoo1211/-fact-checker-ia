@@ -1947,3 +1947,69 @@ app.listen(PORT, () => {
     console.log(`=====================================\n`);
     initDb();
 });
+app.post('/chat', async (req, res) => {
+    try {
+        const { message } = req.body || {};
+
+        if (typeof message !== 'string') {
+            throw new Error('Message must be a string.');
+        }
+
+        const trimmedMessage = message.trim();
+
+        if (!trimmedMessage) {
+            throw new Error('Message is required.');
+        }
+
+        if (trimmedMessage.length > 4000) {
+            throw new Error('Message exceeds 4000 characters.');
+        }
+
+        const apiKey = process.env.OPENAI_API_KEY;
+        if (!apiKey) {
+            throw new Error('OpenAI API key not configured.');
+        }
+
+        const payload = {
+            model: 'gpt-4o-mini',
+            messages: [
+                { role: 'user', content: trimmedMessage }
+            ]
+        };
+
+        const response = await fetchWithTimeout(
+            'https://api.openai.com/v1/chat/completions',
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${apiKey}`
+                },
+                body: JSON.stringify(payload)
+            },
+            6000
+        );
+
+        if (!response.ok) {
+            const errorBody = await response.text();
+            throw new Error(`OpenAI API error: ${errorBody || response.statusText}`);
+        }
+
+        const data = await response.json();
+        const reply = data?.choices?.[0]?.message?.content?.trim();
+
+        if (!reply) {
+            throw new Error('No response from OpenAI.');
+        }
+
+        return sendSafeJson(res, { reply });
+    } catch (error) {
+        logError('❌ Erreur chat VerifyAI', error?.message || error);
+        res.status(500);
+        return sendSafeJson(res, {
+            error: typeof error?.message === 'string' && error.message.trim()
+                ? error.message
+                : 'Unexpected error.'
+        });
+    }
+});
