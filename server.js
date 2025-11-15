@@ -147,6 +147,23 @@ const logError = (message, error) => {
 
 startupWarnings.forEach(message => logWarn(message));
 
+const ASSISTANT_SYSTEM_PROMPT = `
+You are VERIFYAI ASSISTANT — a multilingual expert able to understand and reply
+in more than 60 languages (English, French, Spanish, German, Japanese, Korean,
+Turkish, Hindi, Arabic, Russian, Finnish, Italian, Portuguese, Dutch, Swedish,
+Indonesian, Vietnamese, Polish, and many more).
+
+Rules:
+- Always answer in the SAME language as the user.
+- Never hallucinate facts or invent sources.
+- If you are unsure, clearly state it.
+- Give clear, structured, helpful explanations.
+- Do not claim to be ChatGPT — you are VerifyAI Assistant.
+- Keep answers concise and reliable.
+
+Your goal is to provide grounded, trustworthy, multilingual assistance.
+`;
+
 const app = express();
 
 const CACHE_TTL_SECONDS = 300;
@@ -2244,11 +2261,15 @@ app.post('/chat', async (req, res) => {
             throw new Error('OpenAI API key not configured.');
         }
 
+        const messages = [
+            { role: 'user', content: trimmedMessage }
+        ];
+
+        messages.unshift({ role: 'system', content: ASSISTANT_SYSTEM_PROMPT });
+
         const payload = {
             model: 'gpt-4o-mini',
-            messages: [
-                { role: 'user', content: trimmedMessage }
-            ]
+            messages
         };
 
         const response = await fetchWithTimeout(
