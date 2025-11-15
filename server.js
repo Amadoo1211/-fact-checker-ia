@@ -6,6 +6,7 @@ const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 const { createHash } = require('crypto');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 const isProduction = process.env.NODE_ENV === 'production';
 const startupWarnings = [];
@@ -920,6 +921,12 @@ function enforceResponseSize(payload) {
 
 function sendSafeJson(res, payload) {
     res.json(enforceResponseSize(payload));
+}
+
+async function isUserPro(userId) {
+    if (!userId) return false;
+    // will connect to Stripe subscription later
+    return false;
 }
 
 function createCacheKey(prefix, data) {
@@ -1876,6 +1883,53 @@ app.post('/feedback', async (req, res) => {
   }
 });
 
+app.post('/billing/create-checkout-session', async (req, res) => {
+  try {
+    const { userId, plan } = req.body || {};
+
+    if (!userId || typeof userId !== 'string') {
+      return sendSafeJson(res.status(400), { error: 'Missing or invalid userId' });
+    }
+
+    const priceId =
+      plan === 'yearly'
+        ? process.env.STRIPE_PRICE_ID_YEARLY || process.env.STRIPE_PRICE_ID_MONTHLY
+        : process.env.STRIPE_PRICE_ID_MONTHLY;
+
+    if (!priceId) {
+      return sendSafeJson(res.status(500), { error: 'Stripe price id not configured' });
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      line_items: [
+        {
+          price: priceId,
+          quantity: 1
+        }
+      ],
+      metadata: {
+        verifyai_user_id: userId
+      },
+      success_url:
+        (process.env.VERIFYAI_DASHBOARD_URL || 'https://verifyai.app') + '?checkout=success',
+      cancel_url:
+        (process.env.VERIFYAI_DASHBOARD_URL || 'https://verifyai.app') + '?checkout=cancel'
+    });
+
+    return sendSafeJson(res, { url: session.url });
+  } catch (error) {
+    logError('❌ Erreur Stripe create-checkout-session', error?.message || error);
+    res.status(500);
+    return sendSafeJson(res, {
+      error:
+        typeof error?.message === 'string' && error.message.trim()
+          ? error.message
+          : 'Unexpected error.'
+    });
+  }
+});
+
 // Endpoint health
 app.get('/health', (req, res) => {
     return sendSafeJson(res, {
@@ -1950,6 +2004,15 @@ app.listen(PORT, () => {
 app.post('/chat', async (req, res) => {
     try {
         const { message } = req.body || {};
+        const userId = req.headers['x-verifyai-user'] || req.body.userId;
+        const userIsPro = await isUserPro(userId);
+
+        // future logic (leave commented):
+        // if (!userIsPro) {
+        //   return sendSafeJson(res.status(403), {
+        //     error: 'Free plan limit reached. Please upgrade to VerifyAI Pro.'
+        //   });
+        // }
 
         if (typeof message !== 'string') {
             throw new Error('Message must be a string.');
