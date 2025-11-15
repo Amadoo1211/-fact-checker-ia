@@ -257,6 +257,81 @@ const limiter = rateLimit({
 });
 
 app.use(limiter);
+
+// Stripe webhook endpoint requires the raw body for signature verification.
+app.post('/stripe/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+    try {
+        const sig = req.headers['stripe-signature'];
+        const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+        if (!sig || !webhookSecret) {
+            return res.status(400).send('Missing webhook signature');
+        }
+
+        let event;
+
+        try {
+            event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+        } catch (err) {
+            logError('❌ Webhook signature verification failed', err.message);
+            return res.status(400).send(`Webhook Error: ${err.message}`);
+        }
+
+        switch (event.type) {
+            case 'checkout.session.completed': {
+                const session = event.data.object;
+                const userId = session.metadata?.verifyai_user_id;
+                const subscriptionId = session.subscription;
+                const customerId = session.customer;
+
+                if (userId && subscriptionId) {
+                    await upsertSubscription(userId, {
+                        stripe_customer_id: customerId,
+                        stripe_subscription_id: subscriptionId,
+                        status: 'active',
+                        current_period_end: null
+                    });
+                }
+                break;
+            }
+
+            case 'invoice.payment_succeeded': {
+                const invoice = event.data.object;
+                const subscriptionId = invoice.subscription;
+                const periodEndUnix = invoice?.lines?.data?.[0]?.period?.end;
+                const currentPeriodEnd = periodEndUnix ? new Date(periodEndUnix * 1000) : null;
+
+                if (subscriptionId) {
+                    await updateSubscriptionStatus(subscriptionId, {
+                        status: 'active',
+                        current_period_end: currentPeriodEnd
+                    });
+                }
+                break;
+            }
+
+            case 'customer.subscription.deleted': {
+                const subscription = event.data.object;
+
+                if (subscription?.id) {
+                    await updateSubscriptionStatus(subscription.id, {
+                        status: 'canceled'
+                    });
+                }
+                break;
+            }
+
+            default:
+                break;
+        }
+
+        res.status(200).send('OK');
+    } catch (err) {
+        logError('❌ Webhook processing failed', err.message || err);
+        res.status(500).send('Internal server error');
+    }
+});
+
 app.use(express.json({ limit: '5mb' }));
 
 app.use((req, res, next) => {
@@ -923,10 +998,134 @@ function sendSafeJson(res, payload) {
     res.json(enforceResponseSize(payload));
 }
 
+async function upsertSubscription(userId, data = {}) {
+    if (!userId) {
+        return;
+    }
+
+    if (!pool) {
+        logWarn('⚠️ Database not configured — skipping subscription sync.');
+        return;
+    }
+
+    const client = await pool.connect();
+
+    try {
+        const query = `INSERT INTO subscriptions (
+                user_id,
+                stripe_customer_id,
+                stripe_subscription_id,
+                status,
+                current_period_end
+            ) VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (user_id) DO UPDATE SET
+                stripe_customer_id = EXCLUDED.stripe_customer_id,
+                stripe_subscription_id = EXCLUDED.stripe_subscription_id,
+                status = EXCLUDED.status,
+                current_period_end = EXCLUDED.current_period_end,
+                updated_at = NOW()`;
+
+        await client.query(query, [
+            userId,
+            data.stripe_customer_id || null,
+            data.stripe_subscription_id || null,
+            data.status || 'inactive',
+            data.current_period_end || null
+        ]);
+    } catch (err) {
+        logError('❌ Failed to upsert subscription', err.message || err);
+        throw err;
+    } finally {
+        client.release();
+    }
+}
+
+async function updateSubscriptionStatus(subscriptionId, updates = {}) {
+    if (!subscriptionId) {
+        return;
+    }
+
+    if (!pool) {
+        logWarn('⚠️ Database not configured — skipping subscription status update.');
+        return;
+    }
+
+    const fields = [];
+    const values = [];
+    let index = 1;
+
+    if (updates.status) {
+        fields.push(`status = $${index++}`);
+        values.push(updates.status);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(updates, 'current_period_end')) {
+        fields.push(`current_period_end = $${index++}`);
+        values.push(updates.current_period_end || null);
+    }
+
+    if (!fields.length) {
+        return;
+    }
+
+    values.push(subscriptionId);
+
+    const client = await pool.connect();
+
+    try {
+        const query = `UPDATE subscriptions SET ${fields.join(', ')}, updated_at = NOW() WHERE stripe_subscription_id = $${index}`;
+        const result = await client.query(query, values);
+
+        if (result.rowCount === 0) {
+            logWarn(`⚠️ Subscription ${subscriptionId} not found for status update.`);
+        }
+    } catch (err) {
+        logError('❌ Failed to update subscription status', err.message || err);
+        throw err;
+    } finally {
+        client.release();
+    }
+}
+
 async function isUserPro(userId) {
-    if (!userId) return false;
-    // will connect to Stripe subscription later
-    return false;
+    if (!userId || !pool) return false;
+
+    const client = await pool.connect();
+
+    try {
+        const { rows } = await client.query(
+            `SELECT status, current_period_end FROM subscriptions WHERE user_id = $1 LIMIT 1`,
+            [userId]
+        );
+
+        if (rows.length === 0) {
+            return false;
+        }
+
+        const { status, current_period_end: currentPeriodEnd } = rows[0];
+
+        if (!status) {
+            return false;
+        }
+
+        const normalizedStatus = status.toLowerCase();
+
+        if (!['active', 'trialing'].includes(normalizedStatus)) {
+            return false;
+        }
+
+        if (!currentPeriodEnd) {
+            return true;
+        }
+
+        const expiration = new Date(currentPeriodEnd);
+        return Number.isFinite(expiration.getTime()) && expiration > new Date();
+    } catch (err) {
+        logError('❌ Failed to check user subscription', err.message || err);
+        return false;
+    } finally {
+        client.release();
+    }
 }
 
 function createCacheKey(prefix, data) {
@@ -1979,6 +2178,18 @@ const initDb = async () => {
                 comment TEXT,
                 email TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT UNIQUE NOT NULL,
+                stripe_customer_id TEXT,
+                stripe_subscription_id TEXT UNIQUE,
+                status TEXT NOT NULL DEFAULT 'inactive',
+                current_period_end TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
         `);
         client.release();
