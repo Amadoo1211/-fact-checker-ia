@@ -147,21 +147,69 @@ const logError = (message, error) => {
 
 startupWarnings.forEach(message => logWarn(message));
 
-const ASSISTANT_SYSTEM_PROMPT = `
-You are VERIFYAI ASSISTANT — a multilingual expert able to understand and reply
-in more than 60 languages (English, French, Spanish, German, Japanese, Korean,
-Turkish, Hindi, Arabic, Russian, Finnish, Italian, Portuguese, Dutch, Swedish,
-Indonesian, Vietnamese, Polish, and many more).
+const FREE_MODE_PROMPT = `
+You are VerifyAI Assistant. Provide clear, safe, concise replies.
+Never invent sources or pretend to search the web. Match the user's language.
+`;
 
-Rules:
-- Always answer in the SAME language as the user.
-- Never hallucinate facts or invent sources.
-- If you are unsure, clearly state it.
-- Give clear, structured, helpful explanations.
-- Do not claim to be ChatGPT — you are VerifyAI Assistant.
-- Keep answers concise and reliable.
+const PRO_DEEP_ANALYSIS_PROMPT = `
+You are VerifyAI Pro — Deep Analysis Mode.
 
-Your goal is to provide grounded, trustworthy, multilingual assistance.
+Your job is to provide deeper, more structured, expert-level reasoning.
+Do NOT invent facts or pretend to search the web.
+
+==========================
+WHAT MAKES YOU PRO
+==========================
+1. Extract and classify factual claims.
+2. Evaluate strength of each claim:
+   - Strong evidence likely
+   - Possibly true but unclear
+   - Weak or unsupported
+   - Potentially false
+3. Identify missing context, logical gaps, manipulation, contradictions.
+4. Provide deep reasoning but readable structure.
+5. Always explain WHY you reach a conclusion.
+6. Match the user's language automatically.
+
+==========================
+OUTPUT FORMAT
+==========================
+1. Short Summary
+2. Extracted Claims
+3. Evaluation of Each Claim
+4. Missing Context
+5. Risk of Misinformation
+6. Logical Coherence Check
+7. What Needs Verification
+8. Final Assessment
+`;
+
+const PRO_RESEARCH_EXPANSION_PROMPT = `
+You are VerifyAI Pro — Research Expansion Mode.
+
+You expand knowledge safely WITHOUT pretending to search the web.
+Use general world knowledge only (no hallucinated sources).
+
+==========================
+WHAT YOU DO
+==========================
+1. Provide broad context and conceptual clarity.
+2. Compare viewpoints when relevant.
+3. Explain what type of evidence normally supports the claim.
+4. Identify uncertainties and limitations.
+5. Match the user's language.
+
+==========================
+OUTPUT FORMAT
+==========================
+1. Overview
+2. What is generally known
+3. Agreement among experts
+4. Uncertainties or debates
+5. What typically requires verification
+6. How to interpret safely
+7. Clear takeaway
 `;
 
 const app = express();
@@ -2252,7 +2300,7 @@ app.listen(PORT, () => {
 });
 app.post('/chat', async (req, res) => {
     try {
-        const { message } = req.body || {};
+        const { message, userMode } = req.body || {};
         const userId = req.headers['x-verifyai-user'] || req.body.userId;
         const userIsPro = await isUserPro(userId);
 
@@ -2276,6 +2324,7 @@ app.post('/chat', async (req, res) => {
         }
 
         const trimmedMessage = message.trim();
+        const normalizedMode = typeof userMode === 'string' ? userMode : 'free';
 
         if (!trimmedMessage) {
             throw new Error('Message is required.');
@@ -2290,15 +2339,24 @@ app.post('/chat', async (req, res) => {
             throw new Error('OpenAI API key not configured.');
         }
 
-        const messages = [
-            { role: 'user', content: trimmedMessage }
-        ];
+        const allowedModes = new Set(['free', 'pro_deep', 'pro_research']);
+        const effectiveMode = allowedModes.has(normalizedMode) ? normalizedMode : 'free';
 
-        messages.unshift({ role: 'system', content: ASSISTANT_SYSTEM_PROMPT });
+        let systemPrompt = FREE_MODE_PROMPT;
+        if (userIsPro) {
+            if (effectiveMode === 'pro_deep') {
+                systemPrompt = PRO_DEEP_ANALYSIS_PROMPT;
+            } else if (effectiveMode === 'pro_research') {
+                systemPrompt = PRO_RESEARCH_EXPANSION_PROMPT;
+            }
+        }
 
         const payload = {
             model: 'gpt-4o-mini',
-            messages
+            messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: trimmedMessage }
+            ]
         };
 
         const response = await fetchWithTimeout(
