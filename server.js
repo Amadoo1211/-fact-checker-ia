@@ -221,6 +221,27 @@ const createVerificationCache = () => {
 };
 
 const verificationCache = createVerificationCache();
+
+// Simple in-memory chat usage tracking for free users (per 24h window)
+const freeChatUsage = new NodeCache({ stdTTL: 24 * 60 * 60, checkperiod: 60 * 60 });
+
+function getFreeUsageKey(userId) {
+    const safeId = typeof userId === 'string' && userId.trim() ? userId.trim() : 'anonymous';
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    return `chat_free_usage:${safeId}:${today}`;
+}
+
+function incrementAndCheckFreeUsage(userId, maxPerDay = 30) {
+    const key = getFreeUsageKey(userId);
+    const current = freeChatUsage.get(key) || 0;
+    const next = current + 1;
+    freeChatUsage.set(key, next);
+    return {
+        allowed: next <= maxPerDay,
+        used: next,
+        limit: maxPerDay
+    };
+}
 const metrics = {
     totalRequests: 0,
     cacheHits: 0,
@@ -2235,12 +2256,20 @@ app.post('/chat', async (req, res) => {
         const userId = req.headers['x-verifyai-user'] || req.body.userId;
         const userIsPro = await isUserPro(userId);
 
-        // future logic (leave commented):
-        // if (!userIsPro) {
-        //   return sendSafeJson(res.status(403), {
-        //     error: 'Free plan limit reached. Please upgrade to VerifyAI Pro.'
-        //   });
-        // }
+        // Free-tier gating: simple per-day limit for non-Pro users
+        if (!userIsPro) {
+            const quota = incrementAndCheckFreeUsage(userId, 30); // 30 free messages/day MVP
+            if (!quota.allowed) {
+                return sendSafeJson(res.status(403), {
+                    error: 'Free plan limit reached for today. Please upgrade to VerifyAI Pro to continue using the assistant.',
+                    code: 'FREE_LIMIT_REACHED',
+                    usage: {
+                        used: quota.used,
+                        limit: quota.limit
+                    }
+                });
+            }
+        }
 
         if (typeof message !== 'string') {
             throw new Error('Message must be a string.');
