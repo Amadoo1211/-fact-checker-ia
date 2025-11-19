@@ -213,6 +213,7 @@ OUTPUT FORMAT
 `;
 
 const app = express();
+app.set("trust proxy", 1);
 
 const CACHE_TTL_SECONDS = 300;
 const MAX_CACHE_ENTRIES = 200;
@@ -339,7 +340,8 @@ const limiter = rateLimit({
     windowMs: 60 * 1000,
     max: 30,
     standardHeaders: true,
-    legacyHeaders: false
+    legacyHeaders: false,
+    validate: { xForwardedForHeader: false }
 });
 
 app.use(limiter);
