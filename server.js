@@ -6,7 +6,6 @@ const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 const { createHash } = require('crypto');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 const isProduction = process.env.NODE_ENV === 'production';
 const startupWarnings = [];
@@ -111,13 +110,6 @@ try {
 const stringSimilarity = stringSimilarityModule;
 const NodeCache = NodeCacheModule;
 
-let francModule = null;
-try {
-    francModule = require('franc');
-} catch (err) {
-    startupWarnings.push('franc non disponible — heuristique de langue utilisée.');
-}
-
 const colorize = (color, message) => {
     if (!chalk) return message;
     if (typeof chalk[color] === 'function') {
@@ -147,73 +139,7 @@ const logError = (message, error) => {
 
 startupWarnings.forEach(message => logWarn(message));
 
-const FREE_MODE_PROMPT = `
-You are VerifyAI Assistant. Provide clear, safe, concise replies.
-Never invent sources or pretend to search the web. Match the user's language.
-`;
-
-const PRO_DEEP_ANALYSIS_PROMPT = `
-You are VerifyAI Pro — Deep Analysis Mode.
-
-Your job is to provide deeper, more structured, expert-level reasoning.
-Do NOT invent facts or pretend to search the web.
-
-==========================
-WHAT MAKES YOU PRO
-==========================
-1. Extract and classify factual claims.
-2. Evaluate strength of each claim:
-   - Strong evidence likely
-   - Possibly true but unclear
-   - Weak or unsupported
-   - Potentially false
-3. Identify missing context, logical gaps, manipulation, contradictions.
-4. Provide deep reasoning but readable structure.
-5. Always explain WHY you reach a conclusion.
-6. Match the user's language automatically.
-
-==========================
-OUTPUT FORMAT
-==========================
-1. Short Summary
-2. Extracted Claims
-3. Evaluation of Each Claim
-4. Missing Context
-5. Risk of Misinformation
-6. Logical Coherence Check
-7. What Needs Verification
-8. Final Assessment
-`;
-
-const PRO_RESEARCH_EXPANSION_PROMPT = `
-You are VerifyAI Pro — Research Expansion Mode.
-
-You expand knowledge safely WITHOUT pretending to search the web.
-Use general world knowledge only (no hallucinated sources).
-
-==========================
-WHAT YOU DO
-==========================
-1. Provide broad context and conceptual clarity.
-2. Compare viewpoints when relevant.
-3. Explain what type of evidence normally supports the claim.
-4. Identify uncertainties and limitations.
-5. Match the user's language.
-
-==========================
-OUTPUT FORMAT
-==========================
-1. Overview
-2. What is generally known
-3. Agreement among experts
-4. Uncertainties or debates
-5. What typically requires verification
-6. How to interpret safely
-7. Clear takeaway
-`;
-
 const app = express();
-app.set("trust proxy", 1);
 
 const CACHE_TTL_SECONDS = 300;
 const MAX_CACHE_ENTRIES = 200;
@@ -270,27 +196,6 @@ const createVerificationCache = () => {
 };
 
 const verificationCache = createVerificationCache();
-
-// Simple in-memory chat usage tracking for free users (per 24h window)
-const freeChatUsage = new NodeCache({ stdTTL: 24 * 60 * 60, checkperiod: 60 * 60 });
-
-function getFreeUsageKey(userId) {
-    const safeId = typeof userId === 'string' && userId.trim() ? userId.trim() : 'anonymous';
-    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-    return `chat_free_usage:${safeId}:${today}`;
-}
-
-function incrementAndCheckFreeUsage(userId, maxPerDay = 30) {
-    const key = getFreeUsageKey(userId);
-    const current = freeChatUsage.get(key) || 0;
-    const next = current + 1;
-    freeChatUsage.set(key, next);
-    return {
-        allowed: next <= maxPerDay,
-        used: next,
-        limit: maxPerDay
-    };
-}
 const metrics = {
     totalRequests: 0,
     cacheHits: 0,
@@ -340,86 +245,10 @@ const limiter = rateLimit({
     windowMs: 60 * 1000,
     max: 30,
     standardHeaders: true,
-    legacyHeaders: false,
-    validate: { xForwardedForHeader: false }
+    legacyHeaders: false
 });
 
 app.use(limiter);
-
-// Stripe webhook endpoint requires the raw body for signature verification.
-app.post('/stripe/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
-    try {
-        const sig = req.headers['stripe-signature'];
-        const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-
-        if (!sig || !webhookSecret) {
-            return res.status(400).send('Missing webhook signature');
-        }
-
-        let event;
-
-        try {
-            event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
-        } catch (err) {
-            logError('❌ Webhook signature verification failed', err.message);
-            return res.status(400).send(`Webhook Error: ${err.message}`);
-        }
-
-        switch (event.type) {
-            case 'checkout.session.completed': {
-                const session = event.data.object;
-                const userId = session.metadata?.verifyai_user_id;
-                const subscriptionId = session.subscription;
-                const customerId = session.customer;
-
-                if (userId && subscriptionId) {
-                    await upsertSubscription(userId, {
-                        stripe_customer_id: customerId,
-                        stripe_subscription_id: subscriptionId,
-                        status: 'active',
-                        current_period_end: null
-                    });
-                }
-                break;
-            }
-
-            case 'invoice.payment_succeeded': {
-                const invoice = event.data.object;
-                const subscriptionId = invoice.subscription;
-                const periodEndUnix = invoice?.lines?.data?.[0]?.period?.end;
-                const currentPeriodEnd = periodEndUnix ? new Date(periodEndUnix * 1000) : null;
-
-                if (subscriptionId) {
-                    await updateSubscriptionStatus(subscriptionId, {
-                        status: 'active',
-                        current_period_end: currentPeriodEnd
-                    });
-                }
-                break;
-            }
-
-            case 'customer.subscription.deleted': {
-                const subscription = event.data.object;
-
-                if (subscription?.id) {
-                    await updateSubscriptionStatus(subscription.id, {
-                        status: 'canceled'
-                    });
-                }
-                break;
-            }
-
-            default:
-                break;
-        }
-
-        res.status(200).send('OK');
-    } catch (err) {
-        logError('❌ Webhook processing failed', err.message || err);
-        res.status(500).send('Internal server error');
-    }
-});
-
 app.use(express.json({ limit: '5mb' }));
 
 app.use((req, res, next) => {
@@ -1086,136 +915,6 @@ function sendSafeJson(res, payload) {
     res.json(enforceResponseSize(payload));
 }
 
-async function upsertSubscription(userId, data = {}) {
-    if (!userId) {
-        return;
-    }
-
-    if (!pool) {
-        logWarn('⚠️ Database not configured — skipping subscription sync.');
-        return;
-    }
-
-    const client = await pool.connect();
-
-    try {
-        const query = `INSERT INTO subscriptions (
-                user_id,
-                stripe_customer_id,
-                stripe_subscription_id,
-                status,
-                current_period_end
-            ) VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (user_id) DO UPDATE SET
-                stripe_customer_id = EXCLUDED.stripe_customer_id,
-                stripe_subscription_id = EXCLUDED.stripe_subscription_id,
-                status = EXCLUDED.status,
-                current_period_end = EXCLUDED.current_period_end,
-                updated_at = NOW()`;
-
-        await client.query(query, [
-            userId,
-            data.stripe_customer_id || null,
-            data.stripe_subscription_id || null,
-            data.status || 'inactive',
-            data.current_period_end || null
-        ]);
-    } catch (err) {
-        logError('❌ Failed to upsert subscription', err.message || err);
-        throw err;
-    } finally {
-        client.release();
-    }
-}
-
-async function updateSubscriptionStatus(subscriptionId, updates = {}) {
-    if (!subscriptionId) {
-        return;
-    }
-
-    if (!pool) {
-        logWarn('⚠️ Database not configured — skipping subscription status update.');
-        return;
-    }
-
-    const fields = [];
-    const values = [];
-    let index = 1;
-
-    if (updates.status) {
-        fields.push(`status = $${index++}`);
-        values.push(updates.status);
-    }
-
-    if (Object.prototype.hasOwnProperty.call(updates, 'current_period_end')) {
-        fields.push(`current_period_end = $${index++}`);
-        values.push(updates.current_period_end || null);
-    }
-
-    if (!fields.length) {
-        return;
-    }
-
-    values.push(subscriptionId);
-
-    const client = await pool.connect();
-
-    try {
-        const query = `UPDATE subscriptions SET ${fields.join(', ')}, updated_at = NOW() WHERE stripe_subscription_id = $${index}`;
-        const result = await client.query(query, values);
-
-        if (result.rowCount === 0) {
-            logWarn(`⚠️ Subscription ${subscriptionId} not found for status update.`);
-        }
-    } catch (err) {
-        logError('❌ Failed to update subscription status', err.message || err);
-        throw err;
-    } finally {
-        client.release();
-    }
-}
-
-async function isUserPro(userId) {
-    if (!userId || !pool) return false;
-
-    const client = await pool.connect();
-
-    try {
-        const { rows } = await client.query(
-            `SELECT status, current_period_end FROM subscriptions WHERE user_id = $1 LIMIT 1`,
-            [userId]
-        );
-
-        if (rows.length === 0) {
-            return false;
-        }
-
-        const { status, current_period_end: currentPeriodEnd } = rows[0];
-
-        if (!status) {
-            return false;
-        }
-
-        const normalizedStatus = status.toLowerCase();
-
-        if (!['active', 'trialing'].includes(normalizedStatus)) {
-            return false;
-        }
-
-        if (!currentPeriodEnd) {
-            return true;
-        }
-
-        const expiration = new Date(currentPeriodEnd);
-        return Number.isFinite(expiration.getTime()) && expiration > new Date();
-    } catch (err) {
-        logError('❌ Failed to check user subscription', err.message || err);
-        return false;
-    } finally {
-        client.release();
-    }
-}
-
 function createCacheKey(prefix, data) {
     return `${prefix}:${createHash('sha1').update(JSON.stringify(data)).digest('hex')}`;
 }
@@ -1223,7 +922,7 @@ function createCacheKey(prefix, data) {
 function extractMainKeywords(text) {
     const cleaned = sanitizeInput(text).substring(0, 1000);
     const keywords = [];
-
+    
     try {
         // Entités nommées
         const namedEntities = cleaned.match(/\b[A-Z][a-zA-ZÀ-ÿ]+(?:\s+[A-Z][a-zA-ZÀ-ÿ]+){0,2}\b/g) || [];
@@ -1247,408 +946,6 @@ function extractMainKeywords(text) {
         logError('Erreur extraction keywords', e.message);
         return [];
     }
-}
-
-const ISO3_TO_ISO1 = {
-    eng: 'en',
-    fra: 'fr',
-    ita: 'it',
-    spa: 'es',
-    deu: 'de',
-    ger: 'de',
-    jpn: 'ja',
-    tur: 'tr',
-    hin: 'hi',
-    rus: 'ru'
-};
-
-const SUMMARY_TRANSLATIONS = {
-    en: {
-        label: 'Analysis Summary',
-        reliability: {
-            veryHigh: 'The statement appears highly reliable ({score}%).',
-            mostly: 'The statement appears mostly reliable ({score}%).',
-            uncertain: 'Reliability remains uncertain ({score}%).',
-            low: 'The statement appears unreliable ({score}%).'
-        },
-        positive: {
-            recentConsistent: 'Recent and consistent data from multiple sources.',
-            recent: 'Recent information identified across the sources.',
-            consistent: 'Sources present consistent information overall.',
-            limited: 'Some relevant data identified, though limited.',
-            none: 'Insufficient data to judge recency or consistency.'
-        },
-        warning: {
-            none: 'No major contradictions detected.',
-            minor: 'Minor contradictions found.',
-            major: 'Significant contradictions detected — review carefully.'
-        },
-        sources: {
-            diverse: 'Verified and diverse sources.',
-            limited: 'Verified sources but limited diversity.',
-            scarce: 'Verified sources but very few in number.',
-            none: 'No reliable sources identified.'
-        }
-    },
-    fr: {
-        label: 'Résumé de l’analyse',
-        reliability: {
-            veryHigh: 'Le texte semble très fiable ({score}%).',
-            mostly: 'Le texte semble globalement fiable ({score}%).',
-            uncertain: 'La fiabilité du texte reste incertaine ({score}%).',
-            low: 'Le texte semble peu fiable ({score}%).'
-        },
-        positive: {
-            recentConsistent: 'Données récentes et cohérentes entre les sources.',
-            recent: 'Informations récentes identifiées dans les sources.',
-            consistent: 'Les sources présentent une information cohérente.',
-            limited: 'Quelques données pertinentes mais limitées.',
-            none: 'Données exploitables insuffisantes.'
-        },
-        warning: {
-            none: 'Aucune contradiction majeure détectée.',
-            minor: 'Quelques contradictions mineures observées.',
-            major: 'Contradictions importantes détectées.'
-        },
-        sources: {
-            diverse: 'Sources vérifiées et diversifiées.',
-            limited: 'Sources vérifiées mais diversité limitée.',
-            scarce: 'Sources vérifiées mais très peu nombreuses.',
-            none: 'Aucune source fiable n’a été identifiée.'
-        }
-    },
-    es: {
-        label: 'Resumen del análisis',
-        reliability: {
-            veryHigh: 'La afirmación parece muy confiable ({score}%).',
-            mostly: 'La afirmación parece mayormente confiable ({score}%).',
-            uncertain: 'La fiabilidad sigue siendo incierta ({score}%).',
-            low: 'La afirmación parece poco confiable ({score}%).'
-        },
-        positive: {
-            recentConsistent: 'Datos recientes y coherentes entre las fuentes.',
-            recent: 'Información reciente identificada en las fuentes.',
-            consistent: 'Las fuentes muestran información coherente.',
-            limited: 'Algunos datos relevantes pero limitados.',
-            none: 'Datos insuficientes para evaluar actualidad o coherencia.'
-        },
-        warning: {
-            none: 'No se detectaron contradicciones importantes.',
-            minor: 'Se observaron contradicciones menores.',
-            major: 'Se detectaron contradicciones significativas.'
-        },
-        sources: {
-            diverse: 'Fuentes verificadas y diversas.',
-            limited: 'Fuentes verificadas pero con diversidad limitada.',
-            scarce: 'Fuentes verificadas pero muy escasas.',
-            none: 'No se identificaron fuentes confiables.'
-        }
-    },
-    de: {
-        label: 'Analysezusammenfassung',
-        reliability: {
-            veryHigh: 'Die Aussage wirkt sehr zuverlässig ({score}%).',
-            mostly: 'Die Aussage wirkt überwiegend zuverlässig ({score}%).',
-            uncertain: 'Die Zuverlässigkeit bleibt unklar ({score}%).',
-            low: 'Die Aussage wirkt wenig zuverlässig ({score}%).'
-        },
-        positive: {
-            recentConsistent: 'Aktuelle und übereinstimmende Daten aus mehreren Quellen.',
-            recent: 'Aktuelle Informationen wurden in den Quellen gefunden.',
-            consistent: 'Die Quellen liefern insgesamt stimmige Informationen.',
-            limited: 'Einige relevante, aber begrenzte Daten vorhanden.',
-            none: 'Zu wenige Daten für eine Einschätzung.'
-        },
-        warning: {
-            none: 'Keine größeren Widersprüche festgestellt.',
-            minor: 'Einige geringfügige Widersprüche festgestellt.',
-            major: 'Deutliche Widersprüche erkannt.'
-        },
-        sources: {
-            diverse: 'Geprüfte und vielfältige Quellen.',
-            limited: 'Geprüfte Quellen, aber begrenzte Vielfalt.',
-            scarce: 'Geprüfte Quellen, jedoch sehr wenige.',
-            none: 'Keine verlässlichen Quellen gefunden.'
-        }
-    },
-    it: {
-        label: "Riepilogo dell'analisi",
-        reliability: {
-            veryHigh: 'L’affermazione risulta molto affidabile ({score}%).',
-            mostly: 'L’affermazione risulta per lo più affidabile ({score}%).',
-            uncertain: 'L’affidabilità rimane incerta ({score}%).',
-            low: 'L’affermazione risulta poco affidabile ({score}%).'
-        },
-        positive: {
-            recentConsistent: 'Dati recenti e coerenti tra le fonti.',
-            recent: 'Informazioni recenti rilevate nelle fonti.',
-            consistent: 'Le fonti mostrano informazioni coerenti.',
-            limited: 'Alcuni dati pertinenti ma limitati.',
-            none: 'Dati insufficienti per valutarne l’attualità o la coerenza.'
-        },
-        warning: {
-            none: 'Nessuna contraddizione rilevante individuata.',
-            minor: 'Osservate lievi contraddizioni.',
-            major: 'Contraddizioni significative rilevate.'
-        },
-        sources: {
-            diverse: 'Fonti verificate e diversificate.',
-            limited: 'Fonti verificate ma con diversità limitata.',
-            scarce: 'Fonti verificate ma molto poche.',
-            none: 'Nessuna fonte affidabile identificata.'
-        }
-    },
-    ja: {
-        label: '分析の概要',
-        reliability: {
-            veryHigh: 'この記述は非常に信頼できると判断されます（{score}%）。',
-            mostly: 'この記述は概ね信頼できると判断されます（{score}%）。',
-            uncertain: 'この記述の信頼性は不確かです（{score}%）。',
-            low: 'この記述は信頼性が低いと判断されます（{score}%）。'
-        },
-        positive: {
-            recentConsistent: '複数の情報源で最新かつ一貫したデータが確認されました。',
-            recent: '情報源から最新の情報が確認されました。',
-            consistent: '情報源の内容は概ね一致しています。',
-            limited: '関連するデータはあるものの量は限られています。',
-            none: '新しいデータや一貫性を判断する情報が不足しています。'
-        },
-        warning: {
-            none: '大きな矛盾は確認されませんでした。',
-            minor: 'いくつか小さな矛盾が見つかりました。',
-            major: '重大な矛盾が検出されました。'
-        },
-        sources: {
-            diverse: '検証済みで多様な情報源です。',
-            limited: '検証済みですが情報源の多様性は限定的です。',
-            scarce: '検証済みの情報源はあるものの非常に少ないです。',
-            none: '信頼できる情報源は確認できませんでした。'
-        }
-    },
-    tr: {
-        label: 'Analiz Özeti',
-        reliability: {
-            veryHigh: 'Açıklama son derece güvenilir görünüyor ({score}%).',
-            mostly: 'Açıklama çoğunlukla güvenilir görünüyor ({score}%).',
-            uncertain: 'Güvenilirlik belirsiz kalıyor ({score}%).',
-            low: 'Açıklama güvenilir görünmüyor ({score}%).'
-        },
-        positive: {
-            recentConsistent: 'Birden fazla kaynaktan güncel ve tutarlı veriler.',
-            recent: 'Kaynaklarda güncel bilgiler bulundu.',
-            consistent: 'Kaynaklar genel olarak tutarlı bilgiler sunuyor.',
-            limited: 'Bazı ilgili veriler mevcut ancak sınırlı.',
-            none: 'Güncellik veya tutarlılığı değerlendirmek için veri yetersiz.'
-        },
-        warning: {
-            none: 'Önemli bir çelişki tespit edilmedi.',
-            minor: 'Küçük çelişkiler gözlemlendi.',
-            major: 'Önemli çelişkiler tespit edildi.'
-        },
-        sources: {
-            diverse: 'Doğrulanmış ve çeşitli kaynaklar.',
-            limited: 'Doğrulanmış kaynaklar ancak çeşitlilik sınırlı.',
-            scarce: 'Doğrulanmış ancak çok az sayıda kaynak.',
-            none: 'Güvenilir kaynak bulunamadı.'
-        }
-    },
-    hi: {
-        label: 'विश्लेषण सारांश',
-        reliability: {
-            veryHigh: 'कथन अत्यंत विश्वसनीय प्रतीत होता है ({score}%).',
-            mostly: 'कथन अधिकांश रूप से विश्वसनीय प्रतीत होता है ({score}%).',
-            uncertain: 'विश्वसनीयता अनिश्चित बनी हुई है ({score}%).',
-            low: 'कथन कम विश्वसनीय प्रतीत होता है ({score}%).'
-        },
-        positive: {
-            recentConsistent: 'कई स्रोतों से हाल का और सुसंगत डेटा मिला।',
-            recent: 'स्रोतों में हाल की जानकारी पहचानी गई।',
-            consistent: 'स्रोतों में जानकारी अधिकांशतः सुसंगत है।',
-            limited: 'कुछ प्रासंगिक डेटा उपलब्ध हैं लेकिन सीमित।',
-            none: 'नवीनता या सुसंगतता आँकने के लिए डेटा अपर्याप्त है।'
-        },
-        warning: {
-            none: 'कोई प्रमुख विरोधाभास नहीं मिला।',
-            minor: 'कुछ छोटे विरोधाभास पाए गए।',
-            major: 'महत्वपूर्ण विरोधाभास पाए गए।'
-        },
-        sources: {
-            diverse: 'सत्यापित और विविध स्रोत।',
-            limited: 'सत्यापित स्रोत लेकिन विविधता सीमित।',
-            scarce: 'सत्यापित स्रोत बहुत कम हैं।',
-            none: 'कोई विश्वसनीय स्रोत नहीं मिला।'
-        }
-    },
-    ru: {
-        label: 'Резюме анализа',
-        reliability: {
-            veryHigh: 'Утверждение выглядит очень надёжным ({score}%).',
-            mostly: 'Утверждение выглядит в основном надёжным ({score}%).',
-            uncertain: 'Надёжность остаётся неопределённой ({score}%).',
-            low: 'Утверждение выглядит ненадёжным ({score}%).'
-        },
-        positive: {
-            recentConsistent: 'Актуальные и согласованные данные из нескольких источников.',
-            recent: 'В источниках найдены актуальные сведения.',
-            consistent: 'Источники дают в целом согласованную информацию.',
-            limited: 'Есть некоторые релевантные, но ограниченные данные.',
-            none: 'Недостаточно данных для оценки актуальности или согласованности.'
-        },
-        warning: {
-            none: 'Существенных противоречий не обнаружено.',
-            minor: 'Обнаружены небольшие противоречия.',
-            major: 'Обнаружены значительные противоречия.'
-        },
-        sources: {
-            diverse: 'Проверенные и разнообразные источники.',
-            limited: 'Проверенные источники, но ограниченное разнообразие.',
-            scarce: 'Проверенных источников очень мало.',
-            none: 'Надёжные источники не найдены.'
-        }
-    }
-};
-
-const LANGUAGE_HEURISTICS = [
-    { regex: /[àâäéèêëîïôöùûüçœ]/i, code: 'fr' },
-    { regex: /[áéíóúñü¿¡]/i, code: 'es' },
-    { regex: /[äöüß]/i, code: 'de' },
-    { regex: /[àèéìòù]/i, code: 'it' },
-    { regex: /[ぁ-んァ-ン一-龥]/, code: 'ja' },
-    { regex: /[ğüşöçıİ]/i, code: 'tr' },
-    { regex: /[\u0900-\u097F]/, code: 'hi' },
-    { regex: /[а-яё]/i, code: 'ru' }
-];
-
-function detectLanguageCode(text) {
-    const cleaned = sanitizeInput(text || '');
-    if (!cleaned) {
-        return 'en';
-    }
-
-    let detected = null;
-
-    if (francModule) {
-        try {
-            const iso3 = francModule(cleaned, { minLength: Math.min(10, Math.max(3, cleaned.length)) });
-            if (iso3 && iso3 !== 'und') {
-                detected = ISO3_TO_ISO1[iso3] || null;
-            }
-        } catch (error) {
-            logWarn(`Erreur détection de langue via franc: ${error.message}`);
-        }
-    }
-
-    if (!detected) {
-        for (const heuristic of LANGUAGE_HEURISTICS) {
-            if (heuristic.regex.test(cleaned)) {
-                detected = heuristic.code;
-                break;
-            }
-        }
-    }
-
-    return detected || 'en';
-}
-
-function resolveTemplate(textPack, section, key, replacements) {
-    const sectionPack = textPack[section] || {};
-    const fallbackPack = SUMMARY_TRANSLATIONS.en[section] || {};
-    const template = sectionPack[key] || fallbackPack[key] || '';
-
-    return template.replace(/\{(\w+)\}/g, (_, token) => {
-        const value = replacements[token];
-        return value !== undefined ? value : `{${token}}`;
-    });
-}
-
-function createLocalizedSummary(languageCode, result = {}, analyzedSources = []) {
-    const lang = SUMMARY_TRANSLATIONS[languageCode] ? languageCode : 'en';
-    const textPack = SUMMARY_TRANSLATIONS[lang];
-
-    const score = typeof result.score === 'number' ? result.score : 0;
-    const scorePercent = Math.round(Math.max(0, Math.min(1, score)) * 100);
-
-    const totalSources = Array.isArray(analyzedSources) ? analyzedSources.length : 0;
-    const supportingCount = Array.isArray(analyzedSources)
-        ? analyzedSources.filter(source => source?.actuallySupports).length
-        : 0;
-    const contradictionCount = Array.isArray(analyzedSources)
-        ? analyzedSources.filter(source => source?.contradicts).length
-        : 0;
-
-    const supportRatio = totalSources > 0 ? supportingCount / totalSources : 0;
-    const contradictionRatio = totalSources > 0 ? contradictionCount / totalSources : 0;
-
-    const domainSet = new Set();
-    if (Array.isArray(analyzedSources)) {
-        for (const source of analyzedSources) {
-            if (!source || !source.url) continue;
-            try {
-                const hostname = new URL(source.url).hostname;
-                domainSet.add(hostname);
-            } catch {
-                domainSet.add(source.url);
-            }
-        }
-    }
-
-    const hasRecentSources = Array.isArray(analyzedSources) && analyzedSources.some(source => {
-        const snippet = `${source?.snippet || ''} ${source?.title || ''}`;
-        return /202[0-5]|recent|latest|nouveau|nouvelle|récent|reciente|aktuell|aktuellen|aggiornato|aggiornata|最新|最近|güncel|हालिया|последн/iu.test(snippet);
-    });
-
-    let positiveKey = 'limited';
-    if (totalSources === 0) {
-        positiveKey = 'none';
-    } else if (hasRecentSources && supportRatio >= 0.6) {
-        positiveKey = 'recentConsistent';
-    } else if (hasRecentSources) {
-        positiveKey = 'recent';
-    } else if (supportRatio >= 0.6) {
-        positiveKey = 'consistent';
-    }
-
-    let warningKey = 'none';
-    if (contradictionRatio > 0.5) {
-        warningKey = 'major';
-    } else if (contradictionCount > 0) {
-        warningKey = 'minor';
-    }
-
-    let sourcesKey = 'limited';
-    if (totalSources === 0) {
-        sourcesKey = 'none';
-    } else if (domainSet.size >= 3) {
-        sourcesKey = 'diverse';
-    } else if (totalSources <= 1) {
-        sourcesKey = 'scarce';
-    }
-
-    const reliabilityKey = score >= 0.85
-        ? 'veryHigh'
-        : score >= 0.65
-            ? 'mostly'
-            : score >= 0.45
-                ? 'uncertain'
-                : 'low';
-
-    const replacements = {
-        score: scorePercent,
-        contradictions: contradictionCount,
-        sources: totalSources
-    };
-
-    const summaryLines = [
-        `🔍 ${resolveTemplate(textPack, 'reliability', reliabilityKey, replacements)}`,
-        `➕ ${resolveTemplate(textPack, 'positive', positiveKey, replacements)}`,
-        `⚠️ ${resolveTemplate(textPack, 'warning', warningKey, replacements)}`,
-        `✅ ${resolveTemplate(textPack, 'sources', sourcesKey, replacements)}`
-    ];
-
-    return {
-        label: textPack.label,
-        text: summaryLines.join('\n')
-    };
 }
 
 async function findWebSources(keywords, smartQueries, originalText) {
@@ -1840,9 +1137,6 @@ app.post('/verify', async (req, res) => {
         const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, sanitizedInput, sources);
         const result = factChecker.calculateBalancedScore(sanitizedInput, analyzedSources, claims);
 
-        const languageDetected = detectLanguageCode(sanitizedInput);
-        const localizedSummary = createLocalizedSummary(languageDetected, result, analyzedSources);
-
         const reliabilityLabel =
             result.score > 0.85 ? 'Highly Reliable' :
             result.score > 0.6 ? 'Mostly Reliable' :
@@ -1858,10 +1152,7 @@ app.post('/verify', async (req, res) => {
             claimsAnalyzed: claims,
             details: result.details,
             methodology: "Analyse équilibrée avec détection contextuelle intelligente",
-            reliabilityLabel,
-            languageDetected,
-            summaryLabel: localizedSummary.label,
-            summaryText: localizedSummary.text
+            reliabilityLabel
         };
 
         verificationCache.set(cacheKey, response);
@@ -1937,9 +1228,6 @@ app.post('/verify/ai', async (req, res) => {
         const analyzedSources = await analyzeSourcesWithImprovedLogic(factChecker, sanitizedResponse, sources);
         const result = factChecker.calculateBalancedScore(sanitizedResponse, analyzedSources, claims);
 
-        const languageDetected = detectLanguageCode(sanitizedResponse);
-        const localizedSummary = createLocalizedSummary(languageDetected, result, analyzedSources);
-
         const reliabilityLabel =
             result.score > 0.85 ? 'Highly Reliable' :
             result.score > 0.6 ? 'Mostly Reliable' :
@@ -1954,10 +1242,7 @@ app.post('/verify/ai', async (req, res) => {
             claims,
             keywords,
             overallConfidence: result.score,
-            reliabilityLabel,
-            languageDetected,
-            summaryLabel: localizedSummary.label,
-            summaryText: localizedSummary.text
+            reliabilityLabel
         };
 
         verificationCache.set(cacheKey, responsePayload);
@@ -2170,53 +1455,6 @@ app.post('/feedback', async (req, res) => {
   }
 });
 
-app.post('/billing/create-checkout-session', async (req, res) => {
-  try {
-    const { userId, plan } = req.body || {};
-
-    if (!userId || typeof userId !== 'string') {
-      return sendSafeJson(res.status(400), { error: 'Missing or invalid userId' });
-    }
-
-    const priceId =
-      plan === 'yearly'
-        ? process.env.STRIPE_PRICE_ID_YEARLY || process.env.STRIPE_PRICE_ID_MONTHLY
-        : process.env.STRIPE_PRICE_ID_MONTHLY;
-
-    if (!priceId) {
-      return sendSafeJson(res.status(500), { error: 'Stripe price id not configured' });
-    }
-
-    const session = await stripe.checkout.sessions.create({
-      mode: 'subscription',
-      line_items: [
-        {
-          price: priceId,
-          quantity: 1
-        }
-      ],
-      metadata: {
-        verifyai_user_id: userId
-      },
-      success_url:
-        (process.env.VERIFYAI_DASHBOARD_URL || 'https://verifyai.app') + '?checkout=success',
-      cancel_url:
-        (process.env.VERIFYAI_DASHBOARD_URL || 'https://verifyai.app') + '?checkout=cancel'
-    });
-
-    return sendSafeJson(res, { url: session.url });
-  } catch (error) {
-    logError('❌ Erreur Stripe create-checkout-session', error?.message || error);
-    res.status(500);
-    return sendSafeJson(res, {
-      error:
-        typeof error?.message === 'string' && error.message.trim()
-          ? error.message
-          : 'Unexpected error.'
-    });
-  }
-});
-
 // Endpoint health
 app.get('/health', (req, res) => {
     return sendSafeJson(res, {
@@ -2268,18 +1506,6 @@ const initDb = async () => {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS subscriptions (
-                id SERIAL PRIMARY KEY,
-                user_id TEXT UNIQUE NOT NULL,
-                stripe_customer_id TEXT,
-                stripe_subscription_id TEXT UNIQUE,
-                status TEXT NOT NULL DEFAULT 'inactive',
-                current_period_end TIMESTAMPTZ,
-                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-            );
-        `);
         client.release();
         logInfo('✅ Database ready');
     } catch (err) {
@@ -2299,101 +1525,4 @@ app.listen(PORT, () => {
     console.log(`🧩 VerifyAI Integration active: Model verification endpoint ready`);
     console.log(`=====================================\n`);
     initDb();
-});
-app.post('/chat', async (req, res) => {
-    try {
-        const { message, userMode } = req.body || {};
-        const userId = req.headers['x-verifyai-user'] || req.body.userId;
-        const userIsPro = await isUserPro(userId);
-
-        // Free-tier gating: simple per-day limit for non-Pro users
-        if (!userIsPro) {
-            const quota = incrementAndCheckFreeUsage(userId, 30); // 30 free messages/day MVP
-            if (!quota.allowed) {
-                return sendSafeJson(res.status(403), {
-                    error: 'Free plan limit reached for today. Please upgrade to VerifyAI Pro to continue using the assistant.',
-                    code: 'FREE_LIMIT_REACHED',
-                    usage: {
-                        used: quota.used,
-                        limit: quota.limit
-                    }
-                });
-            }
-        }
-
-        if (typeof message !== 'string') {
-            throw new Error('Message must be a string.');
-        }
-
-        const trimmedMessage = message.trim();
-        const normalizedMode = typeof userMode === 'string' ? userMode : 'free';
-
-        if (!trimmedMessage) {
-            throw new Error('Message is required.');
-        }
-
-        if (trimmedMessage.length > 4000) {
-            throw new Error('Message exceeds 4000 characters.');
-        }
-
-        const apiKey = process.env.OPENAI_API_KEY;
-        if (!apiKey) {
-            throw new Error('OpenAI API key not configured.');
-        }
-
-        const allowedModes = new Set(['free', 'pro_deep', 'pro_research']);
-        const effectiveMode = allowedModes.has(normalizedMode) ? normalizedMode : 'free';
-
-        let systemPrompt = FREE_MODE_PROMPT;
-        if (userIsPro) {
-            if (effectiveMode === 'pro_deep') {
-                systemPrompt = PRO_DEEP_ANALYSIS_PROMPT;
-            } else if (effectiveMode === 'pro_research') {
-                systemPrompt = PRO_RESEARCH_EXPANSION_PROMPT;
-            }
-        }
-
-        const payload = {
-            model: 'gpt-4o-mini',
-            messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: trimmedMessage }
-            ]
-        };
-
-        const response = await fetchWithTimeout(
-            'https://api.openai.com/v1/chat/completions',
-            {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${apiKey}`
-                },
-                body: JSON.stringify(payload)
-            },
-            6000
-        );
-
-        if (!response.ok) {
-            const errorBody = await response.text();
-            throw new Error(`OpenAI API error: ${errorBody || response.statusText}`);
-        }
-
-        const data = await response.json();
-        const reply = data?.choices?.[0]?.message?.content?.trim();
-
-        if (!reply) {
-            throw new Error('No response from OpenAI.');
-        }
-
-        return sendSafeJson(res, { reply });
-    } catch (error) {
-        logError('❌ Erreur chat VerifyAI', error?.message || error);
-        res.status(500);
-        return sendSafeJson(res, {
-            error: typeof error?.message === 'string' && error.message.trim()
-                ? error.message
-                : 'Unexpected error.'
-        });
-    }
 });
